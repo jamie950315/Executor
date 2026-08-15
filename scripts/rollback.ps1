@@ -8,6 +8,31 @@ $ManifestPath = Join-Path $StateDir "service-manifest.txt"
 $OwnedServicesPath = Join-Path $StateDir "owned-services.txt"
 $IsUninstall = $env:EXECUTOR_UNINSTALL -eq "1"
 $ServicesToRestart = @()
+$PendingReplacementCleanup = @()
+
+function Restore-ManagedFile {
+  param(
+    [string]$Source,
+    [string]$Destination
+  )
+  $Replacement = $Destination + ".executor-new." + $PID
+  $Previous = $Destination + ".executor-old." + $PID
+  Remove-Item -Force -ErrorAction SilentlyContinue $Replacement, $Previous
+  Copy-Item -Path $Source -Destination $Replacement -Force
+  if (Test-Path $Destination) {
+    Move-Item -Path $Destination -Destination $Previous
+    try {
+      Move-Item -Path $Replacement -Destination $Destination
+    } catch {
+      Move-Item -Path $Previous -Destination $Destination
+      Remove-Item -Force -ErrorAction SilentlyContinue $Replacement
+      throw
+    }
+    $script:PendingReplacementCleanup += $Previous
+  } else {
+    Move-Item -Path $Replacement -Destination $Destination
+  }
+}
 
 function Remove-OwnedService {
   param([string]$Name)
@@ -102,7 +127,7 @@ foreach ($Entry in $ManifestEntries) {
         $BackupPath = $Mode.Substring(8)
         if (Test-Path $BackupPath) {
           New-Item -ItemType Directory -Path (Split-Path $PathValue -Parent) -Force | Out-Null
-          Copy-Item -Path $BackupPath -Destination $PathValue -Force
+          Restore-ManagedFile -Source $BackupPath -Destination $PathValue
         }
       } elseif (Test-Path $PathValue) {
         Remove-Item -Path $PathValue -Force
@@ -113,7 +138,7 @@ foreach ($Entry in $ManifestEntries) {
         $BackupPath = $Mode.Substring(8)
         if (Test-Path $BackupPath) {
           New-Item -ItemType Directory -Path (Split-Path $PathValue -Parent) -Force | Out-Null
-          Copy-Item -Path $BackupPath -Destination $PathValue -Force
+          Restore-ManagedFile -Source $BackupPath -Destination $PathValue
         }
       } elseif (Test-Path $PathValue) {
         Remove-Item -Path $PathValue -Force
@@ -126,6 +151,10 @@ foreach ($ServiceName in $ServicesToRestart) {
   if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
     Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
   }
+}
+
+foreach ($ReplacementPath in $PendingReplacementCleanup) {
+  Remove-Item -Force -ErrorAction SilentlyContinue $ReplacementPath
 }
 
 Write-Host "restored managed services from $ManifestPath"

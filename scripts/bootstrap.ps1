@@ -31,6 +31,7 @@ $CloudflareAPITokenFile = if ($env:CLOUDFLARE_API_TOKEN_FILE) { $env:CLOUDFLARE_
 $CloudflareAccountID = if ($env:CLOUDFLARE_ACCOUNT_ID) { $env:CLOUDFLARE_ACCOUNT_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID) { $env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID } else { "" }
 $CloudflareZoneID = if ($env:CLOUDFLARE_ZONE_ID) { $env:CLOUDFLARE_ZONE_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ZONE_ID) { $env:EXECUTOR_CLOUDFLARE_ZONE_ID } else { "" }
 $CloudflareTunnelName = if ($env:CLOUDFLARE_TUNNEL_NAME) { $env:CLOUDFLARE_TUNNEL_NAME } elseif ($env:EXECUTOR_CLOUDFLARE_TUNNEL_NAME) { $env:EXECUTOR_CLOUDFLARE_TUNNEL_NAME } else { "" }
+$PendingReplacementCleanup = @()
 
 if (-not $Domain) {
   throw "Set EXECUTOR_DOMAIN."
@@ -84,7 +85,23 @@ function Install-ManagedFile {
   }
   Backup-ManagedPath -PathValue $Destination -Kind "file"
   New-Item -ItemType Directory -Path (Split-Path $Destination -Parent) -Force | Out-Null
-  Copy-Item -Path $Source -Destination $Destination -Force
+  $Replacement = $Destination + ".executor-new." + $PID
+  $Previous = $Destination + ".executor-old." + $PID
+  Remove-Item -Force -ErrorAction SilentlyContinue $Replacement, $Previous
+  Copy-Item -Path $Source -Destination $Replacement -Force
+  if (Test-Path $Destination) {
+    Move-Item -Path $Destination -Destination $Previous
+    try {
+      Move-Item -Path $Replacement -Destination $Destination
+    } catch {
+      Move-Item -Path $Previous -Destination $Destination
+      Remove-Item -Force -ErrorAction SilentlyContinue $Replacement
+      throw
+    }
+    $script:PendingReplacementCleanup += $Previous
+  } else {
+    Move-Item -Path $Replacement -Destination $Destination
+  }
 }
 
 function Invoke-PowerShellScript {
@@ -265,6 +282,10 @@ if ((Test-Path $LegacyCloudflaredBackupPath) -and $LegacyCloudflaredService) {
   }
   $OwnedServices = @($OwnedServices | Where-Object { $_ -ne "cloudflared" })
   Set-Content -Path $OwnedServicesPath -Value $OwnedServices
+}
+
+foreach ($ReplacementPath in $PendingReplacementCleanup) {
+  Remove-Item -Force -ErrorAction SilentlyContinue $ReplacementPath
 }
 
 Write-Host "service bundle installed to $InstallRoot"
