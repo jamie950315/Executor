@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,18 +17,27 @@ import (
 	"github.com/jamie950315/executor/internal/cli"
 	"github.com/jamie950315/executor/internal/cloudflare"
 	"github.com/jamie950315/executor/internal/config"
+	"github.com/jamie950315/executor/internal/control"
+	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/doctor"
+	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
 type backend struct {
-	stateDir string
+	stateDir    string
+	loadControl func(string) (controlRuntime, error)
+}
+
+type controlRuntime interface {
+	Kill(context.Context) (control.Result, error)
+	Resume(context.Context) error
 }
 
 type setupOptions = cli.SetupOptions
 
 func newBackend(stateDir string) *backend {
-	return &backend{stateDir: stateDir}
+	return &backend{stateDir: stateDir, loadControl: func(path string) (controlRuntime, error) { return control.Load(path) }}
 }
 
 func defaultStateDir() string {
@@ -83,26 +93,74 @@ func (b *backend) Setup(ctx context.Context, options cli.SetupOptions) (cli.Setu
 	return result, nil
 }
 
-func (b *backend) Status(_ context.Context) (cli.Status, error) {
-	return cli.Status{}, unavailable("runtime controller", nil)
+func (b *backend) Status(ctx context.Context) (cli.Status, error) {
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		return cli.Status{}, err
+	}
+	values, err := secrets.Load(b.stateDir)
+	if err != nil {
+		return cli.Status{}, err
+	}
+	status := cli.Status{State: "degraded", Domain: cfg.Domain, MCPURL: mcpURL(cfg.Domain)}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "disabled")); err == nil {
+		status.State = "disabled"
+	}
+	status.Broker = probeIPC(ctx, cfg.BrokerEndpoint, values.BrokerIPCKey)
+	status.Desktop = probeIPC(ctx, cfg.DesktopEndpoint, values.DesktopIPCKey)
+	status.Agent = probeTCP(ctx, cfg.AgentAddress)
+	if cfg.Cloudflare.Complete() {
+		if _, err := os.Stat(cfg.Cloudflare.TokenFilePath); err == nil {
+			status.Tunnel = "configured"
+		} else {
+			status.Tunnel = "token-missing"
+		}
+	} else {
+		status.Tunnel = "not-configured"
+	}
+	if status.State != "disabled" && status.Agent == "online" && status.Broker == "online" {
+		status.State = "armed"
+	}
+	return status, nil
 }
 
-func (b *backend) Kill(context.Context) error   { return unavailable("runtime controller", nil) }
-func (b *backend) Resume(context.Context) error { return unavailable("runtime controller", nil) }
-
-func (b *backend) Rotate(_ context.Context) (cli.RotateResult, error) {
-	rotated, err := secrets.Rotate(b.stateDir)
+func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {
+	controller, err := b.loadControl(b.configPath())
 	if err != nil {
 		return cli.RotateResult{}, err
 	}
-	return cli.RotateResult{URLSecret: rotated.URLSecret, RecoveryKey: rotated.RecoveryKey}, nil
+	result, err := controller.Kill(ctx)
+	return cli.RotateResult{RecoveryKey: result.RecoveryKey, URLSecret: result.URLSecret}, err
+}
+
+func (b *backend) Resume(ctx context.Context) error {
+	controller, err := b.loadControl(b.configPath())
+	if err != nil {
+		return err
+	}
+	return controller.Resume(ctx)
+}
+
+func (b *backend) Rotate(ctx context.Context) (cli.RotateResult, error) {
+	rotated, err := b.Kill(ctx)
+	if err != nil {
+		return rotated, err
+	}
+	if err := b.Resume(ctx); err != nil {
+		return rotated, err
+	}
+	return rotated, nil
 }
 
 func (b *backend) Doctor(ctx context.Context, _ bool) (cli.DoctorResult, error) {
+	status, statusErr := b.Status(ctx)
 	checkers := []doctor.Checker{
 		fileCheck{name: "config", path: b.configPath()},
 		fileCheck{name: "secrets", path: filepath.Join(b.stateDir, "secrets.json")},
-		staticFailureCheck{name: "runtime", err: unavailable("runtime controller", nil)},
+		staticFailureCheck{name: "agent", err: onlineError(status.Agent, statusErr)},
+		staticFailureCheck{name: "broker", err: onlineError(status.Broker, statusErr)},
+		staticFailureCheck{name: "desktop", err: onlineError(status.Desktop, nil)},
+		staticFailureCheck{name: "tunnel", err: configuredError(status.Tunnel)},
 	}
 	result := doctor.Run(ctx, checkers)
 	out := cli.DoctorResult{Healthy: result.Healthy, Checks: make([]cli.Check, 0, len(result.Checks))}
@@ -116,8 +174,23 @@ func (b *backend) Doctor(ctx context.Context, _ bool) (cli.DoctorResult, error) 
 	return out, nil
 }
 
-func (b *backend) EnableURLSecret(context.Context) (string, error) {
-	return "", errors.New("enable-url-secret requires a runtime controller and is not available in the packaging build")
+func (b *backend) EnableURLSecret(ctx context.Context) (string, error) {
+	rotated, err := b.Kill(ctx)
+	if err != nil {
+		return "", err
+	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		return "", err
+	}
+	cfg.URLSecretEnabled = true
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		return "", err
+	}
+	if err := b.Resume(ctx); err != nil {
+		return "", err
+	}
+	return "https://" + cfg.Domain + "/" + rotated.URLSecret + "/mcp", nil
 }
 
 func (b *backend) configPath() string {
@@ -319,4 +392,42 @@ func unavailable(component string, cause error) error {
 		return fmt.Errorf("%s unavailable: %w", component, cause)
 	}
 	return fmt.Errorf("%s unavailable", component)
+}
+
+func probeIPC(ctx context.Context, endpoint, key string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	var status desktop.RPCDeviceStatus
+	if err := ipc.NewRPCClient(endpoint, []byte(key)).Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+		return "offline"
+	}
+	return "online"
+}
+
+func probeTCP(ctx context.Context, address string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	connection, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", address)
+	if err != nil {
+		return "offline"
+	}
+	_ = connection.Close()
+	return "online"
+}
+
+func onlineError(state string, cause error) error {
+	if cause != nil {
+		return cause
+	}
+	if state != "online" {
+		return fmt.Errorf("runtime is %s", state)
+	}
+	return nil
+}
+
+func configuredError(state string) error {
+	if state != "configured" {
+		return fmt.Errorf("tunnel is %s", state)
+	}
+	return nil
 }

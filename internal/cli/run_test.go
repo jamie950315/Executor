@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -11,6 +12,7 @@ import (
 type fakeBackend struct {
 	called       string
 	setupOptions SetupOptions
+	killErr      error
 }
 
 func (f *fakeBackend) Setup(_ context.Context, options SetupOptions) (SetupResult, error) {
@@ -22,7 +24,10 @@ func (f *fakeBackend) Status(context.Context) (Status, error) {
 	f.called = "status"
 	return Status{State: "armed", Domain: "executor.example.com"}, nil
 }
-func (f *fakeBackend) Kill(context.Context) error   { f.called = "kill"; return nil }
+func (f *fakeBackend) Kill(context.Context) (RotateResult, error) {
+	f.called = "kill"
+	return RotateResult{RecoveryKey: "kill-recovery-once", URLSecret: "kill-url-once"}, f.killErr
+}
 func (f *fakeBackend) Resume(context.Context) error { f.called = "resume"; return nil }
 func (f *fakeBackend) Rotate(context.Context) (RotateResult, error) {
 	f.called = "rotate"
@@ -74,6 +79,18 @@ func TestRunKillAndResume(t *testing.T) {
 		if backend.called != command || !strings.Contains(strings.ToLower(stdout.String()), command) {
 			t.Fatalf("%s called=%q stdout=%q", command, backend.called, stdout.String())
 		}
+		if command == "kill" && (!strings.Contains(stdout.String(), "kill-recovery-once") || !strings.Contains(stdout.String(), "shown once")) {
+			t.Fatalf("kill output omitted one-time recovery material: %q", stdout.String())
+		}
+	}
+}
+
+func TestRunKillPreservesRotatedCredentialsOnPartialFailure(t *testing.T) {
+	backend := &fakeBackend{killErr: errors.New("desktop already stopped")}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"kill"}, backend, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stdout.String(), "kill-recovery-once") || !strings.Contains(stderr.String(), "desktop already stopped") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

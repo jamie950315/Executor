@@ -11,18 +11,20 @@ import (
 )
 
 type runtimeCommands struct {
-	agent   func(context.Context, string) error
-	broker  func(context.Context, string) error
-	desktop func(context.Context, string) error
-	stdio   func(context.Context, string, io.Reader, io.Writer) error
+	agent     func(context.Context, string) error
+	broker    func(context.Context, string) error
+	desktop   func(context.Context, string) error
+	dashboard func(context.Context, string) error
+	stdio     func(context.Context, string, io.Reader, io.Writer) error
 }
 
 func defaultRuntimeCommands() runtimeCommands {
 	return runtimeCommands{
-		agent:   daemon.RunAgent,
-		broker:  daemon.RunBroker,
-		desktop: daemon.RunDesktop,
-		stdio:   daemon.RunStdio,
+		agent:     daemon.RunAgent,
+		broker:    daemon.RunBroker,
+		desktop:   daemon.RunDesktop,
+		dashboard: daemon.RunDashboard,
+		stdio:     daemon.RunStdio,
 	}
 }
 
@@ -31,7 +33,7 @@ func runRuntimeCommand(ctx context.Context, args []string, stdin io.Reader, stdo
 		return false, 0
 	}
 	name := args[0]
-	if name != "agent" && name != "broker" && name != "desktop" && name != "stdio" {
+	if name != "agent" && name != "broker" && name != "desktop" && name != "dashboard" && name != "stdio" {
 		return false, 0
 	}
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -52,6 +54,8 @@ func runRuntimeCommand(ctx context.Context, args []string, stdin io.Reader, stdo
 		err = commands.broker(ctx, *configPath)
 	case "desktop":
 		err = commands.desktop(ctx, *configPath)
+	case "dashboard":
+		err = commands.dashboard(ctx, *configPath)
 	case "stdio":
 		err = commands.stdio(ctx, *configPath, stdin, stdout)
 	}

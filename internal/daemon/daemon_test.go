@@ -114,6 +114,7 @@ func TestRunAgentRejectsNonLoopbackOriginBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	errCh := startDaemon(t, func() error { return RunAgent(ctx, configPath) })
 	select {
 	case err := <-errCh:
@@ -125,6 +126,71 @@ func TestRunAgentRejectsNonLoopbackOriginBinding(t *testing.T) {
 		assertDaemonStopped(t, errCh)
 		t.Fatal("RunAgent accepted a non-loopback origin binding")
 	}
+}
+
+func TestRunDashboardRejectsNonLoopbackBinding(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := daemonFixture(t)
+	cfg.DashboardAddress = "0.0.0.0:8788"
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	err := RunDashboard(context.Background(), configPath)
+	if err == nil {
+		t.Fatal("RunDashboard accepted a non-loopback binding")
+	}
+}
+
+func TestRunDashboardServesLoopbackStatusWithoutSecretsAndStopsOnCancel(t *testing.T) {
+	configPath, cfg, values := daemonFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error { return RunDashboard(ctx, configPath) })
+	baseURL := "http://" + cfg.DashboardAddress
+
+	ready := waitForHTTP(t, http.MethodGet, baseURL+"/", nil, nil)
+	ready.Body.Close()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	bootstrap, err := client.Get(baseURL + "/?token=" + values.DashboardKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrap.StatusCode != http.StatusSeeOther {
+		bootstrap.Body.Close()
+		t.Fatalf("dashboard bootstrap status = %d, want %d", bootstrap.StatusCode, http.StatusSeeOther)
+	}
+	cookies := bootstrap.Cookies()
+	bootstrap.Body.Close()
+	if len(cookies) != 1 {
+		t.Fatalf("dashboard bootstrap cookies = %#v", cookies)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(cookies[0])
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	var status map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(values.DashboardKey)) || bytes.Contains(encoded, []byte(values.RecoveryKey)) || bytes.Contains(encoded, []byte(values.URLSecret)) {
+		t.Fatalf("dashboard status exposed secret material: %s", encoded)
+	}
+
+	cancel()
+	assertDaemonStopped(t, errCh)
 }
 
 func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {
@@ -358,6 +424,7 @@ func daemonFixture(t *testing.T) (string, config.Config, secrets.Values) {
 	cfg := config.Default(stateDir)
 	cfg.Domain = "executor.example.test"
 	cfg.AgentAddress = availableTCPAddress(t)
+	cfg.DashboardAddress = availableTCPAddress(t)
 	cfg.BrokerEndpoint = filepath.Join(endpointDir, "broker.sock")
 	cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
 	configPath := filepath.Join(stateDir, "config.json")

@@ -16,6 +16,8 @@ import (
 	"github.com/jamie950315/executor/internal/agent"
 	"github.com/jamie950315/executor/internal/broker"
 	"github.com/jamie950315/executor/internal/config"
+	"github.com/jamie950315/executor/internal/control"
+	"github.com/jamie950315/executor/internal/dashboard"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/dispatch"
 	"github.com/jamie950315/executor/internal/filesystem"
@@ -141,6 +143,35 @@ func RunAgent(ctx context.Context, configPath string) error {
 	}
 	server := &http.Server{Handler: handler}
 	return serveHTTP(ctx, server, listener)
+}
+
+// RunDashboard serves the owner-only local control dashboard until ctx is
+// canceled. The dashboard listener is intentionally restricted to loopback.
+func RunDashboard(ctx context.Context, configPath string) error {
+	cfg, values, err := loadRuntime(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.DashboardAddress == "" {
+		return errors.New("dashboard address is required")
+	}
+	if !isLoopbackAddress(cfg.DashboardAddress) {
+		return errors.New("dashboard address must bind to loopback")
+	}
+
+	lifecycle, err := control.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load dashboard control: %w", err)
+	}
+	handler := dashboard.NewHandler(
+		dashboard.NewRuntimeController(cfg, values, lifecycle),
+		values.DashboardKey,
+	)
+	listener, err := net.Listen("tcp", cfg.DashboardAddress)
+	if err != nil {
+		return err
+	}
+	return serveHTTP(ctx, &http.Server{Handler: handler}, listener)
 }
 
 func disabled(path string) bool {

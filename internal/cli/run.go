@@ -53,7 +53,7 @@ type DoctorResult struct {
 type Backend interface {
 	Setup(context.Context, SetupOptions) (SetupResult, error)
 	Status(context.Context) (Status, error)
-	Kill(context.Context) error
+	Kill(context.Context) (RotateResult, error)
 	Resume(context.Context) error
 	Rotate(context.Context) (RotateResult, error)
 	Doctor(context.Context, bool) (DoctorResult, error)
@@ -110,10 +110,14 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		}
 		return 0
 	case "kill":
-		if err := backend.Kill(ctx); err != nil {
+		result, err := backend.Kill(ctx)
+		if err != nil {
+			if result.RecoveryKey != "" || result.URLSecret != "" {
+				fmt.Fprintf(stdout, "Executor kill partially completed.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
+			}
 			return printError(stderr, err)
 		}
-		fmt.Fprintln(stdout, "Executor kill completed; credentials were revoked and rotated.")
+		fmt.Fprintf(stdout, "Executor kill completed; credentials were revoked and rotated.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
 		return 0
 	case "resume":
 		if err := backend.Resume(ctx); err != nil {
