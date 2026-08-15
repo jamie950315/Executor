@@ -38,7 +38,14 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Release archives install stable `executor` and `executor-kill` binaries plus persistent Agent, Broker, Dashboard, Desktop, and cloudflared services with manifest-backed rollback.
 - macOS, Linux, and Windows amd64/arm64 builds are verified by cross-compilation. Windows service/Scheduled Task and Linux systemd/X11/Wayland behavior still require real target-machine runtime verification.
 - Live Cloudflare deployment is not verified because no deployment API token file or hostname has been supplied.
-- No system service has been installed from this checkout yet; macOS process-level end-to-end verification is the next local runtime gate.
+- A real macOS arm64 process-level test has verified separate Agent/Broker/Desktop/Dashboard processes, OAuth DCR + PKCE, MCP initialization, owner filesystem and terminal calls, window observation, a 3024x1964 screenshot, immediate Kill quiescing, secret rotation, old-token rejection after Resume, and immediate Dashboard key rollover. This did not install system services or prove root execution.
+- Lifecycle CLI and installers share stable default state locations (`/var/lib/executor` on Unix and `%ProgramData%\Executor` on Windows), while preserving `EXECUTOR_STATE_DIR` overrides.
+- Metadata-only audit events are now written for remote and stdio tool attempts/outcomes without command text, file content, or output.
+- OAuth DCR accepts standard metadata but restricts callback hosts to ChatGPT or loopback, and the consent page displays the requesting client and redirect destination. MCP stdio uses newline-delimited JSON; Streamable HTTP validates Origin and protocol headers.
+- Resume verifies that Broker, Desktop, and Agent loaded the rotated credentials before starting the tunnel or removing the disabled marker.
+- Linux/WSL units install under the standard systemd system/user directories. Darwin release jobs build on macOS with native CoreGraphics desktop input.
+- Windows terminal sessions currently use persistent redirected pipes rather than ConPTY. Basic execution is implemented and cross-built, but full interactive-console semantics remain incomplete until a real ConPTY backend and Windows runtime test are added.
+- No system service has been installed from this checkout yet.
 
 ## Runtime targets
 

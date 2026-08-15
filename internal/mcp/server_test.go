@@ -110,6 +110,28 @@ func TestInitializeNegotiatesSupportedProtocolVersion(t *testing.T) {
 	}
 }
 
+func TestInitializeRespondsWithServerVersionWhenClientRequestsNewerVersion(t *testing.T) {
+	t.Parallel()
+	server := NewServer(ServerConfig{ProtocolVersion: "2025-06-18"})
+	response := performHTTPRequest(t, server, "", rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "1",
+		Method:  "initialize",
+		Params:  map[string]any{"protocolVersion": "2025-11-25"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("initialize status = %d, want 200", response.Code)
+	}
+	var body rpcResponse
+	decodeJSON(t, response.Body.Bytes(), &body)
+	if body.Error != nil {
+		t.Fatalf("initialize returned error: %#v", body.Error)
+	}
+	if got := body.Result.(map[string]any)["protocolVersion"]; got != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want server-supported version", got)
+	}
+}
+
 func TestStreamableHTTPInitializePingToolsAndNotifications(t *testing.T) {
 	t.Parallel()
 
@@ -158,8 +180,8 @@ func TestStreamableHTTPInitializePingToolsAndNotifications(t *testing.T) {
 		Method:  "notifications/initialized",
 	}
 	notificationResponse := performHTTPRequest(t, server, sessionID, notification)
-	if notificationResponse.Code != http.StatusNoContent {
-		t.Fatalf("notifications/initialized status = %d, want %d", notificationResponse.Code, http.StatusNoContent)
+	if notificationResponse.Code != http.StatusAccepted {
+		t.Fatalf("notifications/initialized status = %d, want %d", notificationResponse.Code, http.StatusAccepted)
 	}
 
 	ping := rpcRequest{
@@ -246,8 +268,8 @@ func TestStreamableHTTPRejectsUnknownSession(t *testing.T) {
 	}
 
 	response := performHTTPRequest(t, server, "missing-session", request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 
 	var body rpcResponse
@@ -257,6 +279,38 @@ func TestStreamableHTTPRejectsUnknownSession(t *testing.T) {
 	}
 	if body.Error.Code != errCodeInvalidSession {
 		t.Fatalf("error code = %d, want %d", body.Error.Code, errCodeInvalidSession)
+	}
+}
+
+func TestStreamableHTTPRejectsMissingSessionAndMismatchedProtocolHeader(t *testing.T) {
+	t.Parallel()
+	server := NewServer(ServerConfig{})
+	missing := performHTTPRequest(t, server, "", rpcRequest{JSONRPC: "2.0", ID: "1", Method: "ping"})
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing session status = %d, want 400", missing.Code)
+	}
+
+	initialize := performHTTPRequest(t, server, "", rpcRequest{JSONRPC: "2.0", ID: "2", Method: "initialize"})
+	sessionID := initialize.Header().Get(SessionHeader)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"3","method":"ping"}`))
+	request.Header.Set(SessionHeader, sessionID)
+	request.Header.Set("MCP-Protocol-Version", "1900-01-01")
+	response := httptest.NewRecorder()
+	server.HandleStreamableHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched protocol header status = %d, want 400", response.Code)
+	}
+}
+
+func TestStreamableHTTPRejectsCrossOriginBrowserRequest(t *testing.T) {
+	t.Parallel()
+	server := NewServer(ServerConfig{})
+	request := httptest.NewRequest(http.MethodPost, "https://executor.example.com/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"initialize"}`))
+	request.Header.Set("Origin", "https://attacker.example")
+	response := httptest.NewRecorder()
+	server.HandleStreamableHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d, want 403", response.Code)
 	}
 }
 
@@ -301,6 +355,22 @@ func TestStdioHandlerUsesMCPFramingAndRetainsSession(t *testing.T) {
 	result := toolsResponse.Result.(map[string]any)
 	if len(result["tools"].([]any)) != len(BuiltinTools()) {
 		t.Fatalf("tools/list returned %d tools, want %d", len(result["tools"].([]any)), len(BuiltinTools()))
+	}
+}
+
+func TestStdioFramesAreNewlineDelimitedJSON(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	var output bytes.Buffer
+	if err := WriteFrame(&output, payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), string(payload)+"\n"; got != want {
+		t.Fatalf("stdio frame = %q, want newline-delimited JSON", got)
+	}
+	frame, err := ReadFrame(bufio.NewReader(strings.NewReader(output.String())))
+	if err != nil || !bytes.Equal(frame, payload) {
+		t.Fatalf("ReadFrame = %q, %v", frame, err)
 	}
 }
 

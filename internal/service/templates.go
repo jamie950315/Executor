@@ -95,7 +95,12 @@ func targetTemplates(target Target) map[string]string {
 		}
 	case TargetWSL:
 		return map[string]string{
-			"wsl/README.txt": "templates/wsl-readme.txt.tmpl",
+			"systemd/executor-agent.service":        "templates/linux-agent.service.tmpl",
+			"systemd/executor-broker.service":       "templates/linux-broker.service.tmpl",
+			"systemd/executor-dashboard.service":    "templates/linux-dashboard.service.tmpl",
+			"systemd-user/executor-desktop.service": "templates/linux-desktop.service.tmpl",
+			"systemd/cloudflared.service":           "templates/linux-cloudflared.service.tmpl",
+			"wsl/README.txt":                        "templates/wsl-readme.txt.tmpl",
 		}
 	default:
 		return nil

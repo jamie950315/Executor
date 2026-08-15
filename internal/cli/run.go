@@ -37,6 +37,8 @@ type Status struct {
 type RotateResult struct {
 	URLSecret   string `json:"url_secret"`
 	RecoveryKey string `json:"recovery_key"`
+	Dashboard   string `json:"dashboard,omitempty"`
+	Endpoint    string `json:"endpoint,omitempty"`
 }
 
 type Check struct {
@@ -57,7 +59,7 @@ type Backend interface {
 	Resume(context.Context) error
 	Rotate(context.Context) (RotateResult, error)
 	Doctor(context.Context, bool) (DoctorResult, error)
-	EnableURLSecret(context.Context) (string, error)
+	EnableURLSecret(context.Context) (RotateResult, error)
 }
 
 func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.Writer) int {
@@ -87,7 +89,7 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		if err != nil {
 			return printError(stderr, err)
 		}
-		fmt.Fprintf(stdout, "Executor is configured.\nDomain: %s\nMCP: %s\nRecovery key (shown once): %s\n", result.Domain, result.MCPURL, result.RecoveryKey)
+		fmt.Fprintf(stdout, "Executor is configured.\nDomain: %s\nMCP (Streamable HTTP): %s\nLocal stdio: executor stdio\nRecovery key (shown once): %s\n", result.Domain, result.MCPURL, result.RecoveryKey)
 		if result.Dashboard != "" {
 			fmt.Fprintf(stdout, "Dashboard: %s\n", result.Dashboard)
 		}
@@ -113,11 +115,11 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		result, err := backend.Kill(ctx)
 		if err != nil {
 			if result.RecoveryKey != "" || result.URLSecret != "" {
-				fmt.Fprintf(stdout, "Executor kill partially completed.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
+				fmt.Fprintf(stdout, "Executor kill partially completed.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.RecoveryKey, result.URLSecret, result.Dashboard)
 			}
 			return printError(stderr, err)
 		}
-		fmt.Fprintf(stdout, "Executor kill completed; credentials were revoked and rotated.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
+		fmt.Fprintf(stdout, "Executor kill completed; credentials were revoked and rotated.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.RecoveryKey, result.URLSecret, result.Dashboard)
 		return 0
 	case "resume":
 		if err := backend.Resume(ctx); err != nil {
@@ -128,9 +130,12 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 	case "rotate":
 		result, err := backend.Rotate(ctx)
 		if err != nil {
+			if result.RecoveryKey != "" || result.URLSecret != "" || result.Dashboard != "" {
+				fmt.Fprintf(stdout, "Credential rotation partially completed.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.RecoveryKey, result.URLSecret, result.Dashboard)
+			}
 			return printError(stderr, err)
 		}
-		fmt.Fprintf(stdout, "Credentials rotated.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
+		fmt.Fprintf(stdout, "Credentials rotated.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.RecoveryKey, result.URLSecret, result.Dashboard)
 		return 0
 	case "doctor":
 		set := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -161,11 +166,14 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		return 0
 	case "auth":
 		if len(args) == 2 && args[1] == "enable-url-secret" {
-			endpoint, err := backend.EnableURLSecret(ctx)
+			result, err := backend.EnableURLSecret(ctx)
 			if err != nil {
+				if result.RecoveryKey != "" || result.URLSecret != "" || result.Dashboard != "" {
+					fmt.Fprintf(stdout, "URL-secret activation partially completed.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.RecoveryKey, result.URLSecret, result.Dashboard)
+				}
 				return printError(stderr, err)
 			}
-			fmt.Fprintf(stdout, "WARNING: URL-secret compatibility mode is enabled.\nEndpoint (shown once): %s\n", endpoint)
+			fmt.Fprintf(stdout, "WARNING: URL-secret compatibility mode is enabled.\nEndpoint (shown once): %s\nNew recovery key (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.Endpoint, result.RecoveryKey, result.Dashboard)
 			return 0
 		}
 		usage(stderr)

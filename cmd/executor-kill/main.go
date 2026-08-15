@@ -43,7 +43,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, load func
 	}
 	result, err := runner.Kill(ctx)
 	if result.RecoveryKey != "" && result.URLSecret != "" {
-		fmt.Fprintf(stdout, "New recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
+		fmt.Fprintf(stdout, "New recovery key (shown once): %s\nNew URL secret (shown once): %s\nNew Dashboard URL (shown once): %s\n", result.RecoveryKey, result.URLSecret, result.Dashboard)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "executor-kill: %v\n", err)

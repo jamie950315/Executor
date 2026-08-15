@@ -7,10 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"net"
 	"net/http"
-	"strconv"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -182,6 +182,10 @@ func (s *Server) HandleStreamableHTTP(writer http.ResponseWriter, request *http.
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if origin := request.Header.Get("Origin"); origin != "" && !sameRequestOrigin(origin, request) {
+		http.Error(writer, "forbidden origin", http.StatusForbidden)
+		return
+	}
 
 	var rpcReq rpcRequest
 	decoder := json.NewDecoder(request.Body)
@@ -191,6 +195,12 @@ func (s *Server) HandleStreamableHTTP(writer http.ResponseWriter, request *http.
 			Error:   &rpcError{Code: -32700, Message: "invalid JSON payload"},
 		})
 		return
+	}
+	if rpcReq.Method != "initialize" {
+		if version := request.Header.Get("MCP-Protocol-Version"); version != "" && version != s.protocolVersion {
+			writeRPCResponse(writer, http.StatusBadRequest, request.Header.Get(SessionHeader), *errorResponse(rpcReq.ID, -32600, "unsupported MCP-Protocol-Version header"))
+			return
+		}
 	}
 
 	response, status, sessionID := s.handleRPC(request.Context(), request.Header.Get(SessionHeader), rpcReq)
@@ -203,6 +213,22 @@ func (s *Server) HandleStreamableHTTP(writer http.ResponseWriter, request *http.
 	}
 
 	writeRPCResponse(writer, status, sessionID, *response)
+}
+
+func sameRequestOrigin(origin string, request *http.Request) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return false
+	}
+	host := request.Host
+	if request.URL.Host != "" {
+		host = request.URL.Host
+	}
+	requestHost, _, err := net.SplitHostPort(host)
+	if err != nil {
+		requestHost = host
+	}
+	return strings.EqualFold(strings.TrimSuffix(parsed.Hostname(), "."), strings.TrimSuffix(requestHost, "."))
 }
 
 func (s *StdioHandler) Serve(ctx context.Context, reader io.Reader, writer io.Writer) error {
@@ -254,50 +280,27 @@ func (s *StdioHandler) HandleFrame(ctx context.Context, frame []byte) ([]byte, e
 }
 
 func ReadFrame(reader *bufio.Reader) ([]byte, error) {
-	contentLength := -1
 	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
+		line, err := reader.ReadBytes('\n')
+		if err != nil && !(errors.Is(err, io.EOF) && len(line) > 0) {
 			return nil, err
 		}
-
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			break
-		}
-
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid frame header %q", line)
-		}
-
-		name := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.TrimSpace(parts[1])
-		if name == "content-length" {
-			length, err := strconv.Atoi(value)
-			if err != nil || length < 0 {
-				return nil, fmt.Errorf("invalid content length %q", value)
+		line = []byte(strings.TrimRight(string(line), "\r\n"))
+		if len(line) == 0 {
+			if errors.Is(err, io.EOF) {
+				return nil, io.EOF
 			}
-			contentLength = length
+			continue
 		}
+		return line, nil
 	}
-
-	if contentLength < 0 {
-		return nil, errors.New("missing content-length header")
-	}
-
-	payload := make([]byte, contentLength)
-	if _, err := io.ReadFull(reader, payload); err != nil {
-		return nil, err
-	}
-	return payload, nil
 }
 
 func WriteFrame(writer io.Writer, payload []byte) error {
-	if _, err := fmt.Fprintf(writer, "Content-Length: %d\r\n\r\n", len(payload)); err != nil {
-		return err
+	if strings.ContainsAny(string(payload), "\r\n") {
+		return errors.New("stdio JSON payload must not contain newlines")
 	}
-	_, err := writer.Write(payload)
+	_, err := writer.Write(append(append([]byte(nil), payload...), '\n'))
 	return err
 }
 
@@ -328,15 +331,15 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		}, http.StatusOK, nextSessionID
 	case "notifications/initialized":
 		if !s.hasSession(sessionID) {
-			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+			return s.invalidSession(request.ID, sessionID)
 		}
 		s.mu.Lock()
 		s.sessions[sessionID].Initialized = true
 		s.mu.Unlock()
-		return nil, http.StatusNoContent, sessionID
+		return nil, http.StatusAccepted, sessionID
 	case "ping":
 		if !s.hasSession(sessionID) {
-			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+			return s.invalidSession(request.ID, sessionID)
 		}
 		return &rpcResponse{
 			JSONRPC: "2.0",
@@ -345,7 +348,7 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		}, http.StatusOK, sessionID
 	case "tools/list":
 		if !s.hasSession(sessionID) {
-			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+			return s.invalidSession(request.ID, sessionID)
 		}
 		return &rpcResponse{
 			JSONRPC: "2.0",
@@ -356,7 +359,7 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		}, http.StatusOK, sessionID
 	case "tools/call":
 		if !s.hasSession(sessionID) {
-			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+			return s.invalidSession(request.ID, sessionID)
 		}
 
 		name, _ := request.Params["name"].(string)
@@ -397,6 +400,13 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 	default:
 		return errorResponse(request.ID, -32601, "method not found"), http.StatusNotFound, sessionID
 	}
+}
+
+func (s *Server) invalidSession(id any, sessionID string) (*rpcResponse, int, string) {
+	if sessionID == "" {
+		return errorResponse(id, errCodeInvalidSession, "missing session"), http.StatusBadRequest, ""
+	}
+	return errorResponse(id, errCodeInvalidSession, "unknown session"), http.StatusNotFound, ""
 }
 
 func (s *Server) hasSession(sessionID string) bool {
@@ -476,10 +486,10 @@ func (s *Server) negotiateProtocolVersion(params map[string]any) (string, error)
 	if requested == "" {
 		return s.protocolVersion, nil
 	}
-	if requested != s.protocolVersion {
-		return "", fmt.Errorf("unsupported protocol version %q", requested)
+	if requested == s.protocolVersion {
+		return requested, nil
 	}
-	return requested, nil
+	return s.protocolVersion, nil
 }
 
 func terminalToolSchema() map[string]any {

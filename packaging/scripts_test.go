@@ -85,14 +85,14 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	}
 
 	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
-	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "executor-agent.service"))
-	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "executor-broker.service"))
-	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "executor-dashboard.service"))
-	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "cloudflared.service"))
-	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd-user", "executor-desktop.service"))
+	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-agent.service"))
+	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-broker.service"))
+	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-dashboard.service"))
+	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "cloudflared.service"))
+	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "user", "executor-desktop.service"))
 	assertFileExists(t, stableExecutorPath)
 	assertFileExists(t, stableKillPath)
-	if got := readFile(t, filepath.Join(tmp, "install-root", "systemd", "executor-agent.service")); !strings.Contains(got, stableExecutorPath) {
+	if got := readFile(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-agent.service")); !strings.Contains(got, stableExecutorPath) {
 		t.Fatalf("executor-agent.service should point to stable binary %q:\n%s", stableExecutorPath, got)
 	}
 	if strings.Contains(readFile(t, logPath), bundleRoot) {
@@ -243,11 +243,13 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		"chown -R jamie:staff " + filepath.Join(tmp, "state"),
 		"chmod -R u+rwX,go-rwx " + filepath.Join(tmp, "state"),
 		"launchctl bootstrap system",
+		"launchctl bootout system/com.executor.agent",
 		"launchctl enable system/com.executor.dashboard",
 		"launchctl kickstart -k system/com.executor.dashboard",
 		"launchctl enable system/com.executor.agent",
 		"launchctl kickstart -k system/com.executor.agent",
 		"launchctl bootstrap gui/501",
+		"launchctl bootout gui/501/com.executor.desktop",
 		"launchctl enable gui/501/com.executor.desktop",
 	} {
 		if !strings.Contains(commandLog, want) {
@@ -374,6 +376,7 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 	uninstall := readFile(t, filepath.Join(repoRoot(t), "scripts", "uninstall.ps1"))
 
 	for _, want := range []string{
+		"Join-Path $env:ProgramData \"Executor\"",
 		"$DesktopTaskName = \"ExecutorDesktop\"",
 		"$DesktopUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
 		"$BundleRoot = if ($env:EXECUTOR_BUNDLE_ROOT)",
@@ -388,6 +391,11 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"Add-ManifestRecord -Kind \"scheduled-task\" -PathValue $DesktopTaskName",
 		"Record-ScheduledTaskState -DesktopTaskName $DesktopTaskName",
 		"Record-ServiceState -Name \"ExecutorDashboard\"",
+		"$OwnedServicesPath = Join-Path $StateDir \"owned-services.txt\"",
+		"Add-Content -Path $OwnedServicesPath -Value $Name",
+		"if ($OwnedServices -contains $Name)",
+		"keep-running",
+		"Refusing to replace unmanaged Windows service",
 		"& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\\install-services.ps1')",
 		"ExecutorDashboard",
 		"icacls $StateDir /grant:r",
@@ -403,9 +411,19 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 			t.Fatalf("bootstrap.ps1 missing %q:\n%s", want, bootstrap)
 		}
 	}
+	serviceInstall := strings.Index(bootstrap, "& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\\install-services.ps1')")
+	stateACL := strings.Index(bootstrap, "icacls $StateDir /grant:r")
+	serviceStart := strings.Index(bootstrap, "Start-OrRestartService -Name \"ExecutorAgent\"")
+	if serviceInstall < 0 || stateACL < 0 || serviceStart < 0 || !(serviceInstall < stateACL && stateACL < serviceStart) {
+		t.Fatalf("Windows bootstrap must create service identity before ACLs and start only afterward")
+	}
 
 	for _, want := range []string{
 		"ExecutorDashboard",
+		"$OwnedServicesPath = Join-Path $StateDir \"owned-services.txt\"",
+		"$IsUninstall = $env:EXECUTOR_UNINSTALL -eq \"1\"",
+		"$DeleteService = $Mode -eq \"delete\" -or ($IsUninstall -and $Owned)",
+		"$ServicesToRestart += $PathValue",
 		"Stop-ScheduledTask -TaskName $PathValue",
 		"Unregister-ScheduledTask -TaskName $PathValue -Confirm:$false",
 		"Register-ScheduledTask -TaskName $PathValue -Xml",
@@ -415,7 +433,7 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(uninstall, "rollback.ps1") {
+	if !strings.Contains(uninstall, "rollback.ps1") || !strings.Contains(uninstall, "$env:EXECUTOR_UNINSTALL = \"1\"") {
 		t.Fatalf("uninstall.ps1 should invoke rollback first:\n%s", uninstall)
 	}
 }

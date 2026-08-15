@@ -6,6 +6,8 @@ The project is under active construction. Do not deploy it on a production machi
 
 The packaging bundle currently installs persistent local services for `executor agent`, `executor broker`, `executor dashboard`, the active-user `executor desktop` helper, and `cloudflared`. Release artifacts also include the independent `executor-kill` emergency binary, and bootstrap installs both binaries into stable local paths before creating services.
 
+Supported MCP transports are remote Streamable HTTP at `https://<domain>/mcp` and local stdio through `executor stdio`. Legacy SSE is not currently exposed.
+
 ## Intended workflow
 
 ```bash
@@ -14,6 +16,8 @@ cd Executor
 ```
 
 Then ask your local coding agent to read `AGENTS.md` and deploy Executor on the current machine.
+
+After setup, Executor prints the domain, Streamable HTTP endpoint, local stdio command, one-time recovery key, and loopback-only Dashboard URL. Record the one-time values in a secure local password manager. The recovery key is retained only as a verifier; service credentials needed at runtime remain in the host's permission-restricted secret store.
 
 ## Security model
 

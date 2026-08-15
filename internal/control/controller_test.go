@@ -44,6 +44,18 @@ type recordingCaller struct {
 	events *[]string
 }
 
+type recordingReadiness struct {
+	events *[]string
+	err    error
+}
+
+func (r recordingReadiness) Check(context.Context, config.Config, secrets.Values) error {
+	if r.events != nil {
+		*r.events = append(*r.events, "ready")
+	}
+	return r.err
+}
+
 func (c *recordingCaller) KillAll(_ context.Context, component Service) error {
 	c.steps = append(c.steps, "kill:"+string(component))
 	if c.events != nil {
@@ -63,8 +75,16 @@ func TestKillRunsEveryStepAndReturnsRotatedRecoveryMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
-	if result.RecoveryKey == "" || result.URLSecret == "" {
+	if result.RecoveryKey == "" || result.URLSecret == "" || result.Dashboard == "" {
 		t.Fatal("Kill did not return the replacement one-time material")
+	}
+	rotated, err := secrets.Load(cfg.StateDir)
+	if err != nil {
+		t.Fatalf("Load rotated secrets: %v", err)
+	}
+	wantDashboard := "http://" + cfg.DashboardAddress + "/?token=" + rotated.DashboardKey
+	if result.Dashboard != wantDashboard {
+		t.Fatalf("Dashboard = %q, want rotated bootstrap URL", result.Dashboard)
 	}
 	if values.VerifyRecoveryKey(result.RecoveryKey) || values.VerifyURLSecret(result.URLSecret) {
 		t.Fatal("Kill returned unchanged secret material")
@@ -123,8 +143,10 @@ func TestResumeRemovesMarkerOnlyAfterAllServicesStart(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.StateDir, disabledMarkerName), []byte("quiesced\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	services := &recordingServices{}
+	var events []string
+	services := &recordingServices{events: &events}
 	controller := NewController(cfg, values, services, &recordingCaller{})
+	controller.readiness = recordingReadiness{events: &events}
 
 	if err := controller.Resume(context.Background()); err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -132,8 +154,30 @@ func TestResumeRemovesMarkerOnlyAfterAllServicesStart(t *testing.T) {
 	if got, want := services.steps, []string{"start:broker", "start:desktop", "start:agent", "start:cloudflared"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("services = %#v, want %#v", got, want)
 	}
+	if got, want := events, []string{"start:broker", "start:desktop", "start:agent", "ready", "start:cloudflared"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("resume ordering = %#v, want %#v", got, want)
+	}
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, disabledMarkerName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("disabled marker exists after successful Resume: %v", err)
+	}
+}
+
+func TestResumeKeepsMarkerWhenNewCredentialReadinessFails(t *testing.T) {
+	cfg, values := controlFixture(t)
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, disabledMarkerName), []byte("quiesced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	services := &recordingServices{}
+	controller := NewController(cfg, values, services, &recordingCaller{})
+	controller.readiness = recordingReadiness{err: errors.New("stale process")}
+	if err := controller.Resume(context.Background()); err == nil {
+		t.Fatal("Resume unexpectedly accepted stale services")
+	}
+	if got, want := services.steps, []string{"start:broker", "start:desktop", "start:agent"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("services = %#v, want no tunnel start", got)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, disabledMarkerName)); err != nil {
+		t.Fatalf("Resume removed marker after readiness failure: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,10 +78,15 @@ func (h *oauthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *oauthHandler) register(w http.ResponseWriter, r *http.Request) {
 	var request oauth.DynamicClientRegistrationRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
+	}
+	for _, redirectURI := range request.RedirectURIs {
+		if !trustedDCRRedirect(redirectURI) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect must use chatgpt.com or a loopback host")
+			return
+		}
 	}
 	client, err := h.core.RegisterClient(request)
 	if err != nil {
@@ -100,9 +106,15 @@ func (h *oauthHandler) authorizePage(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	client, ok := h.core.Client(values.Get("client_id"))
+	if !ok {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "unknown client")
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	_ = authorizeTemplate.Execute(w, map[string]string{
+		"ClientName":          client.ClientName,
 		"ClientID":            values.Get("client_id"),
 		"RedirectURI":         values.Get("redirect_uri"),
 		"Scope":               values.Get("scope"),
@@ -110,6 +122,22 @@ func (h *oauthHandler) authorizePage(w http.ResponseWriter, r *http.Request) {
 		"CodeChallenge":       values.Get("code_challenge"),
 		"CodeChallengeMethod": values.Get("code_challenge_method"),
 	})
+}
+
+func trustedDCRRedirect(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if trustedCIMDHost(host) {
+		return true
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (h *oauthHandler) authorize(w http.ResponseWriter, r *http.Request) {
@@ -278,4 +306,4 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-var authorizeTemplate = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Executor</title><style>body{margin:0;background:#11120f;color:#e8e2d5;font-family:ui-monospace,monospace;display:grid;place-items:center;min-height:100vh}.card{width:min(560px,calc(100% - 40px));border:1px solid #d7ff45;padding:32px}.eyebrow{color:#d7ff45;text-transform:uppercase;letter-spacing:.16em;font-size:12px}h1{font:900 52px/1 sans-serif;margin:14px 0}p{color:#b3b0a7;line-height:1.6}input{width:100%;box-sizing:border-box;padding:14px;background:#1d1e19;border:1px solid #55564e;color:#fff;font:inherit}button{margin-top:14px;width:100%;padding:15px;border:0;background:#d7ff45;color:#11120f;font:900 13px ui-monospace,monospace;text-transform:uppercase;cursor:pointer}.warning{border-left:3px solid #ff4d2e;padding-left:14px}</style></head><body><form class="card" method="post" action="/oauth/authorize"><div class="eyebrow">Sovereign machine control</div><h1>Executor</h1><p class="warning">This grants ChatGPT unrestricted terminal, filesystem, administrator, and active-desktop control of this machine.</p><p>Enter the recovery key shown locally during setup to approve this connection.</p><input type="password" name="recovery_key" autocomplete="off" required autofocus><input type="hidden" name="response_type" value="code"><input type="hidden" name="client_id" value="{{.ClientID}}"><input type="hidden" name="redirect_uri" value="{{.RedirectURI}}"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="state" value="{{.State}}"><input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"><input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}"><button type="submit">Authorize full control</button></form></body></html>`))
+var authorizeTemplate = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Executor</title><style>body{margin:0;background:#11120f;color:#e8e2d5;font-family:ui-monospace,monospace;display:grid;place-items:center;min-height:100vh}.card{width:min(560px,calc(100% - 40px));border:1px solid #d7ff45;padding:32px}.eyebrow{color:#d7ff45;text-transform:uppercase;letter-spacing:.16em;font-size:12px}h1{font:900 52px/1 sans-serif;margin:14px 0}p{color:#b3b0a7;line-height:1.6}code,strong{color:#fff;overflow-wrap:anywhere}input{width:100%;box-sizing:border-box;padding:14px;background:#1d1e19;border:1px solid #55564e;color:#fff;font:inherit}button{margin-top:14px;width:100%;padding:15px;border:0;background:#d7ff45;color:#11120f;font:900 13px ui-monospace,monospace;text-transform:uppercase;cursor:pointer}.warning{border-left:3px solid #ff4d2e;padding-left:14px}</style></head><body><form class="card" method="post" action="/oauth/authorize"><div class="eyebrow">Sovereign machine control</div><h1>Executor</h1><p class="warning">This grants unrestricted terminal, filesystem, administrator, and active-desktop control of this machine. Approve only if you initiated this connection.</p><p>Requesting client: <strong>{{.ClientName}}</strong><br>Redirect destination: <code>{{.RedirectURI}}</code></p><p>Enter the recovery key shown locally during setup to approve this connection.</p><input type="password" name="recovery_key" autocomplete="off" required autofocus><input type="hidden" name="response_type" value="code"><input type="hidden" name="client_id" value="{{.ClientID}}"><input type="hidden" name="redirect_uri" value="{{.RedirectURI}}"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="state" value="{{.State}}"><input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"><input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}"><button type="submit">Authorize full control</button></form></body></html>`))

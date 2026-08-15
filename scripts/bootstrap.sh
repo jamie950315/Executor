@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_ROOT="${EXECUTOR_BUNDLE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-STATE_DIR="${EXECUTOR_STATE_DIR:-executor-state}"
+STATE_DIR="${EXECUTOR_STATE_DIR:-/var/lib/executor}"
 TARGET="${EXECUTOR_TARGET:-$(uname | tr '[:upper:]' '[:lower:]')}"
 DOMAIN="${EXECUTOR_DOMAIN:?set EXECUTOR_DOMAIN}"
 EXECUTOR_INSTALL_BINARY_PATH="${EXECUTOR_INSTALL_BINARY_PATH:-/usr/local/bin/executor}"
@@ -229,11 +229,11 @@ PY
 
 bootstrap_linux() {
   root="$1"
-  install_managed_file "${TMP_BUNDLE}/systemd/executor-agent.service" "${root}/systemd/executor-agent.service" "systemd:executor-agent.service"
-  install_managed_file "${TMP_BUNDLE}/systemd/executor-broker.service" "${root}/systemd/executor-broker.service" "systemd:executor-broker.service"
-  install_managed_file "${TMP_BUNDLE}/systemd/executor-dashboard.service" "${root}/systemd/executor-dashboard.service" "systemd:executor-dashboard.service"
-  install_managed_file "${TMP_BUNDLE}/systemd/cloudflared.service" "${root}/systemd/cloudflared.service" "systemd:cloudflared.service"
-  install_managed_file "${TMP_BUNDLE}/systemd-user/executor-desktop.service" "${root}/systemd-user/executor-desktop.service" "systemd-user:executor-desktop.service"
+  install_managed_file "${TMP_BUNDLE}/systemd/executor-agent.service" "${root}/systemd/system/executor-agent.service" "systemd:executor-agent.service"
+  install_managed_file "${TMP_BUNDLE}/systemd/executor-broker.service" "${root}/systemd/system/executor-broker.service" "systemd:executor-broker.service"
+  install_managed_file "${TMP_BUNDLE}/systemd/executor-dashboard.service" "${root}/systemd/system/executor-dashboard.service" "systemd:executor-dashboard.service"
+  install_managed_file "${TMP_BUNDLE}/systemd/cloudflared.service" "${root}/systemd/system/cloudflared.service" "systemd:cloudflared.service"
+  install_managed_file "${TMP_BUNDLE}/systemd-user/executor-desktop.service" "${root}/systemd/user/executor-desktop.service" "systemd-user:executor-desktop.service"
 
   "${SYSTEMCTL_BIN}" daemon-reload
   "${SYSTEMCTL_BIN}" enable executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
@@ -252,10 +252,12 @@ bootstrap_macos() {
 
   gui_uid="$(desktop_gui_uid_macos)"
   for label in com.executor.agent com.executor.broker com.executor.dashboard com.cloudflare.cloudflared; do
+    "${LAUNCHCTL_BIN}" bootout "system/${label}" 2>/dev/null || true
     "${LAUNCHCTL_BIN}" bootstrap system "${root}/LaunchDaemons/${label}.plist"
     "${LAUNCHCTL_BIN}" enable "system/${label}"
     "${LAUNCHCTL_BIN}" kickstart -k "system/${label}"
   done
+  "${LAUNCHCTL_BIN}" bootout "gui/${gui_uid}/com.executor.desktop" 2>/dev/null || true
   "${LAUNCHCTL_BIN}" bootstrap "gui/${gui_uid}" "${root}/LaunchAgents/com.executor.desktop.plist"
   "${LAUNCHCTL_BIN}" enable "gui/${gui_uid}/com.executor.desktop"
   "${LAUNCHCTL_BIN}" kickstart -k "gui/${gui_uid}/com.executor.desktop"

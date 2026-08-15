@@ -21,7 +21,7 @@ func (f *fakeController) Snapshot(context.Context) (Snapshot, error) {
 }
 func (f *fakeController) Kill(context.Context) (KillResult, error) {
 	f.killed = true
-	return KillResult{RecoveryKey: "new-recovery-key", URLSecret: "new-url-secret"}, f.killErr
+	return KillResult{RecoveryKey: "new-recovery-key", URLSecret: "new-url-secret", Dashboard: "http://127.0.0.1:8788/?token=new-dashboard-key"}, f.killErr
 }
 func (f *fakeController) Resume(context.Context) error { f.resumed = true; return nil }
 func (f *fakeController) Rotate(context.Context) error { f.rotated = true; return nil }
@@ -61,6 +61,34 @@ func TestDashboardRequiresBootstrapTokenThenUsesStrictCookie(t *testing.T) {
 	}
 }
 
+func TestDashboardTokenProviderImmediatelyTracksExternalRotation(t *testing.T) {
+	controller := &fakeController{}
+	current := "old-local-secret"
+	h := NewHandlerWithTokenProvider(controller, func() (string, error) { return current, nil })
+
+	bootstrap := httptest.NewRecorder()
+	h.ServeHTTP(bootstrap, httptest.NewRequest(http.MethodGet, "/?token=old-local-secret", nil))
+	if bootstrap.Code != http.StatusSeeOther {
+		t.Fatalf("initial bootstrap status = %d", bootstrap.Code)
+	}
+	oldCookie := bootstrap.Result().Cookies()[0]
+
+	current = "new-local-secret"
+	oldRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	oldRequest.AddCookie(oldCookie)
+	oldResponse := httptest.NewRecorder()
+	h.ServeHTTP(oldResponse, oldRequest)
+	if oldResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("old cookie status after rotation = %d, want 401", oldResponse.Code)
+	}
+
+	newBootstrap := httptest.NewRecorder()
+	h.ServeHTTP(newBootstrap, httptest.NewRequest(http.MethodGet, "/?token=new-local-secret", nil))
+	if newBootstrap.Code != http.StatusSeeOther {
+		t.Fatalf("new bootstrap status after rotation = %d, want 303", newBootstrap.Code)
+	}
+}
+
 func TestDashboardRejectsCrossOriginMutation(t *testing.T) {
 	controller := &fakeController{}
 	h := NewHandler(controller, "local-secret")
@@ -86,7 +114,7 @@ func TestDashboardSameOriginKillReturnsOneTimeMaterial(t *testing.T) {
 	if res.Code != http.StatusOK || !controller.killed {
 		t.Fatalf("same-origin request status=%d killed=%v", res.Code, controller.killed)
 	}
-	if got := res.Body.String(); !strings.Contains(got, "new-recovery-key") || !strings.Contains(got, "new-url-secret") {
+	if got := res.Body.String(); !strings.Contains(got, "new-recovery-key") || !strings.Contains(got, "new-url-secret") || !strings.Contains(got, "new-dashboard-key") {
 		t.Fatalf("Kill response lost new one-time material: %q", got)
 	}
 }
@@ -118,7 +146,7 @@ func TestDashboardKillReturnsRecoveryMaterialAfterPartialControlFailure(t *testi
 	if res.Code != http.StatusMultiStatus {
 		t.Fatalf("partial Kill status = %d, want %d", res.Code, http.StatusMultiStatus)
 	}
-	if got := res.Body.String(); !strings.Contains(got, "new-recovery-key") || !strings.Contains(got, "new-url-secret") {
+	if got := res.Body.String(); !strings.Contains(got, "new-recovery-key") || !strings.Contains(got, "new-url-secret") || !strings.Contains(got, "new-dashboard-key") {
 		t.Fatalf("partial Kill response lost one-time material: %q", got)
 	}
 }

@@ -74,6 +74,23 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"run --token-file /etc/cloudflared/executor.token",
 	)
 
+	wsl, err := RenderBundle(TargetWSL, cfg)
+	if err != nil {
+		t.Fatalf("RenderBundle WSL: %v", err)
+	}
+	for _, name := range []string{
+		"systemd/executor-agent.service",
+		"systemd/executor-broker.service",
+		"systemd/executor-dashboard.service",
+		"systemd-user/executor-desktop.service",
+		"systemd/cloudflared.service",
+		"wsl/README.txt",
+	} {
+		if wsl.Files[name] == "" {
+			t.Fatalf("WSL bundle missing %q", name)
+		}
+	}
+
 	windows, err := RenderBundle(TargetWindows, cfg)
 	if err != nil {
 		t.Fatalf("RenderBundle windows: %v", err)

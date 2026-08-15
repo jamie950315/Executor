@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,19 +44,25 @@ type terminalKiller interface {
 	KillAll(context.Context, Service) error
 }
 
+type readinessChecker interface {
+	Check(context.Context, config.Config, secrets.Values) error
+}
+
 // Result carries the replacement secrets which must be shown exactly once by
 // the independently-run Kill executable.
 type Result struct {
 	RecoveryKey string
 	URLSecret   string
+	Dashboard   string
 }
 
 // Controller owns independent Kill and Resume operations.
 type Controller struct {
-	config   config.Config
-	secrets  secrets.Values
-	services ServiceManager
-	killer   terminalKiller
+	config    config.Config
+	secrets   secrets.Values
+	services  ServiceManager
+	killer    terminalKiller
+	readiness readinessChecker
 }
 
 // Load reads the runtime config and secret store, then creates a controller
@@ -80,13 +87,15 @@ func LoadWithServices(configPath string, services ServiceManager) (*Controller, 
 	if services == nil {
 		return nil, errors.New("service manager is required")
 	}
-	return NewController(cfg, values, services, newIPCTerminalKiller(cfg, values)), nil
+	controller := NewController(cfg, values, services, newIPCTerminalKiller(cfg, values))
+	controller.readiness = runtimeReadiness{}
+	return controller, nil
 }
 
 // NewController constructs a controller from already-loaded configuration.
 // It is useful to embedders and keeps service and IPC effects injectable.
 func NewController(cfg config.Config, values secrets.Values, services ServiceManager, killer terminalKiller) *Controller {
-	return &Controller{config: cfg, secrets: values, services: services, killer: killer}
+	return &Controller{config: cfg, secrets: values, services: services, killer: killer, readiness: noOpReadiness{}}
 }
 
 // Kill quiesces remote access, tears down active execution, revokes persisted
@@ -106,7 +115,11 @@ func (c *Controller) Kill(ctx context.Context) (Result, error) {
 		func(context.Context) error {
 			values, err := secrets.Rotate(c.config.StateDir)
 			if err == nil {
-				result = Result{RecoveryKey: values.RecoveryKey, URLSecret: values.URLSecret}
+				result = Result{
+					RecoveryKey: values.RecoveryKey,
+					URLSecret:   values.URLSecret,
+					Dashboard:   dashboardBootstrapURL(c.config.DashboardAddress, values.DashboardKey),
+				}
 			}
 			return err
 		},
@@ -120,16 +133,83 @@ func (c *Controller) Kill(ctx context.Context) (Result, error) {
 	return result, errors.Join(errs...)
 }
 
+func dashboardBootstrapURL(address, key string) string {
+	if address == "" || key == "" {
+		return ""
+	}
+	return "http://" + address + "/?token=" + key
+}
+
 // Resume starts local components before restoring the external tunnel. A
 // failure leaves the disabled marker in place and stops the startup sequence.
 func (c *Controller) Resume(ctx context.Context) error {
-	for _, service := range []Service{Broker, Desktop, Agent, Cloudflared} {
+	for _, service := range []Service{Broker, Desktop, Agent} {
 		if err := c.services.Start(ctx, service); err != nil {
 			return err
 		}
 	}
+	values, err := secrets.Load(c.config.StateDir)
+	if err != nil {
+		return err
+	}
+	if err := c.readiness.Check(ctx, c.config, values); err != nil {
+		return fmt.Errorf("services did not load rotated credentials: %w", err)
+	}
+	if err := c.services.Start(ctx, Cloudflared); err != nil {
+		return err
+	}
 	if err := os.Remove(c.markerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	return nil
+}
+
+type noOpReadiness struct{}
+
+func (noOpReadiness) Check(context.Context, config.Config, secrets.Values) error { return nil }
+
+type runtimeReadiness struct{}
+
+func (runtimeReadiness) Check(ctx context.Context, cfg config.Config, values secrets.Values) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var last error
+	for {
+		if err := checkRuntimeOnce(waitCtx, cfg, values); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+		select {
+		case <-waitCtx.Done():
+			return errors.Join(last, waitCtx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func checkRuntimeOnce(ctx context.Context, cfg config.Config, values secrets.Values) error {
+	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	var status desktop.RPCDeviceStatus
+	if err := ipc.NewRPCClient(cfg.BrokerEndpoint, []byte(values.BrokerIPCKey)).Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+		return fmt.Errorf("broker readiness: %w", err)
+	}
+	if err := ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey)).Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+		return fmt.Errorf("desktop readiness: %w", err)
+	}
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+cfg.AgentAddress+"/.executor/health", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("X-Executor-Health-Key", values.DashboardKey)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("agent readiness: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("agent readiness returned HTTP %d", response.StatusCode)
 	}
 	return nil
 }

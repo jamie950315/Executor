@@ -66,7 +66,7 @@ func (c *RuntimeController) Kill(ctx context.Context) (KillResult, error) {
 		return KillResult{}, errors.New("control controller is required")
 	}
 	result, err := c.control.Kill(ctx)
-	return KillResult{RecoveryKey: result.RecoveryKey, URLSecret: result.URLSecret}, err
+	return KillResult{RecoveryKey: result.RecoveryKey, URLSecret: result.URLSecret, Dashboard: result.Dashboard}, err
 }
 
 func (c *RuntimeController) Resume(ctx context.Context) error {

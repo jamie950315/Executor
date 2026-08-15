@@ -1,10 +1,12 @@
 $ErrorActionPreference = "Stop"
 
-$StateDir = if ($env:EXECUTOR_STATE_DIR) { $env:EXECUTOR_STATE_DIR } else { "executor-state" }
+$DefaultStateDir = if ($env:ProgramData) { Join-Path $env:ProgramData "Executor" } else { "C:\ProgramData\Executor" }
+$StateDir = if ($env:EXECUTOR_STATE_DIR) { $env:EXECUTOR_STATE_DIR } else { $DefaultStateDir }
 $InstallRoot = if ($env:EXECUTOR_INSTALL_ROOT) { $env:EXECUTOR_INSTALL_ROOT } else { Join-Path $StateDir "installed-services" }
 $BundleRoot = if ($env:EXECUTOR_BUNDLE_ROOT) { $env:EXECUTOR_BUNDLE_ROOT } else { Split-Path $PSScriptRoot -Parent }
 $BackupRoot = Join-Path $StateDir "service-backups"
 $ManifestPath = Join-Path $StateDir "service-manifest.txt"
+$OwnedServicesPath = Join-Path $StateDir "owned-services.txt"
 $Domain = $env:EXECUTOR_DOMAIN
 $ExecutorInstallPath = if ($env:EXECUTOR_INSTALL_BINARY_PATH) { $env:EXECUTOR_INSTALL_BINARY_PATH } else { Join-Path $InstallRoot "executor.exe" }
 $ExecutorKillInstallPath = if ($env:EXECUTOR_KILL_INSTALL_BINARY_PATH) { $env:EXECUTOR_KILL_INSTALL_BINARY_PATH } else { Join-Path $InstallRoot "executor-kill.exe" }
@@ -39,6 +41,10 @@ New-Item -ItemType Directory -Path (Split-Path $CloudflaredTokenPath -Parent) -F
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
 Set-Content -Path $ManifestPath -Value $null
+if (-not (Test-Path $OwnedServicesPath)) {
+  Set-Content -Path $OwnedServicesPath -Value $null
+}
+$OwnedServices = @(Get-Content -Path $OwnedServicesPath | Where-Object { $_ })
 
 function Add-ManifestRecord {
   param(
@@ -129,8 +135,21 @@ New-Item -ItemType Directory -Path $TempBundle -Force | Out-Null
 
 function Record-ServiceState {
   param([string]$Name)
-  if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) {
+  $Existing = Get-Service -Name $Name -ErrorAction SilentlyContinue
+  if (-not $Existing) {
     Add-ManifestRecord -Kind "service" -PathValue $Name -Mode "delete"
+    if ($OwnedServices -notcontains $Name) {
+      Add-Content -Path $OwnedServicesPath -Value $Name
+      $script:OwnedServices += $Name
+    }
+  } elseif ($OwnedServices -contains $Name) {
+    $Mode = if ($Existing.Status -eq "Running") { "keep-running" } else { "keep-stopped" }
+    Add-ManifestRecord -Kind "service" -PathValue $Name -Mode $Mode
+  } elseif ($Name -ne "cloudflared") {
+    throw "Refusing to replace unmanaged Windows service: $Name"
+  } else {
+    $Mode = if ($Existing.Status -eq "Running") { "keep-running" } else { "keep-stopped" }
+    Add-ManifestRecord -Kind "service" -PathValue $Name -Mode $Mode
   }
 }
 
@@ -160,6 +179,8 @@ Record-ServiceState -Name "ExecutorBroker"
 Record-ServiceState -Name "ExecutorDashboard"
 Record-ServiceState -Name "cloudflared"
 
+& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\install-services.ps1')
+
 if (Test-Path $StateDir) {
   & icacls $StateDir /grant:r "${WindowsAgentService}:(OI)(CI)(M)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
 }
@@ -181,7 +202,19 @@ if (Test-Path $CloudflaredTokenPath) {
   & icacls $CloudflaredTokenPath /inheritance:r /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
 }
 
-& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\install-services.ps1')
+function Start-OrRestartService {
+  param([string]$Name)
+  $Service = Get-Service -Name $Name -ErrorAction Stop
+  if ($Service.Status -eq "Running") {
+    Restart-Service -Name $Name -Force -ErrorAction Stop
+  } else {
+    Start-Service -Name $Name -ErrorAction Stop
+  }
+}
+
+Start-OrRestartService -Name "ExecutorBroker"
+Start-OrRestartService -Name "ExecutorDashboard"
+Start-OrRestartService -Name "ExecutorAgent"
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\register-desktop-startup.ps1')
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\configure-cloudflared.ps1')
 

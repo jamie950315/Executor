@@ -28,6 +28,7 @@ type Snapshot struct {
 type KillResult struct {
 	RecoveryKey string `json:"recovery_key"`
 	URLSecret   string `json:"url_secret"`
+	Dashboard   string `json:"dashboard"`
 }
 
 type Controller interface {
@@ -37,27 +38,39 @@ type Controller interface {
 	Rotate(context.Context) error
 }
 
+type TokenProvider func() (string, error)
+
 type handler struct {
-	controller Controller
-	token      string
+	controller    Controller
+	tokenProvider TokenProvider
 }
 
 func NewHandler(controller Controller, token string) http.Handler {
-	return &handler{controller: controller, token: token}
+	return NewHandlerWithTokenProvider(controller, func() (string, error) { return token, nil })
+
+}
+
+func NewHandlerWithTokenProvider(controller Controller, provider TokenProvider) http.Handler {
+	return &handler{controller: controller, tokenProvider: provider}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
-	if token := r.URL.Query().Get("token"); token != "" {
-		if !same(token, h.token) {
+	token, err := h.currentToken()
+	if err != nil {
+		http.Error(w, "dashboard authentication unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if candidate := r.URL.Query().Get("token"); candidate != "" {
+		if !same(candidate, token) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: h.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	if !h.authorized(r) {
+	if !h.authorized(r, token) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -81,9 +94,23 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *handler) authorized(r *http.Request) bool {
+func (h *handler) currentToken() (string, error) {
+	if h.tokenProvider == nil {
+		return "", errors.New("dashboard token provider is required")
+	}
+	token, err := h.tokenProvider()
+	if err != nil {
+		return "", err
+	}
+	if token == "" {
+		return "", errors.New("dashboard token is empty")
+	}
+	return token, nil
+}
+
+func (h *handler) authorized(r *http.Request, token string) bool {
 	cookie, err := r.Cookie(cookieName)
-	return err == nil && same(cookie.Value, h.token)
+	return err == nil && same(cookie.Value, token)
 }
 
 func same(a, b string) bool {
@@ -167,5 +194,5 @@ main{max-width:1180px;margin:auto;padding:44px 28px 72px}.mast{display:flex;just
 .credentials{margin-top:18px;border:1px solid var(--acid);padding:16px;background:#181a11}.credentials[hidden]{display:none}.credentials h3{margin:0 0 10px;color:var(--acid);font:800 13px ui-monospace,monospace;text-transform:uppercase}.credentials p{margin:7px 0;font:12px ui-monospace,monospace;overflow-wrap:anywhere}.credentials code{color:var(--paper)}.foot{margin-top:22px;font:11px ui-monospace,monospace;color:var(--muted);display:flex;justify-content:space-between}@media(max-width:760px){.grid{grid-template-columns:1fr}.mast{align-items:start;gap:20px;flex-direction:column}.services{grid-template-columns:1fr}}
 </style></head><body><main><header class="mast"><div><div class="tag">Sovereign machine control</div><div class="brand">Executor</div></div><div class="state">● {{.State}}</div></header>
 <section class="grid"><div class="panel"><div class="kicker">Public MCP endpoint</div><div class="endpoint">{{.MCPURL}}</div><div class="kicker" style="margin-top:28px">Subsystem telemetry</div><div class="services"><div class="service"><b>Agent</b><span>{{.Agent}}</span></div><div class="service"><b>Broker</b><span>{{.Broker}}</span></div><div class="service"><b>Desktop</b><span>{{.Desktop}}</span></div><div class="service"><b>Tunnel</b><span>{{.Tunnel}}</span></div></div></div>
-<aside class="panel danger"><div><div class="kicker">Emergency control</div><h2 aria-label="Kill Switch">Kill<br>Switch</h2><p>Terminates sessions, disconnects the tunnel, revokes tokens, and rotates credentials.</p></div><div class="actions"><button onclick="act('resume')">Resume</button><button onclick="act('rotate')">Rotate</button><button class="kill" onclick="act('kill')">Kill now</button></div></aside></section><section id="credentials" class="credentials" hidden><h3>New recovery material — record now</h3><p>Recovery key: <code id="recovery-key"></code></p><p>URL secret: <code id="url-secret"></code></p></section><div class="foot"><span>{{.Domain}}</span><span>LOCAL CONSOLE // 127.0.0.1</span></div></main>
-<script>async function act(name){if(name==='kill'&&!confirm('Kill Executor and revoke every active credential?'))return;const r=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json'}});if(!r.ok){alert(await r.text());return}if(name==='kill'){const result=await r.json();document.getElementById('recovery-key').textContent=result.recovery_key;document.getElementById('url-secret').textContent=result.url_secret;document.getElementById('credentials').hidden=false;return}location.reload()}</script></body></html>`))
+<aside class="panel danger"><div><div class="kicker">Emergency control</div><h2 aria-label="Kill Switch">Kill<br>Switch</h2><p>Terminates sessions, disconnects the tunnel, revokes tokens, and rotates credentials.</p></div><div class="actions"><button onclick="act('resume')">Resume</button><button onclick="act('rotate')">Rotate</button><button class="kill" onclick="act('kill')">Kill now</button></div></aside></section><section id="credentials" class="credentials" hidden><h3>New recovery material — record now</h3><p>Recovery key: <code id="recovery-key"></code></p><p>URL secret: <code id="url-secret"></code></p><p>Dashboard URL: <code id="dashboard-url"></code></p></section><div class="foot"><span>{{.Domain}}</span><span>LOCAL CONSOLE // 127.0.0.1</span></div></main>
+<script>async function act(name){if(name==='kill'&&!confirm('Kill Executor and revoke every active credential?'))return;const r=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json'}});if(!r.ok){alert(await r.text());return}if(name==='kill'){const result=await r.json();document.getElementById('recovery-key').textContent=result.recovery_key;document.getElementById('url-secret').textContent=result.url_secret;document.getElementById('dashboard-url').textContent=result.dashboard;document.getElementById('credentials').hidden=false;return}location.reload()}</script></body></html>`))

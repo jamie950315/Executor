@@ -41,6 +41,10 @@ Release artifacts include both `executor` and `executor-kill`. The bootstrap scr
 - Unix defaults: `/usr/local/bin/executor` and `/usr/local/bin/executor-kill`
 - Windows defaults: `<install-root>/executor.exe` and `<install-root>/executor-kill.exe`
 
+Persistent state also uses a stable default so lifecycle commands continue to work from a new terminal: `/var/lib/executor` on macOS/Linux/WSL and `%ProgramData%\Executor` on Windows. Set `EXECUTOR_STATE_DIR` to override it consistently for setup, services, rollback, and CLI commands.
+
+Setup reports the remote Streamable HTTP endpoint and local `executor stdio` command. Legacy SSE is not part of the current release. Every successful credential rotation also returns a new loopback Dashboard bootstrap URL; Dashboard authentication follows the current on-disk key immediately, so an old cookie stops working after an external `executor-kill` rotation.
+
 Service templates always point at the stable installed `executor` path, never at the temporary extracted archive location.
 
 ## Rollback
@@ -58,4 +62,11 @@ Service templates always point at the stable installed `executor` path, never at
 
 - `.github/workflows/go.yml` runs `go test ./...` on Linux, macOS, and Windows.
 - `scripts/build-release-artifacts.sh` cross-builds both `executor` and `executor-kill` for `darwin`, `linux`, and `windows` on `amd64` and `arm64`, packages each install bundle, and writes `SHA256SUMS.txt`.
+- Darwin release jobs run on macOS with CGO enabled so desktop input uses native CoreGraphics rather than the no-CGO Swift fallback.
 - `.github/workflows/release.yml` runs the build matrix, uploads per-target artifacts, and publishes consolidated checksums.
+
+## Current platform verification boundary
+
+- macOS arm64 has process-level end-to-end evidence for OAuth, MCP, owner terminal/filesystem, desktop observation, screenshot, Kill, Resume, and Dashboard key rollover. System LaunchDaemon installation and root Broker execution have not been exercised from this checkout.
+- Linux, WSL, and Windows currently have automated tests and cross-build evidence only.
+- Windows terminal execution currently uses persistent redirected pipes, not ConPTY, so full interactive-console behavior is not yet claimed.

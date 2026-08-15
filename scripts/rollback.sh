@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STATE_DIR="${EXECUTOR_STATE_DIR:-executor-state}"
+STATE_DIR="${EXECUTOR_STATE_DIR:-/var/lib/executor}"
 TARGET="${EXECUTOR_TARGET:-$(uname | tr '[:upper:]' '[:lower:]')}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
 LAUNCHCTL_BIN="${LAUNCHCTL_BIN:-launchctl}"

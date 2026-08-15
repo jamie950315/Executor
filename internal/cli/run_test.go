@@ -13,6 +13,8 @@ type fakeBackend struct {
 	called       string
 	setupOptions SetupOptions
 	killErr      error
+	rotateErr    error
+	enableErr    error
 }
 
 func (f *fakeBackend) Setup(_ context.Context, options SetupOptions) (SetupResult, error) {
@@ -26,12 +28,21 @@ func (f *fakeBackend) Status(context.Context) (Status, error) {
 }
 func (f *fakeBackend) Kill(context.Context) (RotateResult, error) {
 	f.called = "kill"
-	return RotateResult{RecoveryKey: "kill-recovery-once", URLSecret: "kill-url-once"}, f.killErr
+	return RotateResult{RecoveryKey: "kill-recovery-once", URLSecret: "kill-url-once", Dashboard: "http://127.0.0.1:8788/?token=kill-dashboard-once"}, f.killErr
 }
 func (f *fakeBackend) Resume(context.Context) error { f.called = "resume"; return nil }
 func (f *fakeBackend) Rotate(context.Context) (RotateResult, error) {
 	f.called = "rotate"
-	return RotateResult{URLSecret: "rotated-once", RecoveryKey: "new-recovery-once"}, nil
+	return RotateResult{URLSecret: "rotated-once", RecoveryKey: "new-recovery-once", Dashboard: "http://127.0.0.1:8788/?token=rotated-dashboard-once"}, f.rotateErr
+}
+
+func TestRunRotatePreservesMaterialWhenResumeFails(t *testing.T) {
+	backend := &fakeBackend{rotateErr: errors.New("resume failed")}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"rotate"}, backend, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stdout.String(), "new-recovery-once") || !strings.Contains(stdout.String(), "rotated-dashboard-once") || !strings.Contains(stderr.String(), "resume failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
 }
 
 func TestRunRotatePrintsNewRecoveryMaterialOnce(t *testing.T) {
@@ -41,7 +52,7 @@ func TestRunRotatePrintsNewRecoveryMaterialOnce(t *testing.T) {
 	if code != 0 || backend.called != "rotate" {
 		t.Fatalf("code=%d called=%q stderr=%q", code, backend.called, stderr.String())
 	}
-	for _, text := range []string{"rotated-once", "new-recovery-once", "shown once"} {
+	for _, text := range []string{"rotated-once", "new-recovery-once", "rotated-dashboard-once", "shown once"} {
 		if !strings.Contains(stdout.String(), text) {
 			t.Fatalf("rotate output %q missing %q", stdout.String(), text)
 		}
@@ -51,9 +62,9 @@ func (f *fakeBackend) Doctor(context.Context, bool) (DoctorResult, error) {
 	f.called = "doctor"
 	return DoctorResult{Healthy: true, Checks: []Check{{Name: "agent", OK: true}}}, nil
 }
-func (f *fakeBackend) EnableURLSecret(context.Context) (string, error) {
+func (f *fakeBackend) EnableURLSecret(context.Context) (RotateResult, error) {
 	f.called = "auth-enable-url-secret"
-	return "https://executor.example.com/secret/mcp", nil
+	return RotateResult{Endpoint: "https://executor.example.com/secret/mcp", RecoveryKey: "url-mode-recovery", URLSecret: "url-mode-secret", Dashboard: "http://127.0.0.1:8788/?token=url-mode-dashboard"}, f.enableErr
 }
 
 func TestRunStatusJSON(t *testing.T) {
@@ -69,6 +80,15 @@ func TestRunStatusJSON(t *testing.T) {
 	}
 }
 
+func TestRunEnableURLSecretPreservesRotatedMaterialOnResumeFailure(t *testing.T) {
+	backend := &fakeBackend{enableErr: errors.New("resume failed")}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"auth", "enable-url-secret"}, backend, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stdout.String(), "url-mode-recovery") || !strings.Contains(stdout.String(), "url-mode-dashboard") || !strings.Contains(stderr.String(), "resume failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunKillAndResume(t *testing.T) {
 	for _, command := range []string{"kill", "resume"} {
 		backend := &fakeBackend{}
@@ -79,7 +99,7 @@ func TestRunKillAndResume(t *testing.T) {
 		if backend.called != command || !strings.Contains(strings.ToLower(stdout.String()), command) {
 			t.Fatalf("%s called=%q stdout=%q", command, backend.called, stdout.String())
 		}
-		if command == "kill" && (!strings.Contains(stdout.String(), "kill-recovery-once") || !strings.Contains(stdout.String(), "shown once")) {
+		if command == "kill" && (!strings.Contains(stdout.String(), "kill-recovery-once") || !strings.Contains(stdout.String(), "kill-dashboard-once") || !strings.Contains(stdout.String(), "shown once")) {
 			t.Fatalf("kill output omitted one-time recovery material: %q", stdout.String())
 		}
 	}
@@ -89,7 +109,7 @@ func TestRunKillPreservesRotatedCredentialsOnPartialFailure(t *testing.T) {
 	backend := &fakeBackend{killErr: errors.New("desktop already stopped")}
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"kill"}, backend, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stdout.String(), "kill-recovery-once") || !strings.Contains(stderr.String(), "desktop already stopped") {
+	if code != 1 || !strings.Contains(stdout.String(), "kill-recovery-once") || !strings.Contains(stdout.String(), "kill-dashboard-once") || !strings.Contains(stderr.String(), "desktop already stopped") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
@@ -120,7 +140,7 @@ func TestRunSetupPrintsOneTimeConnectionMaterial(t *testing.T) {
 	if got := backend.setupOptions.CloudflareTunnelName; got != "executor-prod" {
 		t.Fatalf("cloudflare tunnel name = %q", got)
 	}
-	for _, text := range []string{"executor.example.com", "https://executor.example.com/mcp", "recovery-once", "shown once"} {
+	for _, text := range []string{"executor.example.com", "https://executor.example.com/mcp", "Streamable HTTP", "executor stdio", "recovery-once", "shown once"} {
 		if !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(text)) {
 			t.Fatalf("setup output %q missing %q", stdout.String(), text)
 		}

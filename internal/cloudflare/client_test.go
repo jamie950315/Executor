@@ -235,6 +235,9 @@ func TestApplyRollsBackTokenFileWhenDNSUpdateFails(t *testing.T) {
 
 	var deletedTunnel bool
 	tokenPath := filepath.Join(t.TempDir(), "cloudflared.token")
+	if err := os.WriteFile(tokenPath, []byte("previous-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-1/cfd_tunnel":
@@ -281,8 +284,8 @@ func TestApplyRollsBackTokenFileWhenDNSUpdateFails(t *testing.T) {
 	if !deletedTunnel {
 		t.Fatal("expected rollback to delete the created tunnel")
 	}
-	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
-		t.Fatalf("token file should be removed on rollback, err=%v", err)
+	if got, err := os.ReadFile(tokenPath); err != nil || string(got) != "previous-token\n" {
+		t.Fatalf("token file should be restored on rollback, content=%q err=%v", got, err)
 	}
 }
 

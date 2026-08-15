@@ -160,6 +160,13 @@ func (c *Client) Apply(ctx context.Context, req DeploymentRequest) (DeploymentRe
 		_ = c.rollback(ctx, created)
 		return out, err
 	}
+	if previous, readErr := os.ReadFile(req.TokenFilePath); readErr == nil {
+		created.PreviousTokenFile = previous
+		created.TokenFileExisted = true
+	} else if !os.IsNotExist(readErr) {
+		_ = c.rollback(ctx, created)
+		return out, readErr
+	}
 	if err := WriteTunnelTokenFile(req.TokenFilePath, tunnelToken); err != nil {
 		_ = c.rollback(ctx, created)
 		return out, err
@@ -323,7 +330,11 @@ func (c *Client) EnsureDNSRecord(ctx context.Context, zoneID, hostname, target s
 func (c *Client) rollback(ctx context.Context, state rollbackState) error {
 	var errs []error
 	if state.TokenFilePath != "" {
-		if err := os.Remove(state.TokenFilePath); err != nil && !os.IsNotExist(err) {
+		if state.TokenFileExisted {
+			if err := restoreTokenFile(state.TokenFilePath, state.PreviousTokenFile); err != nil {
+				errs = append(errs, err)
+			}
+		} else if err := os.Remove(state.TokenFilePath); err != nil && !os.IsNotExist(err) {
 			errs = append(errs, err)
 		}
 	}
@@ -357,6 +368,22 @@ func (c *Client) rollback(ctx context.Context, state rollbackState) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func restoreTokenFile(path string, data []byte) error {
+	tmp := path + ".rollback.tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (t Tunnel) CNAMETarget() string {
@@ -491,6 +518,8 @@ type rollbackState struct {
 	TunnelID             string
 	DNSRecordID          string
 	TokenFilePath        string
+	PreviousTokenFile    []byte
+	TokenFileExisted     bool
 	PreviousTunnelConfig map[string]any
 	PreviousDNSRecord    *DNSRecord
 }

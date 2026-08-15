@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jamie950315/executor/internal/agent"
+	"github.com/jamie950315/executor/internal/audit"
 	"github.com/jamie950315/executor/internal/broker"
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/control"
@@ -101,11 +103,14 @@ func RunAgent(ctx context.Context, configPath string) error {
 		return fmt.Errorf("load OAuth state: %w", err)
 	}
 
-	dispatcher := newDispatcher(cfg, values)
+	dispatcher, err := newAuditedDispatcher(cfg, values)
+	if err != nil {
+		return err
+	}
 	mcpServer := mcp.NewServer(mcp.ServerConfig{
 		ServerName:    "Executor",
 		ServerVersion: serverVersion,
-		Dispatcher:    dispatcher.Dispatch,
+		Dispatcher:    dispatcher,
 	})
 
 	var verifyURLSecret agent.URLSecretVerifier
@@ -126,6 +131,19 @@ func RunAgent(ctx context.Context, configPath string) error {
 	)
 
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/.executor/health" {
+			if request.Method != http.MethodGet {
+				writer.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			candidate := request.Header.Get("X-Executor-Health-Key")
+			if len(candidate) != len(values.DashboardKey) || subtle.ConstantTimeCompare([]byte(candidate), []byte(values.DashboardKey)) != 1 {
+				http.Error(writer, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if disabled(filepath.Join(cfg.StateDir, "disabled")) {
 			http.Error(writer, "Executor is disabled", http.StatusServiceUnavailable)
 			return
@@ -163,9 +181,15 @@ func RunDashboard(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load dashboard control: %w", err)
 	}
-	handler := dashboard.NewHandler(
+	handler := dashboard.NewHandlerWithTokenProvider(
 		dashboard.NewRuntimeController(cfg, values, lifecycle),
-		values.DashboardKey,
+		func() (string, error) {
+			current, err := secrets.Load(cfg.StateDir)
+			if err != nil {
+				return "", err
+			}
+			return current.DashboardKey, nil
+		},
 	)
 	listener, err := net.Listen("tcp", cfg.DashboardAddress)
 	if err != nil {
@@ -199,11 +223,14 @@ func RunStdio(ctx context.Context, configPath string, in io.Reader, out io.Write
 		return err
 	}
 
-	dispatcher := newDispatcher(cfg, values)
+	dispatcher, err := newAuditedDispatcher(cfg, values)
+	if err != nil {
+		return err
+	}
 	handler := mcp.NewStdioHandler(mcp.NewServer(mcp.ServerConfig{
 		ServerName:    "Executor",
 		ServerVersion: serverVersion,
-		Dispatcher:    dispatcher.Dispatch,
+		Dispatcher:    dispatcher,
 	}))
 
 	done := make(chan error, 1)
@@ -241,6 +268,47 @@ func newDispatcher(cfg config.Config, values secrets.Values) *dispatch.MCP {
 		ipc.NewRPCClient(cfg.BrokerEndpoint, []byte(values.BrokerIPCKey)),
 		ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey)),
 	)
+}
+
+func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatcher, error) {
+	store, err := audit.Open(filepath.Join(cfg.StateDir, "audit.jsonl"), time.Duration(cfg.AuditRetentionH)*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("open audit store: %w", err)
+	}
+	if err := store.Prune(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("prune audit store: %w", err)
+	}
+	dispatcher := newDispatcher(cfg, values)
+	return func(ctx context.Context, call mcp.ToolCall) (any, error) {
+		actorName := "local-stdio"
+		if actor, ok := agent.ActorFromContext(ctx); ok {
+			actorName = actor.Subject
+		}
+		event := audit.Event{
+			Actor:     actorName,
+			Tool:      call.Name,
+			SessionID: call.SessionID,
+			Identity:  stringArgument(call.Arguments, "privilege"),
+			CWD:       stringArgument(call.Arguments, "cwd"),
+			Outcome:   "attempted",
+		}
+		if err := store.Append(event); err != nil {
+			return nil, fmt.Errorf("append audit event: %w", err)
+		}
+		result, dispatchErr := dispatcher.Dispatch(ctx, call)
+		if dispatchErr != nil {
+			event.Outcome = "failed"
+		} else {
+			event.Outcome = "succeeded"
+		}
+		_ = store.Append(event)
+		return result, dispatchErr
+	}, nil
+}
+
+func stringArgument(arguments map[string]any, name string) string {
+	value, _ := arguments[name].(string)
+	return value
 }
 
 func publicResource(domain string) (string, error) {

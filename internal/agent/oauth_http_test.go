@@ -61,7 +61,7 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 	}
 	authorizePage := httptest.NewRecorder()
 	h.ServeHTTP(authorizePage, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
-	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), "Executor") {
+	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), "ChatGPT") || !strings.Contains(authorizePage.Body.String(), client.RedirectURIs[0]) {
 		t.Fatalf("authorize page status=%d body=%q", authorizePage.Code, authorizePage.Body.String())
 	}
 
@@ -120,6 +120,46 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		ClientID: client.ClientID, RefreshToken: tokens.RefreshToken, Scopes: []string{"executor.full"},
 	}); err != nil {
 		t.Fatalf("refresh after restart: %v", err)
+	}
+}
+
+func TestOAuthHTTPRejectsDCRRedirectOutsideChatGPTOrLoopback(t *testing.T) {
+	core := testOAuthCore(t)
+	h := NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true })
+	request := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(`{"client_name":"ChatGPT","redirect_uris":["https://attacker.example/callback"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("untrusted redirect status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestOAuthHTTPAcceptsStandardDynamicClientRegistrationMetadata(t *testing.T) {
+	core := testOAuthCore(t)
+	h := NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true })
+	body := `{
+		"client_name":"ChatGPT",
+		"redirect_uris":["https://chatgpt.com/connector/oauth/executor"],
+		"scope":"executor.full executor.desktop",
+		"token_endpoint_auth_method":"none",
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"software_id":"chatgpt"
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("standard DCR status=%d body=%q", response.Code, response.Body.String())
+	}
+	var registration oauth.ClientRegistration
+	if err := json.Unmarshal(response.Body.Bytes(), &registration); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(registration.Scopes, " "), "executor.full executor.desktop"; got != want {
+		t.Fatalf("registered scopes = %q, want %q", got, want)
 	}
 }
 

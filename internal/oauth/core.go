@@ -62,19 +62,25 @@ type AuthorizationServerMetadata struct {
 	GrantTypesSupported           []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`
+	ScopesSupported               []string `json:"scopes_supported"`
 }
 
 type ProtectedResourceMetadata struct {
 	Resource                 string   `json:"resource"`
 	AuthorizationServers     []string `json:"authorization_servers"`
 	BearerMethodsSupported   []string `json:"bearer_methods_supported"`
+	ScopesSupported          []string `json:"scopes_supported"`
 	ResourceDocumentationURL string   `json:"resource_documentation,omitempty"`
 }
 
 type DynamicClientRegistrationRequest struct {
-	ClientName   string   `json:"client_name"`
-	RedirectURIs []string `json:"redirect_uris"`
-	Scopes       []string `json:"scopes,omitempty"`
+	ClientName              string   `json:"client_name"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	Scope                   string   `json:"scope,omitempty"`
+	Scopes                  []string `json:"scopes,omitempty"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string `json:"grant_types,omitempty"`
+	ResponseTypes           []string `json:"response_types,omitempty"`
 }
 
 type ClientIDURLRegistrationRequest struct {
@@ -93,6 +99,7 @@ type ClientRegistration struct {
 	ClientID                string   `json:"client_id"`
 	ClientName              string   `json:"client_name"`
 	RedirectURIs            []string `json:"redirect_uris"`
+	Scope                   string   `json:"scope,omitempty"`
 	Scopes                  []string `json:"scopes,omitempty"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	GrantTypes              []string `json:"grant_types"`
@@ -263,6 +270,7 @@ func (c *Core) AuthorizationServerMetadata() AuthorizationServerMetadata {
 		GrantTypesSupported:           []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported: []string{"S256"},
 		TokenEndpointAuthMethods:      []string{"none"},
+		ScopesSupported:               []string{"executor.full"},
 	}
 }
 
@@ -271,6 +279,7 @@ func (c *Core) ProtectedResourceMetadata() ProtectedResourceMetadata {
 		Resource:               c.resource,
 		AuthorizationServers:   []string{c.issuer},
 		BearerMethodsSupported: []string{"header"},
+		ScopesSupported:        []string{"executor.full"},
 	}
 }
 
@@ -278,12 +287,25 @@ func (c *Core) RegisterClient(request DynamicClientRegistrationRequest) (ClientR
 	if err := validateRedirectURIs(request.RedirectURIs); err != nil {
 		return ClientRegistration{}, err
 	}
+	if request.TokenEndpointAuthMethod != "" && request.TokenEndpointAuthMethod != "none" {
+		return ClientRegistration{}, errors.New("only token_endpoint_auth_method none is supported")
+	}
+	if !supportedValues(request.GrantTypes, "authorization_code", "refresh_token") {
+		return ClientRegistration{}, errors.New("unsupported grant_types")
+	}
+	if !supportedValues(request.ResponseTypes, "code") {
+		return ClientRegistration{}, errors.New("unsupported response_types")
+	}
+	scopes := append([]string(nil), request.Scopes...)
+	scopes = append(scopes, strings.Fields(request.Scope)...)
+	scopes = dedupeScopes(scopes)
 
 	client := ClientRegistration{
 		ClientID:                randomID("client"),
 		ClientName:              fallback(request.ClientName, "Executor Client"),
 		RedirectURIs:            append([]string(nil), request.RedirectURIs...),
-		Scopes:                  dedupeScopes(request.Scopes),
+		Scope:                   strings.Join(scopes, " "),
+		Scopes:                  scopes,
 		TokenEndpointAuthMethod: "none",
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
@@ -296,6 +318,15 @@ func (c *Core) RegisterClient(request DynamicClientRegistrationRequest) (ClientR
 	return client, nil
 }
 
+func supportedValues(values []string, supported ...string) bool {
+	for _, value := range values {
+		if !slices.Contains(supported, value) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Core) RegisterClientIDURL(request ClientIDURLRegistrationRequest) (ClientRegistration, error) {
 	if err := validateClientIDURL(request.ClientIDURL); err != nil {
 		return ClientRegistration{}, err
@@ -304,11 +335,13 @@ func (c *Core) RegisterClientIDURL(request ClientIDURLRegistrationRequest) (Clie
 		return ClientRegistration{}, err
 	}
 
+	scopes := dedupeScopes(request.Scopes)
 	client := ClientRegistration{
 		ClientID:                request.ClientIDURL,
 		ClientName:              fallback(request.ClientName, "Executor Client"),
 		RedirectURIs:            append([]string(nil), request.RedirectURIs...),
-		Scopes:                  dedupeScopes(request.Scopes),
+		Scope:                   strings.Join(scopes, " "),
+		Scopes:                  scopes,
 		TokenEndpointAuthMethod: "none",
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
@@ -336,6 +369,10 @@ func (c *Core) ValidateClient(request ClientValidationRequest) error {
 		return errors.New("redirect URI mismatch")
 	}
 	return nil
+}
+
+func (c *Core) Client(clientID string) (ClientRegistration, bool) {
+	return c.lookupClient(clientID)
 }
 
 func (c *Core) Authorize(request AuthorizeRequest) (AuthorizationCodeGrant, error) {

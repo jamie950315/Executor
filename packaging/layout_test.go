@@ -38,6 +38,20 @@ func TestPackagingScaffoldExists(t *testing.T) {
 	}
 }
 
+func TestDarwinReleaseRunsOnMacOSForNativeDesktopEvents(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(mustReadFile(t, filepath.Join(root, ".github", "workflows", "release.yml")))
+	if !strings.Contains(workflow, "goos: darwin\n            goarch: amd64\n            runner: macos-latest") ||
+		!strings.Contains(workflow, "goos: darwin\n            goarch: arm64\n            runner: macos-latest") ||
+		!strings.Contains(workflow, "runs-on: ${{ matrix.runner }}") {
+		t.Fatalf("Darwin releases must be built on macOS with CGO desktop events:\n%s", workflow)
+	}
+}
+
 func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	t.Parallel()
 

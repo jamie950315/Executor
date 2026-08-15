@@ -1,11 +1,15 @@
 $ErrorActionPreference = "Stop"
 
-$StateDir = if ($env:EXECUTOR_STATE_DIR) { $env:EXECUTOR_STATE_DIR } else { "executor-state" }
+$DefaultStateDir = if ($env:ProgramData) { Join-Path $env:ProgramData "Executor" } else { "C:\ProgramData\Executor" }
+$StateDir = if ($env:EXECUTOR_STATE_DIR) { $env:EXECUTOR_STATE_DIR } else { $DefaultStateDir }
 $InstallRoot = if ($env:EXECUTOR_INSTALL_ROOT) { $env:EXECUTOR_INSTALL_ROOT } else { Join-Path $StateDir "installed-services" }
 $BackupRoot = Join-Path $StateDir "service-backups"
 $ManifestPath = Join-Path $StateDir "service-manifest.txt"
+$OwnedServicesPath = Join-Path $StateDir "owned-services.txt"
 $CloudflaredTokenPath = if ($env:CLOUDFLARED_TOKEN_PATH) { $env:CLOUDFLARED_TOKEN_PATH } else { Join-Path $StateDir "cloudflared\executor.token" }
 $CloudflaredBackupPath = Join-Path (Split-Path $CloudflaredTokenPath -Parent) "cloudflared-service-imagepath.bak"
+$IsUninstall = $env:EXECUTOR_UNINSTALL -eq "1"
+$ServicesToRestart = @()
 
 if (-not (Test-Path $ManifestPath)) {
   Write-Host "no manifest found at $ManifestPath"
@@ -46,8 +50,17 @@ foreach ($Entry in $ManifestEntries) {
       }
     }
     "service" {
-      if ($Mode -eq "delete" -and (Get-Service -Name $PathValue -ErrorAction SilentlyContinue)) {
+      $Owned = (Test-Path $OwnedServicesPath) -and ((Get-Content -Path $OwnedServicesPath) -contains $PathValue)
+      $DeleteService = $Mode -eq "delete" -or ($IsUninstall -and $Owned)
+      if ($DeleteService -and (Get-Service -Name $PathValue -ErrorAction SilentlyContinue)) {
         & sc.exe delete $PathValue | Out-Null
+      }
+      if ($DeleteService -and (Test-Path $OwnedServicesPath)) {
+        $RemainingServices = @(Get-Content -Path $OwnedServicesPath | Where-Object { $_ -and $_ -ne $PathValue })
+        Set-Content -Path $OwnedServicesPath -Value $RemainingServices
+      }
+      if (-not $DeleteService -and $Mode -eq "keep-running") {
+        $ServicesToRestart += $PathValue
       }
     }
     "file" {
@@ -75,9 +88,15 @@ foreach ($Entry in $ManifestEntries) {
   }
 }
 
-if (Test-Path $CloudflaredBackupPath) {
+if ((Test-Path $CloudflaredBackupPath) -and (Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue)) {
   $ImagePath = Get-Content -Path $CloudflaredBackupPath -Raw
   Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\cloudflared" -Name ImagePath -Value $ImagePath.Trim()
+}
+
+foreach ($ServiceName in $ServicesToRestart) {
+  if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+  }
 }
 
 Write-Host "restored managed services from $ManifestPath"

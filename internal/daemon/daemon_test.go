@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jamie950315/executor/internal/audit"
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/ipc"
@@ -194,7 +195,7 @@ func TestRunDashboardServesLoopbackStatusWithoutSecretsAndStopsOnCancel(t *testi
 }
 
 func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {
-	configPath, cfg, _ := daemonFixture(t)
+	configPath, cfg, values := daemonFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := startDaemon(t, func() error { return RunAgent(ctx, configPath) })
@@ -208,6 +209,13 @@ func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("quiesced status = %d, want 503", response.StatusCode)
+	}
+	healthHeader := make(http.Header)
+	healthHeader.Set("X-Executor-Health-Key", values.DashboardKey)
+	response = waitForHTTP(t, http.MethodGet, baseURL+"/.executor/health", nil, healthHeader)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("authenticated health status = %d, want 204", response.StatusCode)
 	}
 	cancel()
 	assertDaemonStopped(t, errCh)
@@ -319,7 +327,7 @@ func TestRunAgentRestoresAndPersistsOAuthState(t *testing.T) {
 
 	registration, err := json.Marshal(oauth.DynamicClientRegistrationRequest{
 		ClientName:   "Persisted Client",
-		RedirectURIs: []string{"https://persisted.example.test/callback"},
+		RedirectURIs: []string{"https://chatgpt.com/connector/oauth/persisted"},
 		Scopes:       []string{"executor.full"},
 	})
 	if err != nil {
@@ -356,13 +364,13 @@ func TestRunAgentRestoresAndPersistsOAuthState(t *testing.T) {
 	if err := restored.LoadState(statePath); err != nil {
 		t.Fatalf("load persisted OAuth state: %v", err)
 	}
-	if err := restored.ValidateClient(oauth.ClientValidationRequest{ClientID: persisted.ClientID, RedirectURI: "https://persisted.example.test/callback"}); err != nil {
+	if err := restored.ValidateClient(oauth.ClientValidationRequest{ClientID: persisted.ClientID, RedirectURI: "https://chatgpt.com/connector/oauth/persisted"}); err != nil {
 		t.Fatalf("persisted OAuth client unavailable after restart: %v", err)
 	}
 }
 
 func TestRunStdioDispatchesWithoutOAuth(t *testing.T) {
-	configPath, _, _ := daemonFixture(t)
+	configPath, cfg, _ := daemonFixture(t)
 	brokerCtx, cancelBroker := context.WithCancel(context.Background())
 	desktopCtx, cancelDesktop := context.WithCancel(context.Background())
 	brokerErr := startDaemon(t, func() error { return RunBroker(brokerCtx, configPath) })
@@ -400,6 +408,20 @@ func TestRunStdioDispatchesWithoutOAuth(t *testing.T) {
 	decodeMCPFrame(t, reader, &call)
 	if call.Result.IsError {
 		t.Fatal("stdio dispatcher returned an MCP tool error")
+	}
+	store, err := audit.Open(filepath.Join(cfg.StateDir, "audit.jsonl"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.List(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[len(events)-1].Tool != "terminal_sessions" || events[len(events)-1].Identity != "owner" || events[len(events)-1].Outcome != "succeeded" {
+		t.Fatalf("missing metadata-only audit event: %#v", events)
+	}
+	if events[len(events)-1].Detail != "" {
+		t.Fatalf("audit event should not contain command arguments or output: %#v", events[len(events)-1])
 	}
 }
 

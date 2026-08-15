@@ -14,17 +14,23 @@ jobs:
         include:
           - goos: darwin
             goarch: amd64
+            runner: macos-latest
           - goos: darwin
             goarch: arm64
+            runner: macos-latest
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
           - goos: linux
             goarch: arm64
+            runner: ubuntu-latest
           - goos: windows
             goarch: amd64
+            runner: ubuntu-latest
           - goos: windows
             goarch: arm64
-    runs-on: ubuntu-latest
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

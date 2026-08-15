@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -74,6 +75,14 @@ func TestDoctorReportsOfflineRuntime(t *testing.T) {
 	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	cfg.AgentAddress = "127.0.0.1:0"
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save isolated config: %v", err)
+	}
 
 	result, err := b.Doctor(context.Background(), false)
 	if err != nil {
@@ -136,6 +145,21 @@ func TestBackendHonorsInstallerManagedPathsFromEnvironment(t *testing.T) {
 	}
 	if got := b.cloudflaredTokenPath(); got != tokenPath {
 		t.Fatalf("cloudflaredTokenPath = %q, want installer path %q", got, tokenPath)
+	}
+}
+
+func TestDefaultStateDirUsesStableInstalledLocation(t *testing.T) {
+	t.Setenv("EXECUTOR_STATE_DIR", "")
+	if runtime.GOOS == "windows" {
+		programData := filepath.Join(t.TempDir(), "ProgramData")
+		t.Setenv("ProgramData", programData)
+		if got, want := defaultStateDir(), filepath.Join(programData, "Executor"); got != want {
+			t.Fatalf("defaultStateDir = %q, want %q", got, want)
+		}
+		return
+	}
+	if got, want := defaultStateDir(), "/var/lib/executor"; got != want {
+		t.Fatalf("defaultStateDir = %q, want %q", got, want)
 	}
 }
 

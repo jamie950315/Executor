@@ -39,6 +39,9 @@ func TestMetadataAndDynamicClientRegistration(t *testing.T) {
 	if got := authz.CodeChallengeMethodsSupported; len(got) != 1 || got[0] != "S256" {
 		t.Fatalf("code challenge methods = %#v, want [S256]", got)
 	}
+	if got := authz.ScopesSupported; len(got) != 1 || got[0] != "executor.full" {
+		t.Fatalf("authorization scopes = %#v, want [executor.full]", got)
+	}
 
 	resource := core.ProtectedResourceMetadata()
 	if resource.Resource != "https://executor.example.com" {
@@ -46,6 +49,9 @@ func TestMetadataAndDynamicClientRegistration(t *testing.T) {
 	}
 	if len(resource.AuthorizationServers) != 1 || resource.AuthorizationServers[0] != authz.Issuer {
 		t.Fatalf("authorization servers = %#v, want [%q]", resource.AuthorizationServers, authz.Issuer)
+	}
+	if got := resource.ScopesSupported; len(got) != 1 || got[0] != "executor.full" {
+		t.Fatalf("resource scopes = %#v, want [executor.full]", got)
 	}
 
 	client, err := core.RegisterClient(DynamicClientRegistrationRequest{

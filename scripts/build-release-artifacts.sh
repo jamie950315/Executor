@@ -8,6 +8,14 @@ BUILD_TARGETS="${EXECUTOR_BUILD_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 l
 mkdir -p "${OUT_DIR}"
 rm -f "${OUT_DIR}"/SHA256SUMS.txt
 
+checksum() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  else
+    shasum -a 256 "$1"
+  fi
+}
+
 for target in ${BUILD_TARGETS}; do
   IFS=/ read -r GOOS GOARCH <<<"${target}"
   ARCHIVE_NAME="executor_${GOOS}_${GOARCH}"
@@ -19,17 +27,21 @@ for target in ${BUILD_TARGETS}; do
     KILL_BINARY="${KILL_BINARY}.exe"
   fi
 
-  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${EXECUTOR_BINARY}" ./packaging/cmd/executor
-  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${KILL_BINARY}" ./cmd/executor-kill
+  CGO_VALUE=0
+  if [[ "${GOOS}" == "darwin" ]]; then
+    CGO_VALUE=1
+  fi
+  CGO_ENABLED="${CGO_VALUE}" GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${EXECUTOR_BINARY}" ./packaging/cmd/executor
+  CGO_ENABLED="${CGO_VALUE}" GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${KILL_BINARY}" ./cmd/executor-kill
   cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
   mkdir -p "${STAGING_DIR}/docs"
   cp "${ROOT_DIR}/docs/DEPLOYMENT.md" "${STAGING_DIR}/docs/DEPLOYMENT.md"
 
   if [[ "${GOOS}" == "windows" ]]; then
     (cd "${STAGING_DIR}" && zip -qr "${OUT_DIR}/${ARCHIVE_NAME}.zip" .)
-    sha256sum "${OUT_DIR}/${ARCHIVE_NAME}.zip" >> "${OUT_DIR}/SHA256SUMS.txt"
+    checksum "${OUT_DIR}/${ARCHIVE_NAME}.zip" >> "${OUT_DIR}/SHA256SUMS.txt"
   else
     tar -C "${STAGING_DIR}" -czf "${OUT_DIR}/${ARCHIVE_NAME}.tar.gz" .
-    sha256sum "${OUT_DIR}/${ARCHIVE_NAME}.tar.gz" >> "${OUT_DIR}/SHA256SUMS.txt"
+    checksum "${OUT_DIR}/${ARCHIVE_NAME}.tar.gz" >> "${OUT_DIR}/SHA256SUMS.txt"
   fi
 done

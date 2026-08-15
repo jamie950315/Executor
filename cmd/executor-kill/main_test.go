@@ -22,13 +22,13 @@ func (k *fakeKiller) Kill(context.Context) (control.Result, error) {
 }
 
 func TestRunShowsReplacementMaterialForPartialKillOnly(t *testing.T) {
-	fake := &fakeKiller{result: control.Result{RecoveryKey: "recovery-once", URLSecret: "url-once"}, err: errors.New("broker unavailable")}
+	fake := &fakeKiller{result: control.Result{RecoveryKey: "recovery-once", URLSecret: "url-once", Dashboard: "http://127.0.0.1:8788/?token=dashboard-once"}, err: errors.New("broker unavailable")}
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"--config", "/secure/executor.json"}, &stdout, &stderr, func(string) (killRunner, error) { return fake, nil })
 	if code != 1 || !fake.called {
 		t.Fatalf("code=%d called=%t stderr=%q", code, fake.called, stderr.String())
 	}
-	for _, want := range []string{"recovery-once", "url-once", "shown once"} {
+	for _, want := range []string{"recovery-once", "url-once", "dashboard-once", "shown once"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout %q missing %q", stdout.String(), want)
 		}

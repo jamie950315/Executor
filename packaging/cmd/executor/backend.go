@@ -44,7 +44,14 @@ func defaultStateDir() string {
 	if stateDir := os.Getenv("EXECUTOR_STATE_DIR"); stateDir != "" {
 		return stateDir
 	}
-	return filepath.Join(".", "executor-state")
+	if runtime.GOOS == "windows" {
+		programData := os.Getenv("ProgramData")
+		if programData == "" {
+			programData = `C:\ProgramData`
+		}
+		return filepath.Join(programData, "Executor")
+	}
+	return "/var/lib/executor"
 }
 
 func (b *backend) Setup(ctx context.Context, options cli.SetupOptions) (cli.SetupResult, error) {
@@ -130,7 +137,7 @@ func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {
 		return cli.RotateResult{}, err
 	}
 	result, err := controller.Kill(ctx)
-	return cli.RotateResult{RecoveryKey: result.RecoveryKey, URLSecret: result.URLSecret}, err
+	return cli.RotateResult{RecoveryKey: result.RecoveryKey, URLSecret: result.URLSecret, Dashboard: result.Dashboard}, err
 }
 
 func (b *backend) Resume(ctx context.Context) error {
@@ -174,23 +181,24 @@ func (b *backend) Doctor(ctx context.Context, _ bool) (cli.DoctorResult, error) 
 	return out, nil
 }
 
-func (b *backend) EnableURLSecret(ctx context.Context) (string, error) {
+func (b *backend) EnableURLSecret(ctx context.Context) (cli.RotateResult, error) {
 	rotated, err := b.Kill(ctx)
 	if err != nil {
-		return "", err
+		return rotated, err
 	}
 	cfg, err := config.Load(b.configPath())
 	if err != nil {
-		return "", err
+		return rotated, err
 	}
+	rotated.Endpoint = "https://" + cfg.Domain + "/" + rotated.URLSecret + "/mcp"
 	cfg.URLSecretEnabled = true
 	if err := config.Save(b.configPath(), cfg); err != nil {
-		return "", err
+		return rotated, err
 	}
 	if err := b.Resume(ctx); err != nil {
-		return "", err
+		return rotated, err
 	}
-	return "https://" + cfg.Domain + "/" + rotated.URLSecret + "/mcp", nil
+	return rotated, nil
 }
 
 func (b *backend) configPath() string {
