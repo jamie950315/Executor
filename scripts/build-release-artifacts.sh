@@ -9,11 +9,14 @@ mkdir -p "${OUT_DIR}"
 rm -f "${OUT_DIR}"/SHA256SUMS.txt
 
 checksum() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1"
-  else
-    shasum -a 256 "$1"
-  fi
+	local archive_dir archive_name
+	archive_dir="$(dirname "$1")"
+	archive_name="$(basename "$1")"
+	if command -v sha256sum >/dev/null 2>&1; then
+		(cd "${archive_dir}" && sha256sum "${archive_name}")
+	else
+		(cd "${archive_dir}" && shasum -a 256 "${archive_name}")
+	fi
 }
 
 for target in ${BUILD_TARGETS}; do
