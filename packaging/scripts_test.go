@@ -35,6 +35,7 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	userdelStub := filepath.Join(binDir, "userdel")
 	chownStub := filepath.Join(binDir, "chown")
 	chmodStub := filepath.Join(binDir, "chmod")
+	cpStub := filepath.Join(binDir, "cp")
 	installStub := filepath.Join(binDir, "install")
 	mktempStub := filepath.Join(binDir, "mktemp")
 
@@ -54,6 +55,7 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	writeStub(t, userdelStub, "#!/usr/bin/env bash\nprintf 'userdel %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, chownStub, "#!/usr/bin/env bash\nprintf 'chown %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, chmodStub, "#!/usr/bin/env bash\nprintf 'chmod %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
+	writeStub(t, cpStub, "#!/usr/bin/env bash\nif [[ -e \"$2\" && \"$2\" == \"$EXECUTOR_INSTALL_BINARY_PATH\" ]]; then printf 'cp: Text file busy\\n' >&2; exit 26; fi\nexec /bin/cp \"$@\"\n")
 	writeStub(t, installStub, "#!/usr/bin/env bash\nexec /usr/bin/install \"$@\"\n")
 	writeStub(t, mktempStub, "#!/usr/bin/env bash\nmkdir -p \""+tmpBundle+"\"\nprintf '%s\\n' \""+tmpBundle+"\"\n")
 

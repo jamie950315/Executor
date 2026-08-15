@@ -11,6 +11,21 @@ RUNUSER_BIN="${RUNUSER_BIN:-runuser}"
 MANIFEST_PATH="${STATE_DIR}/service-manifest.txt"
 BACKUP_ROOT="${STATE_DIR}/service-backups"
 
+replace_file_atomically() {
+  src="$1"
+  dst="$2"
+  replacement="${dst}.executor-new.$$"
+  rm -f "${replacement}"
+  if ! cp "${src}" "${replacement}"; then
+    rm -f "${replacement}"
+    return 1
+  fi
+  if ! mv -f "${replacement}" "${dst}"; then
+    rm -f "${replacement}"
+    return 1
+  fi
+}
+
 case "${TARGET}" in
   darwin) TARGET="macos" ;;
   linux) TARGET="linux" ;;
@@ -100,7 +115,7 @@ while IFS='|' read -r label path mode; do
   backup="${BACKUP_ROOT}${path}"
   if [[ "${mode}" == "restore" && -f "${backup}" ]]; then
     mkdir -p "$(dirname "${path}")"
-    cp "${backup}" "${path}"
+    replace_file_atomically "${backup}" "${path}"
   else
     rm -f "${path}"
   fi

@@ -64,6 +64,21 @@ record_manifest() {
   printf '%s|%s|%s\n' "$1" "$2" "$3" >> "${MANIFEST_PATH}"
 }
 
+replace_file_atomically() {
+  src="$1"
+  dst="$2"
+  replacement="${dst}.executor-new.$$"
+  rm -f "${replacement}"
+  if ! cp "${src}" "${replacement}"; then
+    rm -f "${replacement}"
+    return 1
+  fi
+  if ! mv -f "${replacement}" "${dst}"; then
+    rm -f "${replacement}"
+    return 1
+  fi
+}
+
 install_managed_file() {
   src="$1"
   dst="$2"
@@ -77,7 +92,7 @@ install_managed_file() {
   else
     mode="remove"
   fi
-  cp "${src}" "${dst}"
+  replace_file_atomically "${src}" "${dst}"
   record_manifest "${label}" "${dst}" "${mode}"
 }
 
