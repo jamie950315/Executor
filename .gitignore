@@ -1,0 +1,10 @@
+/bin/
+/dist/
+/coverage/
+*.test
+*.out
+.DS_Store
+.env
+*.key
+*.pem
+executor-state/
