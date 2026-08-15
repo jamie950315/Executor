@@ -61,6 +61,24 @@ func TestDashboardRequiresBootstrapTokenThenUsesStrictCookie(t *testing.T) {
 	}
 }
 
+func TestDashboardHealthRequiresCurrentKeyAndReturnsIdentityMarker(t *testing.T) {
+	h := NewHandler(&fakeController{}, "local-secret")
+
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/.executor/health", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized health status = %d, want 401", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/.executor/health", nil)
+	request.Header.Set("X-Executor-Health-Key", "local-secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Executor-Health") != "ok" {
+		t.Fatalf("authenticated health response = status %d marker %q", response.Code, response.Header().Get("X-Executor-Health"))
+	}
+}
+
 func TestDashboardTokenProviderImmediatelyTracksExternalRotation(t *testing.T) {
 	controller := &fakeController{}
 	current := "old-local-secret"

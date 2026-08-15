@@ -25,13 +25,14 @@ type SetupResult struct {
 }
 
 type Status struct {
-	State   string `json:"state"`
-	Domain  string `json:"domain"`
-	MCPURL  string `json:"mcp_url,omitempty"`
-	Agent   string `json:"agent,omitempty"`
-	Broker  string `json:"broker,omitempty"`
-	Desktop string `json:"desktop,omitempty"`
-	Tunnel  string `json:"tunnel,omitempty"`
+	State     string `json:"state"`
+	Domain    string `json:"domain"`
+	MCPURL    string `json:"mcp_url,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	Broker    string `json:"broker,omitempty"`
+	Desktop   string `json:"desktop,omitempty"`
+	Dashboard string `json:"dashboard,omitempty"`
+	Tunnel    string `json:"tunnel,omitempty"`
 }
 
 type RotateResult struct {

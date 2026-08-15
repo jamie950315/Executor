@@ -45,7 +45,7 @@ Release artifacts include both `executor` and `executor-kill`. The bootstrap scr
 
 Persistent state also uses a stable default so lifecycle commands continue to work from a new terminal: `/var/lib/executor` on macOS/Linux/WSL and `%ProgramData%\Executor` on Windows. Set `EXECUTOR_STATE_DIR` to override it consistently for setup, services, rollback, and CLI commands.
 
-New installations prefer `127.0.0.1:8787` for the Agent and `127.0.0.1:8788` for the Dashboard. If another process already owns either port, setup selects and persists an available loopback port before configuring the Cloudflare Tunnel. Status and doctor checks authenticate the Executor health response, so an unrelated service on the configured port cannot be reported as a healthy Agent.
+New installations prefer `127.0.0.1:8787` for the Agent and `127.0.0.1:8788` for the Dashboard. If another process already owns either port, setup selects and persists an available loopback port before configuring the Cloudflare Tunnel. Status and doctor checks authenticate the Executor health responses, so unrelated services on the configured ports cannot be reported as a healthy Agent or Dashboard.
 
 Setup reports the remote Streamable HTTP endpoint and local `executor stdio` command. Legacy SSE is not part of the current release. Every successful credential rotation also returns a new loopback Dashboard bootstrap URL; Dashboard authentication follows the current on-disk key immediately, so an old cookie stops working after an external `executor-kill` rotation.
 

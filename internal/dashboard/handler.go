@@ -61,6 +61,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard authentication unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if r.URL.Path == "/.executor/health" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !same(r.Header.Get("X-Executor-Health-Key"), token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("X-Executor-Health", "ok")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if candidate := r.URL.Query().Get("token"); candidate != "" {
 		if !same(candidate, token) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

@@ -125,6 +125,38 @@ func TestSetupMovesExistingConfigOffForeignAgentPort(t *testing.T) {
 	}
 }
 
+func TestSetupMovesExistingConfigOffForeignDashboardPort(t *testing.T) {
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer foreign.Close()
+
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("initial Setup: %v", err)
+	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	foreignAddress := strings.TrimPrefix(foreign.URL, "http://")
+	cfg.DashboardAddress = foreignAddress
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("repeat Setup: %v", err)
+	}
+	loaded, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load repeated config: %v", err)
+	}
+	if loaded.DashboardAddress == foreignAddress {
+		t.Fatalf("repeat setup retained foreign dashboard address %q", loaded.DashboardAddress)
+	}
+}
+
 func TestRuntimeOperationsUseIndependentController(t *testing.T) {
 	t.Parallel()
 
@@ -169,17 +201,17 @@ func TestDoctorReportsOfflineRuntime(t *testing.T) {
 	if result.Healthy {
 		t.Fatalf("doctor should be unhealthy when runtime is offline: %#v", result)
 	}
-	found := false
+	found := map[string]bool{}
 	for _, check := range result.Checks {
-		if check.Name == "agent" {
-			found = true
+		if check.Name == "agent" || check.Name == "dashboard" {
+			found[check.Name] = true
 			if check.OK || !strings.Contains(check.Detail, "offline") {
 				t.Fatalf("runtime check = %#v, want offline", check)
 			}
 		}
 	}
-	if !found {
-		t.Fatalf("missing agent check: %#v", result.Checks)
+	if !found["agent"] || !found["dashboard"] {
+		t.Fatalf("missing agent or dashboard check: %#v", result.Checks)
 	}
 }
 
@@ -244,6 +276,70 @@ func TestStatusAcceptsAuthenticatedExecutorHealthResponse(t *testing.T) {
 	}
 	if status.Agent != "online" {
 		t.Fatalf("authenticated Executor health response reported as %q, want online", status.Agent)
+	}
+}
+
+func TestStatusRejectsForeignServiceOnDashboardPort(t *testing.T) {
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer foreign.Close()
+
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	cfg.DashboardAddress = strings.TrimPrefix(foreign.URL, "http://")
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	status, err := b.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Dashboard != "offline" {
+		t.Fatalf("foreign service reported as dashboard state %q, want offline", status.Dashboard)
+	}
+}
+
+func TestStatusAcceptsAuthenticatedExecutorDashboardHealthResponse(t *testing.T) {
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	values, err := secrets.Load(b.stateDir)
+	if err != nil {
+		t.Fatalf("Load secrets: %v", err)
+	}
+	dashboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.executor/health" || r.Header.Get("X-Executor-Health-Key") != values.DashboardKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("X-Executor-Health", "ok")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer dashboardServer.Close()
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	cfg.DashboardAddress = strings.TrimPrefix(dashboardServer.URL, "http://")
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	status, err := b.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Dashboard != "online" {
+		t.Fatalf("authenticated Executor dashboard health response reported as %q, want online", status.Dashboard)
 	}
 }
 

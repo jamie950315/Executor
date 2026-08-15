@@ -127,7 +127,8 @@ func (b *backend) Status(ctx context.Context) (cli.Status, error) {
 	}
 	status.Broker = probeIPC(ctx, cfg.BrokerEndpoint, values.BrokerIPCKey)
 	status.Desktop = probeIPC(ctx, cfg.DesktopEndpoint, values.DesktopIPCKey)
-	status.Agent = probeAgent(ctx, cfg.AgentAddress, values.DashboardKey)
+	status.Agent = probeExecutorHTTP(ctx, cfg.AgentAddress, values.DashboardKey)
+	status.Dashboard = probeExecutorHTTP(ctx, cfg.DashboardAddress, values.DashboardKey)
 	if cfg.Cloudflare.Complete() {
 		if _, err := os.Stat(cfg.Cloudflare.TokenFilePath); err == nil {
 			status.Tunnel = "configured"
@@ -179,6 +180,7 @@ func (b *backend) Doctor(ctx context.Context, _ bool) (cli.DoctorResult, error) 
 		staticFailureCheck{name: "agent", err: onlineError(status.Agent, statusErr)},
 		staticFailureCheck{name: "broker", err: onlineError(status.Broker, statusErr)},
 		staticFailureCheck{name: "desktop", err: onlineError(status.Desktop, nil)},
+		staticFailureCheck{name: "dashboard", err: onlineError(status.Dashboard, nil)},
 		staticFailureCheck{name: "tunnel", err: configuredError(status.Tunnel)},
 	}
 	result := doctor.Run(ctx, checkers)
@@ -434,7 +436,7 @@ func probeIPC(ctx context.Context, endpoint, key string) string {
 	return "online"
 }
 
-func probeAgent(ctx context.Context, address, healthKey string) string {
+func probeExecutorHTTP(ctx context.Context, address, healthKey string) string {
 	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+address+"/.executor/health", nil)
@@ -470,20 +472,28 @@ func (b *backend) selectSetupAddresses(ctx context.Context, cfg *config.Config, 
 		return nil
 	}
 
-	values, err := secrets.Load(b.stateDir)
-	if err == nil && probeAgent(ctx, cfg.AgentAddress, values.DashboardKey) == "online" {
+	values, secretsErr := secrets.Load(b.stateDir)
+	agentOwned := secretsErr == nil && probeExecutorHTTP(ctx, cfg.AgentAddress, values.DashboardKey) == "online"
+	dashboardOwned := secretsErr == nil && probeExecutorHTTP(ctx, cfg.DashboardAddress, values.DashboardKey) == "online"
+	if agentOwned && dashboardOwned {
 		return nil
 	}
-	dashboardGuard, _, _ := reserveLoopbackAddress(cfg.DashboardAddress)
-	if dashboardGuard != nil {
-		defer dashboardGuard.Close()
+	if !agentOwned {
+		agentListener, agentAddress, err := reserveLoopbackAddress(cfg.AgentAddress)
+		if err != nil {
+			return fmt.Errorf("select agent address: %w", err)
+		}
+		defer agentListener.Close()
+		cfg.AgentAddress = agentAddress
 	}
-	agentListener, agentAddress, err := reserveLoopbackAddress(cfg.AgentAddress)
-	if err != nil {
-		return fmt.Errorf("select agent address: %w", err)
+	if !dashboardOwned {
+		dashboardListener, dashboardAddress, err := reserveLoopbackAddress(cfg.DashboardAddress)
+		if err != nil {
+			return fmt.Errorf("select dashboard address: %w", err)
+		}
+		defer dashboardListener.Close()
+		cfg.DashboardAddress = dashboardAddress
 	}
-	defer agentListener.Close()
-	cfg.AgentAddress = agentAddress
 	return nil
 }
 
