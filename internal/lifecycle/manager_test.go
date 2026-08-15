@@ -19,18 +19,18 @@ func (r *recorder) step(name string) error {
 	}
 	return nil
 }
-func (r *recorder) Quiesce(context.Context) error          { return r.step("quiesce") }
-func (r *recorder) StopTunnel(context.Context) error       { return r.step("stop-tunnel") }
-func (r *recorder) KillSessions(context.Context) error     { return r.step("kill-sessions") }
-func (r *recorder) StopDesktop(context.Context) error      { return r.step("stop-desktop") }
-func (r *recorder) StopBroker(context.Context) error       { return r.step("stop-broker") }
-func (r *recorder) RevokeOAuth(context.Context) error      { return r.step("revoke-oauth") }
+func (r *recorder) Quiesce(context.Context) error           { return r.step("quiesce") }
+func (r *recorder) StopTunnel(context.Context) error        { return r.step("stop-tunnel") }
+func (r *recorder) KillSessions(context.Context) error      { return r.step("kill-sessions") }
+func (r *recorder) StopDesktop(context.Context) error       { return r.step("stop-desktop") }
+func (r *recorder) StopBroker(context.Context) error        { return r.step("stop-broker") }
+func (r *recorder) RevokeOAuth(context.Context) error       { return r.step("revoke-oauth") }
 func (r *recorder) RotateCredentials(context.Context) error { return r.step("rotate-credentials") }
-func (r *recorder) StopAgent(context.Context) error        { return r.step("stop-agent") }
-func (r *recorder) StartBroker(context.Context) error      { return r.step("start-broker") }
-func (r *recorder) StartDesktop(context.Context) error     { return r.step("start-desktop") }
-func (r *recorder) StartAgent(context.Context) error       { return r.step("start-agent") }
-func (r *recorder) StartTunnel(context.Context) error      { return r.step("start-tunnel") }
+func (r *recorder) StopAgent(context.Context) error         { return r.step("stop-agent") }
+func (r *recorder) StartBroker(context.Context) error       { return r.step("start-broker") }
+func (r *recorder) StartDesktop(context.Context) error      { return r.step("start-desktop") }
+func (r *recorder) StartAgent(context.Context) error        { return r.step("start-agent") }
+func (r *recorder) StartTunnel(context.Context) error       { return r.step("start-tunnel") }
 
 func TestKillRunsEverySafetyStepInOrder(t *testing.T) {
 	r := &recorder{}
