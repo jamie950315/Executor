@@ -127,6 +127,26 @@ func TestRunAgentRejectsNonLoopbackOriginBinding(t *testing.T) {
 	}
 }
 
+func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := startDaemon(t, func() error { return RunAgent(ctx, configPath) })
+	baseURL := "http://" + cfg.AgentAddress
+	response := waitForHTTP(t, http.MethodGet, baseURL+"/.well-known/oauth-protected-resource", nil, nil)
+	response.Body.Close()
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "disabled"), []byte("quiesced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response = waitForHTTP(t, http.MethodGet, baseURL+"/.well-known/oauth-protected-resource", nil, nil)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("quiesced status = %d, want 503", response.StatusCode)
+	}
+	cancel()
+	assertDaemonStopped(t, errCh)
+}
+
 func TestRunAgentAcceptsExplicitlyEnabledURLSecretAndDispatchesToDesktop(t *testing.T) {
 	configPath, cfg, values := daemonFixture(t)
 	cfg.URLSecretEnabled = true

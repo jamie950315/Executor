@@ -124,6 +124,10 @@ func RunAgent(ctx context.Context, configPath string) error {
 	)
 
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if disabled(filepath.Join(cfg.StateDir, "disabled")) {
+			http.Error(writer, "Executor is disabled", http.StatusServiceUnavailable)
+			return
+		}
 		if request.URL.Path == "/mcp" || strings.HasSuffix(request.URL.Path, "/mcp") {
 			protectedMCP.ServeHTTP(writer, request)
 			return
@@ -137,6 +141,11 @@ func RunAgent(ctx context.Context, configPath string) error {
 	}
 	server := &http.Server{Handler: handler}
 	return serveHTTP(ctx, server, listener)
+}
+
+func disabled(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !errors.Is(err, os.ErrNotExist)
 }
 
 func isLoopbackAddress(address string) bool {
