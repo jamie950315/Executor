@@ -33,7 +33,11 @@ func TestSetupCreatesConfigAndSecretsWithDashboardKeyBootstrapURL(t *testing.T) 
 	if result.RecoveryKey == "" {
 		t.Fatal("expected one-time recovery key")
 	}
-	if !strings.HasPrefix(result.Dashboard, "http://127.0.0.1:8788/?token=") {
+	cfg, err := config.Load(filepath.Join(stateDir, "config.json"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !strings.HasPrefix(result.Dashboard, "http://"+cfg.DashboardAddress+"/?token=") {
 		t.Fatalf("dashboard bootstrap URL = %q", result.Dashboard)
 	}
 	if strings.Contains(result.RecoveryKey, "127.0.0.1") {

@@ -115,6 +115,10 @@ func save(dir string, values Values) error {
 		return err
 	}
 	path := filepath.Join(dir, secretsFile)
+	existing, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return err
@@ -122,6 +126,12 @@ func save(dir string, values Values) error {
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	if existing != nil {
+		if err := preserveFileOwnership(tmp, existing); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

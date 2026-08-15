@@ -44,6 +44,10 @@ case "${TARGET}" in
   linux) TARGET="linux" ;;
 esac
 
+if [[ "${TARGET}" == "macos" && -z "${EXECUTOR_BROKER_GROUP:-}" ]]; then
+  BROKER_GROUP="wheel"
+fi
+
 service_root() {
   case "${TARGET}" in
     macos) printf '%s\n' "${EXECUTOR_INSTALL_ROOT:-/Library}" ;;

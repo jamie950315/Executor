@@ -279,6 +279,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		stableExecutorPath + " render-service-bundle",
 		"--binary-path " + stableExecutorPath,
 		"--agent-user jamie --agent-group staff",
+		"--broker-user root --broker-group wheel",
 		"chown -R jamie:staff " + filepath.Join(tmp, "state"),
 		"chmod -R u+rwX,go-rwx " + filepath.Join(tmp, "state"),
 		"launchctl bootstrap system",
