@@ -1,0 +1,84 @@
+//go:build darwin || linux
+
+package terminal
+
+import (
+	"context"
+	"io"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"syscall"
+)
+
+type ptyLauncher interface {
+	Start(ctx context.Context, spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error)
+	Kill(cmd *exec.Cmd) error
+}
+
+type scriptLauncher struct{}
+
+func newPTYLauncher() ptyLauncher {
+	return scriptLauncher{}
+}
+
+func (scriptLauncher) Start(ctx context.Context, spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error) {
+	cmd := buildPTYCommand(ctx, spec.Command)
+	cmd.Dir = spec.Dir
+	cmd.Env = append(os.Environ(), flattenEnv(spec.Env)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		return nil, nil, nil, err
+	}
+	return cmd, stdin, stdout, nil
+}
+
+func (scriptLauncher) Kill(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	return nil
+}
+
+func buildPTYCommand(ctx context.Context, command []string) *exec.Cmd {
+	if runtime.GOOS == "darwin" {
+		args := append([]string{"-q", "/dev/null"}, command...)
+		return exec.CommandContext(ctx, "script", args...)
+	}
+	return exec.CommandContext(ctx, "script", "-qfec", quoteCommand(command), "/dev/null")
+}
+
+func flattenEnv(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	items := make([]string, 0, len(env))
+	for key, value := range env {
+		items = append(items, key+"="+value)
+	}
+	return items
+}
+
+func quoteCommand(command []string) string {
+	parts := make([]string, 0, len(command))
+	for _, arg := range command {
+		if arg == "" {
+			parts = append(parts, "''")
+			continue
+		}
+		parts = append(parts, "'"+strings.ReplaceAll(arg, "'", `'"'"'`)+"'")
+	}
+	return strings.Join(parts, " ")
+}

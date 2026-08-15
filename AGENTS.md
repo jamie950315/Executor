@@ -32,7 +32,9 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 ## Current status
 
 - Architecture approved in conversation on 2026-08-15.
-- Repository initialization in progress.
+- Repository initialized on branch `main`.
+- Config, private fallback secret store, metadata-only audit store, and authenticated localhost dashboard are implemented with tests.
+- MCP/OAuth, broker/terminal/desktop, and deployment/packaging are being implemented in parallel.
 - No service is deployed from this checkout yet.
 
 ## Runtime targets
