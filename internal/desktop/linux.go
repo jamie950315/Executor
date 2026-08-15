@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -92,7 +93,11 @@ func (b linuxBackend) Windows(ctx context.Context) ([]Window, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		windows = append(windows, Window{Title: line})
+		window, err := b.parseWindowLine(ctx, line)
+		if err != nil {
+			return nil, err
+		}
+		windows = append(windows, window)
 	}
 	return windows, nil
 }
@@ -172,27 +177,37 @@ func (b linuxBackend) Keyboard(ctx context.Context, action KeyboardAction) error
 }
 
 func (b linuxBackend) App(ctx context.Context, action AppAction) error {
-	var command string
 	switch action.Type {
-	case AppActionActivate, AppActionLaunch:
-		command = action.Name
+	case AppActionActivate:
+		if b.kind != backendX11 || !b.tools["wmctrl"] {
+			return &UnavailableError{Reason: "application activation requires wmctrl on X11"}
+		}
+		windows, err := b.Windows(ctx)
+		if err != nil {
+			return err
+		}
+		for _, window := range windows {
+			if window.App == action.Name {
+				if _, err := b.runner.Run(ctx, "wmctrl", "-ia", fmt.Sprintf("0x%08x", window.ID)); err != nil {
+					return wrapDesktopError("application activation unavailable", err)
+				}
+				return nil
+			}
+		}
+		return &UnavailableError{Reason: "application activation unavailable: no matching window"}
+	case AppActionLaunch:
+		if _, err := b.runner.Run(ctx, action.Name); err != nil {
+			return wrapDesktopError("application action unavailable", err)
+		}
+		return nil
 	case AppActionQuit:
-		command = "pkill"
+		if _, err := b.runner.Run(ctx, "pkill", action.Name); err != nil {
+			return wrapDesktopError("application action unavailable", err)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported app action %q", action.Type)
 	}
-
-	switch action.Type {
-	case AppActionQuit:
-		if _, err := b.runner.Run(ctx, command, action.Name); err != nil {
-			return wrapDesktopError("application action unavailable", err)
-		}
-	default:
-		if _, err := b.runner.Run(ctx, command); err != nil {
-			return wrapDesktopError("application action unavailable", err)
-		}
-	}
-	return nil
 }
 
 func (b linuxBackend) MarshalJSON() ([]byte, error) {
@@ -208,4 +223,34 @@ func detectAvailableTools(names ...string) availableTools {
 		tools[name] = err == nil
 	}
 	return tools
+}
+
+func (b linuxBackend) Available(ctx context.Context) bool {
+	return b.kind != backendUnavailable
+}
+
+func (b linuxBackend) parseWindowLine(ctx context.Context, line string) (Window, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return Window{}, fmt.Errorf("unexpected wmctrl output: %q", line)
+	}
+	idValue, err := strconv.ParseInt(strings.TrimPrefix(fields[0], "0x"), 16, 64)
+	if err != nil {
+		return Window{}, fmt.Errorf("parse wmctrl window id: %w", err)
+	}
+	pid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return Window{}, fmt.Errorf("parse wmctrl pid: %w", err)
+	}
+	title := strings.Join(fields[4:], " ")
+	app := ""
+	if data, err := b.runner.Run(ctx, "cat", fmt.Sprintf("/proc/%d/comm", pid)); err == nil {
+		app = strings.TrimSpace(string(data))
+	}
+	return Window{
+		ID:    int(idValue),
+		PID:   pid,
+		App:   app,
+		Title: title,
+	}, nil
 }

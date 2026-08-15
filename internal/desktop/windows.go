@@ -72,3 +72,8 @@ func (b windowsBackend) App(ctx context.Context, action AppAction) error {
 	}
 	return nil
 }
+
+func (b windowsBackend) Available(ctx context.Context) bool {
+	_, err := b.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
+	return err == nil
+}

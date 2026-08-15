@@ -163,3 +163,7 @@ func (u unavailableBackend) Keyboard(ctx context.Context, action KeyboardAction)
 func (u unavailableBackend) App(ctx context.Context, action AppAction) error {
 	return &UnavailableError{Reason: u.reason}
 }
+
+func (u unavailableBackend) Available(ctx context.Context) bool {
+	return false
+}

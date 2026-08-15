@@ -146,6 +146,36 @@ func TestManager_KillStopsBackgroundProcessTree(t *testing.T) {
 	t.Fatalf("background process %d still alive after session kill", childPID)
 }
 
+func TestManager_SignalInterruptStopsForegroundCommandWithoutRemovingSession(t *testing.T) {
+	manager := NewManager()
+	session, err := manager.Start(context.Background(), SessionSpec{
+		Command: []string{"/bin/sh"},
+		Dir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = manager.Kill(session.ID)
+	})
+
+	if err := manager.Write(session.ID, []byte("trap 'echo INTERRUPTED' INT\nsleep 30\necho AFTER\n")); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if err := manager.Signal(session.ID, SignalInterrupt); err != nil {
+		t.Fatalf("signal interrupt: %v", err)
+	}
+
+	chunk := waitForOutput(t, manager, session.ID, 0, "INTERRUPTED")
+
+	if err := manager.Write(session.ID, []byte("echo STILL_RUNNING\n")); err != nil {
+		t.Fatalf("write after interrupt: %v", err)
+	}
+	waitForOutput(t, manager, session.ID, chunk.NextCursor, "STILL_RUNNING")
+}
+
 func TestManager_CloseRemovesSession(t *testing.T) {
 	manager := NewManager()
 	session, err := manager.Start(context.Background(), SessionSpec{

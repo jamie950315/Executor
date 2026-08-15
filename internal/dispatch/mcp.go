@@ -9,6 +9,7 @@ import (
 
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
+	"github.com/jamie950315/executor/internal/terminal"
 )
 
 type Caller interface {
@@ -46,7 +47,30 @@ func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("unsupported terminal sessions action %q", action)
 		}
-		return d.call(ctx, d.privilegedCaller(call.Arguments), method, call.Arguments)
+		if action == "inspect" {
+			sessionID, err := requiredString(call.Arguments, "sessionId")
+			if err != nil {
+				return nil, err
+			}
+			listed, err := d.call(ctx, d.privilegedCaller(call.Arguments), desktop.RPCMethodTerminalList, struct{}{})
+			if err != nil {
+				return nil, err
+			}
+			for _, item := range anySlice(listed) {
+				entry, _ := item.(map[string]any)
+				session, _ := entry["Session"].(map[string]any)
+				id, _ := session["ID"].(string)
+				if id == "" {
+					session, _ = entry["session"].(map[string]any)
+					id, _ = session["id"].(string)
+				}
+				if id == sessionID {
+					return entry, nil
+				}
+			}
+			return nil, fmt.Errorf("terminal session %q not found", sessionID)
+		}
+		return d.call(ctx, d.privilegedCaller(call.Arguments), method, struct{}{})
 	case "filesystem_read":
 		return d.filesystemRead(ctx, call.Arguments)
 	case "filesystem_write":
@@ -70,7 +94,7 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 	method, ok := map[string]string{
 		"create": "terminal.start",
 		"write":  "terminal.write",
-		"signal": "terminal.signal",
+		"signal": desktop.RPCMethodTerminalSignal,
 		"close":  "terminal.close",
 	}[action]
 	if !ok {
@@ -106,7 +130,15 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		return d.call(ctx, caller, desktop.RPCMethodTerminalKill, desktop.RPCSessionParams{SessionID: sessionID})
+		signalName, err := requiredString(arguments, "signal")
+		if err != nil {
+			return nil, err
+		}
+		signal := terminal.Signal(signalName)
+		if signal != terminal.SignalInterrupt && signal != terminal.SignalTerminate && signal != terminal.SignalKill {
+			return nil, fmt.Errorf("unsupported terminal signal %q", signalName)
+		}
+		return d.call(ctx, caller, desktop.RPCMethodTerminalSignal, desktop.RPCTerminalSignalParams{SessionID: sessionID, Signal: signal})
 	case "close":
 		sessionID, err := requiredString(arguments, "sessionId")
 		if err != nil {
@@ -181,8 +213,11 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 		return d.call(ctx, caller, method, desktop.RPCFilesystemMoveParams{Src: path, Dst: destination})
 	case "delete":
 		return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
-	case "append_file", "mkdir":
-		return nil, fmt.Errorf("filesystem action %q is not available in this build", action)
+	case "append_file":
+		content, _ := arguments["content"].(string)
+		return d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: []byte(content), Perm: fs.FileMode(0o644)})
+	case "mkdir":
+		return d.call(ctx, caller, method, desktop.RPCFilesystemMkdirParams{Path: path, Perm: fs.FileMode(0o755)})
 	default:
 		return nil, fmt.Errorf("unsupported filesystem write action %q", action)
 	}
@@ -290,14 +325,14 @@ func (d *MCP) deviceStatus(ctx context.Context, arguments map[string]any) (any, 
 	}
 	switch action {
 	case "desktop":
-		return d.call(ctx, d.desktop, "device.status", arguments)
+		return d.call(ctx, d.desktop, desktop.RPCMethodDeviceStatus, struct{}{})
 	case "terminals":
 		owner, ownerErr := d.call(ctx, d.desktop, "terminal.list", map[string]any{})
 		admin, adminErr := d.call(ctx, d.broker, "terminal.list", map[string]any{})
 		return map[string]any{"owner": owner, "admin": admin}, errors.Join(ownerErr, adminErr)
 	case "summary":
-		broker, brokerErr := d.call(ctx, d.broker, "device.status", arguments)
-		desktop, desktopErr := d.call(ctx, d.desktop, "device.status", arguments)
+		broker, brokerErr := d.call(ctx, d.broker, desktop.RPCMethodDeviceStatus, struct{}{})
+		desktop, desktopErr := d.call(ctx, d.desktop, desktop.RPCMethodDeviceStatus, struct{}{})
 		return map[string]any{"broker": broker, "desktop": desktop}, errors.Join(brokerErr, desktopErr)
 	default:
 		return nil, fmt.Errorf("unsupported device status action %q", action)
@@ -352,6 +387,11 @@ func stringSlice(value any) []string {
 		}
 	}
 	return result
+}
+
+func anySlice(value any) []any {
+	items, _ := value.([]any)
+	return items
 }
 
 func requiredString(arguments map[string]any, name string) (string, error) {

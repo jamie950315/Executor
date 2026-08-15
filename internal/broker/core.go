@@ -27,6 +27,7 @@ type TerminalExecutor interface {
 	Close(sessionID string) error
 	Kill(sessionID string) error
 	KillAll() error
+	Signal(sessionID string, signal terminal.Signal) error
 }
 
 type DesktopController interface {

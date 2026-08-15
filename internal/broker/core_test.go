@@ -165,6 +165,10 @@ func (f *fakeTerminalExecutor) KillAll() error {
 	return nil
 }
 
+func (f *fakeTerminalExecutor) Signal(sessionID string, signal terminal.Signal) error {
+	return nil
+}
+
 type fakeFilesystem struct {
 	readData []byte
 	entries  []filesystem.Entry
@@ -188,6 +192,14 @@ func (f *fakeFilesystem) Stat(path string) (filesystem.FileInfo, error) {
 }
 
 func (f *fakeFilesystem) WriteFile(path string, data []byte, perm fs.FileMode) error {
+	return nil
+}
+
+func (f *fakeFilesystem) AppendFile(path string, data []byte, perm fs.FileMode) error {
+	return nil
+}
+
+func (f *fakeFilesystem) Mkdir(path string, perm fs.FileMode) error {
 	return nil
 }
 
@@ -226,4 +238,8 @@ func (f *fakeDesktop) Keyboard(ctx context.Context, action desktop.KeyboardActio
 
 func (f *fakeDesktop) App(ctx context.Context, action desktop.AppAction) error {
 	return nil
+}
+
+func (f *fakeDesktop) Available(ctx context.Context) bool {
+	return true
 }

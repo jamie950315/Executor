@@ -85,6 +85,15 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				return nil, err
 			}
 			return nil, executor.KillAll()
+		case desktop.RPCMethodTerminalSignal:
+			var request desktop.RPCTerminalSignalParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.SessionID == "" {
+				return nil, errors.New("terminal.signal requires session_id")
+			}
+			return nil, executor.Signal(request.SessionID, request.Signal)
 		case desktop.RPCMethodFilesystemRead:
 			var request desktop.RPCFilesystemPathParams
 			if err := decodeAdminParams(method, params, &request); err != nil {
@@ -130,6 +139,24 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				return nil, errors.New("filesystem.write requires path")
 			}
 			return nil, files.WriteFile(request.Path, request.Data, request.Perm)
+		case desktop.RPCMethodFilesystemAppend:
+			var request desktop.RPCFilesystemWriteParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.Path == "" {
+				return nil, errors.New("filesystem.append requires path")
+			}
+			return nil, files.AppendFile(request.Path, request.Data, request.Perm)
+		case desktop.RPCMethodFilesystemMkdir:
+			var request desktop.RPCFilesystemMkdirParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.Path == "" {
+				return nil, errors.New("filesystem.mkdir requires path")
+			}
+			return nil, files.Mkdir(request.Path, request.Perm)
 		case desktop.RPCMethodFilesystemMove:
 			var request desktop.RPCFilesystemMoveParams
 			if err := decodeAdminParams(method, params, &request); err != nil {
@@ -148,6 +175,15 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				return nil, errors.New("filesystem.delete requires path")
 			}
 			return nil, files.Delete(request.Path)
+		case desktop.RPCMethodDeviceStatus:
+			var request struct{}
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			return desktop.RPCDeviceStatus{
+				Component:        "broker",
+				TerminalSessions: len(executor.List()),
+			}, nil
 		default:
 			return nil, desktop.ErrUnknownRPCMethod
 		}
@@ -222,6 +258,13 @@ func (c *RemoteTerminalRPCClient) KillAll() error {
 	return c.client.Call(context.Background(), desktop.RPCMethodTerminalKillAll, struct{}{}, nil)
 }
 
+func (c *RemoteTerminalRPCClient) Signal(sessionID string, signal terminal.Signal) error {
+	return c.client.Call(context.Background(), desktop.RPCMethodTerminalSignal, desktop.RPCTerminalSignalParams{
+		SessionID: sessionID,
+		Signal:    signal,
+	}, nil)
+}
+
 func (c *RemoteFilesystemRPCClient) ReadFile(path string) ([]byte, error) {
 	var data []byte
 	err := c.client.Call(context.Background(), desktop.RPCMethodFilesystemRead, desktop.RPCFilesystemPathParams{Path: path}, &data)
@@ -248,6 +291,14 @@ func (c *RemoteFilesystemRPCClient) Stat(path string) (filesystem.FileInfo, erro
 
 func (c *RemoteFilesystemRPCClient) WriteFile(path string, data []byte, perm fs.FileMode) error {
 	return c.client.Call(context.Background(), desktop.RPCMethodFilesystemWrite, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: perm}, nil)
+}
+
+func (c *RemoteFilesystemRPCClient) AppendFile(path string, data []byte, perm fs.FileMode) error {
+	return c.client.Call(context.Background(), desktop.RPCMethodFilesystemAppend, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: perm}, nil)
+}
+
+func (c *RemoteFilesystemRPCClient) Mkdir(path string, perm fs.FileMode) error {
+	return c.client.Call(context.Background(), desktop.RPCMethodFilesystemMkdir, desktop.RPCFilesystemMkdirParams{Path: path, Perm: perm}, nil)
 }
 
 func (c *RemoteFilesystemRPCClient) Move(src, dst string) error {
@@ -284,6 +335,12 @@ func (c *RemoteDesktopRPCClient) Keyboard(ctx context.Context, action desktop.Ke
 
 func (c *RemoteDesktopRPCClient) App(ctx context.Context, action desktop.AppAction) error {
 	return c.client.Call(ctx, desktop.RPCMethodDesktopApp, desktop.RPCDesktopAppParams{Action: action}, nil)
+}
+
+func (c *RemoteDesktopRPCClient) Status(ctx context.Context) (desktop.RPCDeviceStatus, error) {
+	var status desktop.RPCDeviceStatus
+	err := c.client.Call(ctx, desktop.RPCMethodDeviceStatus, struct{}{}, &status)
+	return status, err
 }
 
 func decodeAdminParams(method string, params []byte, dst any) error {

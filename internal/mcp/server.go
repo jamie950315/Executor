@@ -570,6 +570,7 @@ func desktopObserveToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
 			"action": enumProperty("string", "screenshot", "accessibility_tree", "windows", "applications"),
+			"path":   map[string]any{"type": "string"},
 			"windowId": map[string]any{
 				"type": "string",
 			},
@@ -584,18 +585,14 @@ func desktopObserveToolSchema() map[string]any {
 func desktopControlToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action": enumProperty("string", "mouse_move", "mouse_click", "key_press", "type_text", "window_focus"),
-			"x":      map[string]any{"type": "integer"},
-			"y":      map[string]any{"type": "integer"},
-			"button": map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
-			"keys": map[string]any{
-				"type":  "array",
-				"items": map[string]any{"type": "string"},
-			},
-			"text": map[string]any{"type": "string"},
-			"windowId": map[string]any{
-				"type": "string",
-			},
+			"action":    enumProperty("string", "mouse_move", "mouse_click", "key_press", "type_text", "window_focus"),
+			"x":         map[string]any{"type": "integer"},
+			"y":         map[string]any{"type": "integer"},
+			"button":    map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
+			"keyCode":   map[string]any{"type": "integer", "minimum": 0},
+			"modifiers": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"name":      map[string]any{"type": "string"},
+			"text":      map[string]any{"type": "string"},
 		},
 		"action",
 	)

@@ -53,6 +53,7 @@ type Window struct {
 	App   string `json:"app"`
 	Title string `json:"title"`
 	ID    int    `json:"id,omitempty"`
+	PID   int    `json:"pid,omitempty"`
 }
 
 type AccessibilityWindow struct {
@@ -99,6 +100,7 @@ type backend interface {
 	Mouse(ctx context.Context, action MouseAction) error
 	Keyboard(ctx context.Context, action KeyboardAction) error
 	App(ctx context.Context, action AppAction) error
+	Available(ctx context.Context) bool
 }
 
 type Controller struct {
@@ -133,6 +135,10 @@ func (c *Controller) App(ctx context.Context, action AppAction) error {
 	return c.backend.App(ctx, action)
 }
 
+func (c *Controller) Available(ctx context.Context) bool {
+	return c.backend.Available(ctx)
+}
+
 type staticUnavailableBackend struct {
 	reason string
 }
@@ -159,4 +165,8 @@ func (b staticUnavailableBackend) Keyboard(ctx context.Context, action KeyboardA
 
 func (b staticUnavailableBackend) App(ctx context.Context, action AppAction) error {
 	return &UnavailableError{Reason: b.reason}
+}
+
+func (b staticUnavailableBackend) Available(ctx context.Context) bool {
+	return false
 }

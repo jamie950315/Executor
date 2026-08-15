@@ -83,6 +83,41 @@ func TestMCPRejectsUnknownActionsBeforeIPC(t *testing.T) {
 	}
 }
 
+func TestMCPTerminalInspectFiltersListedSessionsLocally(t *testing.T) {
+	t.Parallel()
+	desktop := &recordingCaller{responses: map[string]any{
+		"terminal.list": []map[string]any{
+			{"Session": map[string]any{"ID": "one"}, "Running": true},
+			{"Session": map[string]any{"ID": "two"}, "Running": false},
+		},
+	}}
+	result, err := NewMCP(nil, desktop).Dispatch(context.Background(), mcp.ToolCall{Name: "terminal_sessions", Arguments: map[string]any{
+		"action": "inspect", "sessionId": "two", "privilege": "owner",
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if result.(map[string]any)["Running"] != false || desktop.calls[0].method != "terminal.list" {
+		t.Fatalf("inspect result=%#v calls=%#v", result, desktop.calls)
+	}
+}
+
+func TestMCPTerminalSignalPreservesRequestedSignal(t *testing.T) {
+	t.Parallel()
+	for _, signal := range []string{"interrupt", "terminate", "kill"} {
+		desktop := &recordingCaller{responses: map[string]any{"terminal.signal": map[string]any{"ok": true}}}
+		_, err := NewMCP(nil, desktop).Dispatch(context.Background(), mcp.ToolCall{Name: "terminal", Arguments: map[string]any{
+			"action": "signal", "sessionId": "session-1", "signal": signal,
+		}})
+		if err != nil {
+			t.Fatalf("signal %s: %v", signal, err)
+		}
+		if got := desktop.calls[0].params["signal"]; got != signal {
+			t.Fatalf("signal %s became %#v", signal, got)
+		}
+	}
+}
+
 type recordingCaller struct {
 	calls     []recordedCall
 	responses map[string]any

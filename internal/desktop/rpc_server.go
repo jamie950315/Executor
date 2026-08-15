@@ -20,6 +20,7 @@ type HelperTerminal interface {
 	Close(sessionID string) error
 	Kill(sessionID string) error
 	KillAll() error
+	Signal(sessionID string, signal terminal.Signal) error
 }
 
 type HelperFilesystem interface {
@@ -28,6 +29,8 @@ type HelperFilesystem interface {
 	Glob(pattern string) ([]string, error)
 	Stat(path string) (filesystem.FileInfo, error)
 	WriteFile(path string, data []byte, perm fs.FileMode) error
+	AppendFile(path string, data []byte, perm fs.FileMode) error
+	Mkdir(path string, perm fs.FileMode) error
 	Move(src, dst string) error
 	Delete(path string) error
 }
@@ -39,6 +42,7 @@ type HelperDesktop interface {
 	Mouse(ctx context.Context, action MouseAction) error
 	Keyboard(ctx context.Context, action KeyboardAction) error
 	App(ctx context.Context, action AppAction) error
+	Available(ctx context.Context) bool
 }
 
 func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, files HelperFilesystem, desktop HelperDesktop) *ipc.RPCServer {
@@ -111,6 +115,15 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return nil, terminal.KillAll()
+		case RPCMethodTerminalSignal:
+			var request RPCTerminalSignalParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateSessionParams(method, request.SessionID); err != nil {
+				return nil, err
+			}
+			return nil, terminal.Signal(request.SessionID, request.Signal)
 		case RPCMethodFilesystemRead:
 			var request RPCFilesystemPathParams
 			if err := decodeStrictParams(method, params, &request); err != nil {
@@ -156,6 +169,24 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return nil, files.WriteFile(request.Path, request.Data, request.Perm)
+		case RPCMethodFilesystemAppend:
+			var request RPCFilesystemWriteParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateFilesystemPath(method, request.Path); err != nil {
+				return nil, err
+			}
+			return nil, files.AppendFile(request.Path, request.Data, request.Perm)
+		case RPCMethodFilesystemMkdir:
+			var request RPCFilesystemMkdirParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateFilesystemPath(method, request.Path); err != nil {
+				return nil, err
+			}
+			return nil, files.Mkdir(request.Path, request.Perm)
 		case RPCMethodFilesystemMove:
 			var request RPCFilesystemMoveParams
 			if err := decodeStrictParams(method, params, &request); err != nil {
@@ -174,6 +205,16 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return nil, files.Delete(request.Path)
+		case RPCMethodDeviceStatus:
+			var request struct{}
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			return RPCDeviceStatus{
+				Component:        "desktop",
+				TerminalSessions: len(terminal.List()),
+				Available:        desktop.Available(ctx),
+			}, nil
 		case RPCMethodDesktopScreenshot:
 			var request RPCDesktopScreenshotParams
 			if err := decodeStrictParams(method, params, &request); err != nil {

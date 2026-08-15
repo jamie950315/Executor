@@ -140,6 +140,9 @@ func TestDesktopRPCClient_TalksToHelperRPCServer(t *testing.T) {
 	if err := client.Terminal.KillAll(); err != nil {
 		t.Fatalf("client.KillAll: %v", err)
 	}
+	if err := client.Terminal.Signal("owner", terminal.SignalInterrupt); err != nil {
+		t.Fatalf("client.Signal: %v", err)
+	}
 
 	if data, err := client.Filesystem.ReadFile("/tmp/a.txt"); err != nil || string(data) != "owner-data" {
 		t.Fatalf("client.ReadFile = %q, %v", string(data), err)
@@ -162,6 +165,12 @@ func TestDesktopRPCClient_TalksToHelperRPCServer(t *testing.T) {
 	if err := client.Filesystem.Delete("/tmp/b.txt"); err != nil {
 		t.Fatalf("client.Delete: %v", err)
 	}
+	if err := client.Filesystem.AppendFile("/tmp/b.txt", []byte("c"), 0o600); err != nil {
+		t.Fatalf("client.AppendFile: %v", err)
+	}
+	if err := client.Filesystem.Mkdir("/tmp/dir", 0o755); err != nil {
+		t.Fatalf("client.Mkdir: %v", err)
+	}
 
 	if err := client.Desktop.Screenshot(context.Background(), "/tmp/shot.png"); err != nil {
 		t.Fatalf("client.Screenshot: %v", err)
@@ -181,11 +190,15 @@ func TestDesktopRPCClient_TalksToHelperRPCServer(t *testing.T) {
 	if err := client.Desktop.App(context.Background(), desktop.AppAction{Type: desktop.AppActionActivate, Name: "Finder"}); err != nil {
 		t.Fatalf("client.App: %v", err)
 	}
+	status, err := client.Desktop.Status(context.Background())
+	if err != nil || status.Component != "desktop" || status.TerminalSessions != 1 {
+		t.Fatalf("client.Status = %#v, %v", status, err)
+	}
 
-	if term.writeSessionID != "owner" || term.readCursor != 2 || term.closeSessionID != "owner" || term.killSessionID != "owner" || term.killAllCount != 1 {
+	if term.writeSessionID != "owner" || term.readCursor != 2 || term.closeSessionID != "owner" || term.killSessionID != "owner" || term.killAllCount != 1 || term.signalSessionID != "owner" || term.signal != terminal.SignalInterrupt {
 		t.Fatalf("unexpected terminal RPC calls: %#v", term)
 	}
-	if files.writePath != "/tmp/b.txt" || files.moveSrc != "/tmp/a.txt" || files.moveDst != "/tmp/b.txt" || files.deletePath != "/tmp/b.txt" {
+	if files.writePath != "/tmp/b.txt" || files.appendPath != "/tmp/b.txt" || files.mkdirPath != "/tmp/dir" || files.moveSrc != "/tmp/a.txt" || files.moveDst != "/tmp/b.txt" || files.deletePath != "/tmp/b.txt" {
 		t.Fatalf("unexpected filesystem RPC calls: %#v", files)
 	}
 	if gui.screenshotPath != "/tmp/shot.png" || gui.mouse.X != 1 || gui.keyboard.Text != "x" || gui.app.Name != "Finder" {
@@ -204,17 +217,19 @@ func TestDesktopRPCClient_TalksToHelperRPCServer(t *testing.T) {
 }
 
 type rpcTestTerminal struct {
-	session        terminal.Session
-	started        terminal.SessionSpec
-	writeSessionID string
-	writeInput     []byte
-	readSessionID  string
-	readCursor     int64
-	list           []terminal.SessionInfo
-	chunk          terminal.OutputChunk
-	closeSessionID string
-	killSessionID  string
-	killAllCount   int
+	session         terminal.Session
+	started         terminal.SessionSpec
+	writeSessionID  string
+	writeInput      []byte
+	readSessionID   string
+	readCursor      int64
+	list            []terminal.SessionInfo
+	chunk           terminal.OutputChunk
+	closeSessionID  string
+	killSessionID   string
+	killAllCount    int
+	signalSessionID string
+	signal          terminal.Signal
 }
 
 func (f *rpcTestTerminal) Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error) {
@@ -252,6 +267,11 @@ func (f *rpcTestTerminal) KillAll() error {
 	f.killAllCount++
 	return nil
 }
+func (f *rpcTestTerminal) Signal(sessionID string, signal terminal.Signal) error {
+	f.signalSessionID = sessionID
+	f.signal = signal
+	return nil
+}
 
 type rpcTestFilesystem struct {
 	readPath   string
@@ -265,6 +285,11 @@ type rpcTestFilesystem struct {
 	writePath  string
 	writeData  []byte
 	writePerm  fs.FileMode
+	appendPath string
+	appendData []byte
+	appendPerm fs.FileMode
+	mkdirPath  string
+	mkdirPerm  fs.FileMode
 	moveSrc    string
 	moveDst    string
 	deletePath string
@@ -290,6 +315,17 @@ func (f *rpcTestFilesystem) WriteFile(path string, data []byte, perm fs.FileMode
 	f.writePath = path
 	f.writeData = append([]byte(nil), data...)
 	f.writePerm = perm
+	return nil
+}
+func (f *rpcTestFilesystem) AppendFile(path string, data []byte, perm fs.FileMode) error {
+	f.appendPath = path
+	f.appendData = append([]byte(nil), data...)
+	f.appendPerm = perm
+	return nil
+}
+func (f *rpcTestFilesystem) Mkdir(path string, perm fs.FileMode) error {
+	f.mkdirPath = path
+	f.mkdirPerm = perm
 	return nil
 }
 func (f *rpcTestFilesystem) Move(src, dst string) error {
@@ -332,6 +368,64 @@ func (f *rpcTestDesktop) Keyboard(ctx context.Context, action desktop.KeyboardAc
 func (f *rpcTestDesktop) App(ctx context.Context, action desktop.AppAction) error {
 	f.app = action
 	return nil
+}
+func (f *rpcTestDesktop) Available(ctx context.Context) bool {
+	return true
+}
+
+func TestAdminRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
+	t.Parallel()
+
+	endpoint := brokerSocketPath(t)
+	key := []byte("11223344556677889900aabbccddeeff")
+	term := &rpcTestTerminal{
+		list: []terminal.SessionInfo{{Running: true}, {Running: false}},
+	}
+	files := &rpcTestFilesystem{}
+	server := NewAdminRPCServer(endpoint, key, term, files)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForBrokerEndpoint(t, endpoint)
+
+	client := ipc.NewRPCClient(endpoint, key)
+	if err := client.Call(context.Background(), desktop.RPCMethodTerminalSignal, map[string]any{
+		"session_id": "admin",
+		"signal":     "terminate",
+	}, &struct{}{}); err != nil {
+		t.Fatalf("terminal.signal: %v", err)
+	}
+	if err := client.Call(context.Background(), desktop.RPCMethodFilesystemAppend, map[string]any{
+		"path": "/tmp/a.txt",
+		"data": []byte("x"),
+		"perm": 384,
+	}, &struct{}{}); err != nil {
+		t.Fatalf("filesystem.append: %v", err)
+	}
+	if err := client.Call(context.Background(), desktop.RPCMethodFilesystemMkdir, map[string]any{
+		"path": "/tmp/dir",
+		"perm": 493,
+	}, &struct{}{}); err != nil {
+		t.Fatalf("filesystem.mkdir: %v", err)
+	}
+	var status desktop.RPCDeviceStatus
+	if err := client.Call(context.Background(), desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+		t.Fatalf("device.status: %v", err)
+	}
+	if status.Component != "broker" || status.TerminalSessions != 2 {
+		t.Fatalf("unexpected device status: %#v", status)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("broker RPC server did not stop")
+	}
 }
 
 func waitForBrokerEndpoint(t *testing.T, endpoint string) {

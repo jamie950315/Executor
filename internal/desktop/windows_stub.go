@@ -29,3 +29,7 @@ func (windowsBackend) Keyboard(ctx context.Context, action KeyboardAction) error
 func (windowsBackend) App(ctx context.Context, action AppAction) error {
 	return &UnavailableError{Reason: "windows desktop control is unavailable on this platform build"}
 }
+
+func (windowsBackend) Available(ctx context.Context) bool {
+	return false
+}

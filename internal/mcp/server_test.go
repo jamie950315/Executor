@@ -61,6 +61,25 @@ func TestPrivilegedToolsExposeOwnerAndAdminSelection(t *testing.T) {
 	}
 }
 
+func TestDesktopToolSchemasMatchExecutableArguments(t *testing.T) {
+	t.Parallel()
+	for _, tool := range BuiltinTools() {
+		properties := tool.InputSchema["properties"].(map[string]any)
+		switch tool.Name {
+		case "desktop_observe":
+			if _, ok := properties["path"]; !ok {
+				t.Fatal("desktop_observe screenshot path is missing")
+			}
+		case "desktop_control":
+			for _, name := range []string{"keyCode", "modifiers", "name"} {
+				if _, ok := properties[name]; !ok {
+					t.Fatalf("desktop_control property %q is missing", name)
+				}
+			}
+		}
+	}
+}
+
 func TestInitializeNegotiatesSupportedProtocolVersion(t *testing.T) {
 	t.Parallel()
 

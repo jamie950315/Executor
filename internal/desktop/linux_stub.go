@@ -52,3 +52,7 @@ func (linuxBackend) Keyboard(ctx context.Context, action KeyboardAction) error {
 func (linuxBackend) App(ctx context.Context, action AppAction) error {
 	return &UnavailableError{Reason: "linux desktop control is unavailable on this platform build"}
 }
+
+func (linuxBackend) Available(ctx context.Context) bool {
+	return false
+}

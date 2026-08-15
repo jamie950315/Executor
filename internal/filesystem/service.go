@@ -28,6 +28,8 @@ type Service interface {
 	Glob(pattern string) ([]string, error)
 	Stat(path string) (FileInfo, error)
 	WriteFile(path string, data []byte, perm fs.FileMode) error
+	AppendFile(path string, data []byte, perm fs.FileMode) error
+	Mkdir(path string, perm fs.FileMode) error
 	Move(src, dst string) error
 	Delete(path string) error
 }
@@ -97,6 +99,23 @@ func (s *LocalService) WriteFile(path string, data []byte, perm fs.FileMode) err
 		return err
 	}
 	return os.WriteFile(path, data, perm)
+}
+
+func (s *LocalService) AppendFile(path string, data []byte, perm fs.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, perm)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(data)
+	return err
+}
+
+func (s *LocalService) Mkdir(path string, perm fs.FileMode) error {
+	return os.MkdirAll(path, perm)
 }
 
 func (s *LocalService) Move(src, dst string) error {

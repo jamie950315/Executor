@@ -12,6 +12,7 @@ import (
 type ptyLauncher interface {
 	Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error)
 	Kill(cmd *exec.Cmd) error
+	Signal(cmd *exec.Cmd, signal Signal) error
 }
 
 type windowsLauncher struct{}
@@ -46,6 +47,23 @@ func (windowsLauncher) Kill(cmd *exec.Cmd) error {
 		return nil
 	}
 	return exec.Command("taskkill", "/PID", itoa(cmd.Process.Pid), "/T", "/F").Run()
+}
+
+func (windowsLauncher) Signal(cmd *exec.Cmd, signal Signal) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	switch signal {
+	case SignalInterrupt:
+		if err := cmd.Process.Signal(os.Interrupt); err == nil {
+			return nil
+		}
+		return exec.Command("taskkill", "/PID", itoa(cmd.Process.Pid), "/T").Run()
+	case SignalTerminate, SignalKill:
+		return exec.Command("taskkill", "/PID", itoa(cmd.Process.Pid), "/T", "/F").Run()
+	default:
+		return nil
+	}
 }
 
 func buildWindowsCommand(spec SessionSpec) *exec.Cmd {

@@ -19,7 +19,8 @@ type Values struct {
 	URLSecret       string `json:"-"`
 	RecoveryKeyHash string `json:"recovery_key_hash"`
 	URLSecretHash   string `json:"url_secret_hash"`
-	IPCKey          string `json:"ipc_key"`
+	BrokerIPCKey    string `json:"broker_ipc_key"`
+	DesktopIPCKey   string `json:"desktop_ipc_key"`
 	OAuthKey        string `json:"oauth_signing_key"`
 	DashboardKey    string `json:"dashboard_key"`
 	Generation      uint64 `json:"generation"`
@@ -47,7 +48,7 @@ func Load(dir string) (Values, error) {
 	if err := json.Unmarshal(data, &values); err != nil {
 		return Values{}, err
 	}
-	if values.Generation == 0 || values.RecoveryKeyHash == "" || values.URLSecretHash == "" || values.IPCKey == "" || values.OAuthKey == "" || values.DashboardKey == "" {
+	if values.Generation == 0 || values.RecoveryKeyHash == "" || values.URLSecretHash == "" || values.BrokerIPCKey == "" || values.DesktopIPCKey == "" || values.OAuthKey == "" || values.DashboardKey == "" {
 		return Values{}, fmt.Errorf("incomplete secret store")
 	}
 	return values, nil
@@ -66,7 +67,7 @@ func Rotate(dir string) (Values, error) {
 }
 
 func generate(generation uint64) (Values, error) {
-	items := make([]string, 5)
+	items := make([]string, 6)
 	for i := range items {
 		buf := make([]byte, 32)
 		if _, err := rand.Read(buf); err != nil {
@@ -79,9 +80,10 @@ func generate(generation uint64) (Values, error) {
 		URLSecret:       items[1],
 		RecoveryKeyHash: secretHash(items[0]),
 		URLSecretHash:   secretHash(items[1]),
-		IPCKey:          items[2],
-		OAuthKey:        items[3],
-		DashboardKey:    items[4],
+		BrokerIPCKey:    items[2],
+		DesktopIPCKey:   items[3],
+		OAuthKey:        items[4],
+		DashboardKey:    items[5],
 		Generation:      generation,
 	}, nil
 }

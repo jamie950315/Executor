@@ -18,15 +18,19 @@ const (
 	RPCMethodTerminalClose   = "terminal.close"
 	RPCMethodTerminalKill    = "terminal.kill"
 	RPCMethodTerminalKillAll = "terminal.kill-all"
+	RPCMethodTerminalSignal  = "terminal.signal"
 
 	RPCMethodFilesystemRead   = "filesystem.read"
 	RPCMethodFilesystemList   = "filesystem.list"
 	RPCMethodFilesystemGlob   = "filesystem.glob"
 	RPCMethodFilesystemStat   = "filesystem.stat"
 	RPCMethodFilesystemWrite  = "filesystem.write"
+	RPCMethodFilesystemAppend = "filesystem.append"
+	RPCMethodFilesystemMkdir  = "filesystem.mkdir"
 	RPCMethodFilesystemMove   = "filesystem.move"
 	RPCMethodFilesystemDelete = "filesystem.delete"
 
+	RPCMethodDeviceStatus         = "device.status"
 	RPCMethodDesktopScreenshot    = "desktop.screenshot"
 	RPCMethodDesktopWindows       = "desktop.windows"
 	RPCMethodDesktopAccessibility = "desktop.accessibility"
@@ -56,6 +60,11 @@ type RPCSessionParams struct {
 	SessionID string `json:"session_id"`
 }
 
+type RPCTerminalSignalParams struct {
+	SessionID string          `json:"session_id"`
+	Signal    terminal.Signal `json:"signal"`
+}
+
 type RPCFilesystemPathParams struct {
 	Path string `json:"path"`
 }
@@ -67,6 +76,11 @@ type RPCFilesystemGlobParams struct {
 type RPCFilesystemWriteParams struct {
 	Path string      `json:"path"`
 	Data []byte      `json:"data"`
+	Perm fs.FileMode `json:"perm"`
+}
+
+type RPCFilesystemMkdirParams struct {
+	Path string      `json:"path"`
 	Perm fs.FileMode `json:"perm"`
 }
 
@@ -89,6 +103,12 @@ type RPCDesktopKeyboardParams struct {
 
 type RPCDesktopAppParams struct {
 	Action AppAction `json:"action"`
+}
+
+type RPCDeviceStatus struct {
+	Component        string `json:"component"`
+	TerminalSessions int    `json:"terminal_sessions"`
+	Available        bool   `json:"available,omitempty"`
 }
 
 func decodeStrictParams(method string, raw []byte, dst any) error {

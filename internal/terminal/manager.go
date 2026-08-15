@@ -36,6 +36,14 @@ type SessionInfo struct {
 	Running bool
 }
 
+type Signal string
+
+const (
+	SignalInterrupt Signal = "interrupt"
+	SignalTerminate Signal = "terminate"
+	SignalKill      Signal = "kill"
+)
+
 type OutputChunk struct {
 	Data        []byte
 	StartCursor int64
@@ -204,6 +212,27 @@ func (m *Manager) KillAll() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (m *Manager) Signal(sessionID string, signal Signal) error {
+	state, err := m.session(sessionID)
+	if err != nil {
+		return err
+	}
+	if signal == SignalInterrupt {
+		state.mu.RLock()
+		running := state.running
+		stdin := state.stdin
+		state.mu.RUnlock()
+		if !running {
+			return errors.New("session is not running")
+		}
+		if stdin != nil {
+			_, err := stdin.Write([]byte{3})
+			return err
+		}
+	}
+	return m.launcher.Signal(state.cmd, signal)
 }
 
 var ErrSessionNotFound = errors.New("session not found")

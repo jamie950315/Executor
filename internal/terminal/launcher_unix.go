@@ -14,6 +14,7 @@ import (
 type ptyLauncher interface {
 	Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error)
 	Kill(cmd *exec.Cmd) error
+	Signal(cmd *exec.Cmd, signal Signal) error
 }
 
 type scriptLauncher struct{}
@@ -49,6 +50,24 @@ func (scriptLauncher) Kill(cmd *exec.Cmd) error {
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	return nil
+}
+
+func (scriptLauncher) Signal(cmd *exec.Cmd, signal Signal) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	var sig syscall.Signal
+	switch signal {
+	case SignalInterrupt:
+		sig = syscall.SIGINT
+	case SignalTerminate:
+		sig = syscall.SIGTERM
+	case SignalKill:
+		sig = syscall.SIGKILL
+	default:
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, sig)
 }
 
 func buildPTYCommand(command []string) *exec.Cmd {

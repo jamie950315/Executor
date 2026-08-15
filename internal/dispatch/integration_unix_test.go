@@ -157,6 +157,7 @@ func stringValue(value any) string {
 
 type unavailableDesktop struct{}
 
+func (unavailableDesktop) Available(context.Context) bool           { return true }
 func (unavailableDesktop) Screenshot(context.Context, string) error { return nil }
 func (unavailableDesktop) Windows(context.Context) ([]desktop.Window, error) {
 	return []desktop.Window{{App: "Finder", Title: "Desktop"}}, nil

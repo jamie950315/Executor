@@ -112,3 +112,8 @@ func (b darwinBackend) App(ctx context.Context, action AppAction) error {
 	}
 	return nil
 }
+
+func (b darwinBackend) Available(ctx context.Context) bool {
+	_, err := b.runner.Run(ctx, "osascript", "-e", `tell application "System Events" to count processes`)
+	return err == nil
+}

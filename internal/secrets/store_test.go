@@ -13,7 +13,7 @@ func TestCreatePersistsOnlyCredentialHashesAndReturnsRecoveryOnce(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if len(created.RecoveryKey) < 32 || len(created.URLSecret) < 32 || len(created.IPCKey) < 32 || len(created.DashboardKey) < 32 {
+	if len(created.RecoveryKey) < 32 || len(created.URLSecret) < 32 || len(created.BrokerIPCKey) < 32 || len(created.DesktopIPCKey) < 32 || len(created.DashboardKey) < 32 {
 		t.Fatalf("generated secrets are too short: %#v", created)
 	}
 	loaded, err := Load(dir)
@@ -26,8 +26,11 @@ func TestCreatePersistsOnlyCredentialHashesAndReturnsRecoveryOnce(t *testing.T) 
 	if !loaded.VerifyRecoveryKey(created.RecoveryKey) || !loaded.VerifyURLSecret(created.URLSecret) {
 		t.Fatal("persisted hashes do not verify one-time credentials")
 	}
-	if loaded.IPCKey != created.IPCKey || loaded.OAuthKey != created.OAuthKey || loaded.DashboardKey != created.DashboardKey {
+	if loaded.BrokerIPCKey != created.BrokerIPCKey || loaded.DesktopIPCKey != created.DesktopIPCKey || loaded.OAuthKey != created.OAuthKey || loaded.DashboardKey != created.DashboardKey {
 		t.Fatal("service keys differ from created keys")
+	}
+	if created.BrokerIPCKey == created.DesktopIPCKey {
+		t.Fatal("broker and desktop IPC reused a credential")
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(filepath.Join(dir, secretsFile))
@@ -50,7 +53,7 @@ func TestRotateChangesEveryCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.RecoveryKey == after.RecoveryKey || before.URLSecret == after.URLSecret || before.IPCKey == after.IPCKey || before.DashboardKey == after.DashboardKey {
+	if before.RecoveryKey == after.RecoveryKey || before.URLSecret == after.URLSecret || before.BrokerIPCKey == after.BrokerIPCKey || before.DesktopIPCKey == after.DesktopIPCKey || before.DashboardKey == after.DashboardKey {
 		t.Fatal("Rotate reused a credential")
 	}
 }

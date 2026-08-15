@@ -25,6 +25,12 @@ func TestLocalService_UnrestrictedOperations(t *testing.T) {
 	if err := svc.WriteFile(filepath.Join(nestedDir, "two.txt"), []byte("two"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
+	if err := svc.AppendFile(filepath.Join(nestedDir, "two.txt"), []byte("-more"), 0o600); err != nil {
+		t.Fatalf("append file: %v", err)
+	}
+	if err := svc.Mkdir(filepath.Join(root, "created", "leaf"), 0o755); err != nil {
+		t.Fatalf("mkdir path: %v", err)
+	}
 
 	data, err := svc.ReadFile(filepath.Join(alphaDir, "one.txt"))
 	if err != nil {
@@ -38,8 +44,8 @@ func TestLocalService_UnrestrictedOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list root: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 root entries, got %d", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 root entries, got %d", len(entries))
 	}
 
 	matches, err := svc.Glob(filepath.Join(root, "*", "*.txt"))
@@ -54,8 +60,16 @@ func TestLocalService_UnrestrictedOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat nested/two.txt: %v", err)
 	}
-	if info.Size != 3 || info.Mode.Perm() != 0o600 {
+	if info.Size != 8 || info.Mode.Perm() != 0o600 {
 		t.Fatalf("unexpected stat: %#v", info)
+	}
+
+	appended, err := svc.ReadFile(filepath.Join(nestedDir, "two.txt"))
+	if err != nil {
+		t.Fatalf("read appended file: %v", err)
+	}
+	if string(appended) != "two-more" {
+		t.Fatalf("unexpected appended contents: %q", string(appended))
 	}
 
 	dst := filepath.Join(root, "moved.txt")
@@ -71,5 +85,8 @@ func TestLocalService_UnrestrictedOperations(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
 		t.Fatalf("expected deleted file to be absent, got err=%v", err)
+	}
+	if stat, err := os.Stat(filepath.Join(root, "created", "leaf")); err != nil || !stat.IsDir() {
+		t.Fatalf("expected created directory to exist, stat=%v err=%v", stat, err)
 	}
 }
