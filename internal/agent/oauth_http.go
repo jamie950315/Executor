@@ -184,7 +184,6 @@ func (h *oauthHandler) resolveClientMetadata(ctx context.Context, clientID strin
 	}
 	var document clientMetadataDocument
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("decode client metadata: %w", err)
 	}

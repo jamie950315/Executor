@@ -115,7 +115,7 @@ func TestOAuthHTTPResolvesChatGPTClientMetadataDocument(t *testing.T) {
 		if r.URL.String() != clientID {
 			t.Fatalf("CIMD request URL = %q", r.URL.String())
 		}
-		body := `{"client_name":"ChatGPT","redirect_uris":["` + callback + `"],"scope":"executor.full"}`
+		body := `{"client_name":"ChatGPT","redirect_uris":["` + callback + `"],"scope":"executor.full","token_endpoint_auth_methods_supported":["none","private_key_jwt"]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	h := NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true }, WithCIMDHTTPClient(httpClient))
