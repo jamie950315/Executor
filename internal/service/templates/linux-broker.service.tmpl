@@ -1,0 +1,16 @@
+[Unit]
+Description=Executor broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ .BinaryPath }} broker --config {{ .ConfigPath }}
+User={{ .BrokerUser }}
+Group={{ .BrokerGroup }}
+Restart=always
+RestartSec=5
+WorkingDirectory={{ .DataDir }}
+
+[Install]
+WantedBy=multi-user.target

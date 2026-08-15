@@ -1,0 +1,99 @@
+package service
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
+	t.Parallel()
+
+	cfg := InstallConfig{
+		BinaryPath:            "/usr/local/bin/executor",
+		ConfigPath:            "/etc/executor/config.json",
+		DataDir:               "/var/lib/executor",
+		LogPath:               "/var/log/executor.log",
+		CloudflaredBinaryPath: "/usr/local/bin/cloudflared",
+		CloudflaredTokenPath:  "/etc/cloudflared/executor.token",
+		CloudflaredLogPath:    "/var/log/cloudflared.log",
+		AgentUser:             "executor-agent",
+		AgentGroup:            "executor-agent",
+		BrokerUser:            "root",
+		BrokerGroup:           "root",
+		WindowsAgentService:   "ExecutorAgentSvc",
+	}
+
+	mac, err := RenderBundle(TargetMacOS, cfg)
+	if err != nil {
+		t.Fatalf("RenderBundle macOS: %v", err)
+	}
+	assertContainsAll(t, mac.Files["LaunchDaemons/com.executor.agent.plist"],
+		"<string>com.executor.agent</string>",
+		"<key>UserName</key>",
+		"<string>executor-agent</string>",
+		"<key>GroupName</key>",
+		"<string>executor-agent</string>",
+	)
+	assertContainsAll(t, mac.Files["LaunchDaemons/com.executor.broker.plist"],
+		"<string>com.executor.broker</string>",
+		"<key>UserName</key>",
+		"<string>root</string>",
+	)
+	assertContainsAll(t, mac.Files["LaunchDaemons/com.cloudflare.cloudflared.plist"],
+		"--token-file",
+		"/etc/cloudflared/executor.token",
+	)
+
+	linux, err := RenderBundle(TargetLinux, cfg)
+	if err != nil {
+		t.Fatalf("RenderBundle linux: %v", err)
+	}
+	assertContainsAll(t, linux.Files["systemd/executor-agent.service"],
+		"ExecStart=/usr/local/bin/executor agent --config /etc/executor/config.json",
+		"User=executor-agent",
+		"Group=executor-agent",
+	)
+	assertContainsAll(t, linux.Files["systemd/executor-broker.service"],
+		"ExecStart=/usr/local/bin/executor broker --config /etc/executor/config.json",
+		"User=root",
+		"Group=root",
+	)
+	assertContainsAll(t, linux.Files["systemd/cloudflared.service"],
+		"run --token-file /etc/cloudflared/executor.token",
+	)
+
+	windows, err := RenderBundle(TargetWindows, cfg)
+	if err != nil {
+		t.Fatalf("RenderBundle windows: %v", err)
+	}
+	assertContainsAll(t, windows.Files["windows/install-services.ps1"],
+		"ExecutorAgentSvc",
+		"New-Service -Name \"ExecutorAgent\"",
+		"`\"$Binary`\" agent --config",
+		"sc.exe config ExecutorAgent obj= $AgentIdentity",
+	)
+	if strings.Contains(windows.Files["windows/install-services.ps1"], "`\"$Binary`\" executor agent") {
+		t.Fatalf("windows agent service still includes extra executor argv:\n%s", windows.Files["windows/install-services.ps1"])
+	}
+	if strings.Contains(windows.Files["windows/install-services.ps1"], "agent-password.txt") {
+		t.Fatalf("windows agent service should not persist a service password:\n%s", windows.Files["windows/install-services.ps1"])
+	}
+	if strings.Contains(windows.Files["windows/install-services.ps1"], "AsPlainText") {
+		t.Fatalf("windows agent service should not use plaintext password conversion:\n%s", windows.Files["windows/install-services.ps1"])
+	}
+	assertContainsAll(t, windows.Files["windows/configure-cloudflared.ps1"],
+		"New-Service -Name \"cloudflared\"",
+		"Set-Content -Path $BackupPath",
+		"Set-ItemProperty",
+		"--token-file",
+	)
+}
+
+func assertContainsAll(t *testing.T, body string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered body missing %q:\n%s", want, body)
+		}
+	}
+}

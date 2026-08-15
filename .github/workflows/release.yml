@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify tests
+        run: go test ./...
+      - name: Build release artifact
+        run: |
+          chmod +x scripts/build-release-artifacts.sh
+          EXECUTOR_BUILD_TARGETS="${{ matrix.goos }}/${{ matrix.goarch }}" ./scripts/build-release-artifacts.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: executor-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/release/*
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/artifacts
+      - name: Consolidate checksums
+        run: |
+          find dist/artifacts -name 'SHA256SUMS.txt' -print0 | xargs -0 cat > dist/SHA256SUMS.txt
+          sha256sum dist/SHA256SUMS.txt
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: executor-checksums
+          path: dist/SHA256SUMS.txt

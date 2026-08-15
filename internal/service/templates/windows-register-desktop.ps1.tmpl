@@ -1,0 +1,7 @@
+$Binary = "{{ .BinaryPath }}"
+$Config = "{{ .ConfigPath }}"
+$Startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
+@"
+@echo off
+"$Binary" desktop --config "$Config"
+"@ | Set-Content -Path $Startup -Encoding ASCII

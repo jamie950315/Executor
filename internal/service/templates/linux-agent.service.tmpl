@@ -1,0 +1,16 @@
+[Unit]
+Description=Executor agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ .BinaryPath }} agent --config {{ .ConfigPath }}
+User={{ .AgentUser }}
+Group={{ .AgentGroup }}
+Restart=always
+RestartSec=5
+WorkingDirectory={{ .DataDir }}
+
+[Install]
+WantedBy=multi-user.target

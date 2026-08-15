@@ -1,0 +1,14 @@
+$Binary = "{{ .BinaryPath }}"
+$Config = "{{ .ConfigPath }}"
+$AgentIdentity = "{{ .WindowsAgentService }}"
+
+if (-not (Get-Service -Name "ExecutorAgent" -ErrorAction SilentlyContinue)) {
+  New-Service -Name "ExecutorAgent" -BinaryPathName "`"$Binary`" agent --config `"$Config`"" -DisplayName "Executor Agent" -StartupType Automatic
+}
+& sc.exe config ExecutorAgent obj= $AgentIdentity | Out-Null
+if (-not (Get-Service -Name "ExecutorBroker" -ErrorAction SilentlyContinue)) {
+  New-Service -Name "ExecutorBroker" -BinaryPathName "`"$Binary`" broker --config `"$Config`"" -DisplayName "Executor Broker" -StartupType Automatic
+}
+& sc.exe config ExecutorBroker obj= LocalSystem | Out-Null
+Start-Service ExecutorAgent
+Start-Service ExecutorBroker

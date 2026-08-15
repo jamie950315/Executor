@@ -1,0 +1,12 @@
+[Unit]
+Description=Executor desktop helper
+
+[Service]
+Type=simple
+ExecStart={{ .BinaryPath }} desktop --config {{ .ConfigPath }}
+Restart=always
+RestartSec=5
+WorkingDirectory={{ .DataDir }}
+
+[Install]
+WantedBy=default.target

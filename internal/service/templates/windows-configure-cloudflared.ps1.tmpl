@@ -1,0 +1,14 @@
+$Binary = "{{ .CloudflaredBinaryPath }}"
+$TokenFile = "{{ .CloudflaredTokenPath }}"
+$LogFile = "{{ .CloudflaredLogPath }}"
+$BackupPath = Join-Path (Split-Path $TokenFile -Parent) "cloudflared-service-imagepath.bak"
+
+$ImagePath = "`"$Binary`" tunnel --logfile `"$LogFile`" run --token-file `"$TokenFile`""
+if (Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue) {
+  $Current = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\cloudflared" -Name ImagePath).ImagePath
+  $Current | Set-Content -Path $BackupPath -Encoding ASCII
+  Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\cloudflared" -Name ImagePath -Value $ImagePath
+} else {
+  New-Service -Name "cloudflared" -BinaryPathName $ImagePath -DisplayName "Cloudflare Tunnel" -StartupType Automatic
+}
+Restart-Service cloudflared

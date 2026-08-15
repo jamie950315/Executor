@@ -1,0 +1,13 @@
+Executor on WSL supports terminal and filesystem control inside the Linux environment.
+
+Desktop control requires the Windows companion because GUI automation does not cross the WSL boundary reliably.
+
+Use the Windows companion for:
+- broker and desktop helper installation
+- Cloudflare Tunnel service registration on Windows
+- startup registration for the active Windows user
+
+Use WSL for:
+- executor agent runtime
+- local config and data at {{ .DataDir }}
+- cloudflared config generation that points to 127.0.0.1
