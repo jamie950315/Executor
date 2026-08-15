@@ -49,13 +49,19 @@ func runRuntimeCommand(ctx context.Context, args []string, stdin io.Reader, stdo
 	var err error
 	switch name {
 	case "agent":
-		err = commands.agent(ctx, *configPath)
+		err = runManagedRuntime(ctx, "ExecutorAgent", func(serviceCtx context.Context) error {
+			return commands.agent(serviceCtx, *configPath)
+		})
 	case "broker":
-		err = commands.broker(ctx, *configPath)
+		err = runManagedRuntime(ctx, "ExecutorBroker", func(serviceCtx context.Context) error {
+			return commands.broker(serviceCtx, *configPath)
+		})
 	case "desktop":
 		err = commands.desktop(ctx, *configPath)
 	case "dashboard":
-		err = commands.dashboard(ctx, *configPath)
+		err = runManagedRuntime(ctx, "ExecutorDashboard", func(serviceCtx context.Context) error {
+			return commands.dashboard(serviceCtx, *configPath)
+		})
 	case "stdio":
 		err = commands.stdio(ctx, *configPath, stdin, stdout)
 	}
