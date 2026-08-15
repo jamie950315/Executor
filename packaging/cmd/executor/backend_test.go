@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -44,6 +45,83 @@ func TestSetupCreatesConfigAndSecretsWithDashboardKeyBootstrapURL(t *testing.T) 
 	}
 	if !strings.Contains(result.Dashboard, loaded.DashboardKey) {
 		t.Fatalf("dashboard bootstrap URL should contain dashboard key, got %q", result.Dashboard)
+	}
+}
+
+func TestSetupMovesNewConfigOffOccupiedLoopbackPorts(t *testing.T) {
+	agentListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agentListener.Close()
+	dashboardListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dashboardListener.Close()
+
+	stateDir := t.TempDir()
+	b := newBackend(stateDir)
+	b.defaultConfig = func(stateDir string) config.Config {
+		cfg := config.Default(stateDir)
+		cfg.AgentAddress = agentListener.Addr().String()
+		cfg.DashboardAddress = dashboardListener.Addr().String()
+		return cfg
+	}
+	result, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"})
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	loaded, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.AgentAddress == agentListener.Addr().String() {
+		t.Fatalf("agent retained occupied address %q", loaded.AgentAddress)
+	}
+	if loaded.DashboardAddress == dashboardListener.Addr().String() {
+		t.Fatalf("dashboard retained occupied address %q", loaded.DashboardAddress)
+	}
+	if !strings.HasPrefix(loaded.AgentAddress, "127.0.0.1:") || !strings.HasPrefix(loaded.DashboardAddress, "127.0.0.1:") {
+		t.Fatalf("fallback addresses are not loopback: agent=%q dashboard=%q", loaded.AgentAddress, loaded.DashboardAddress)
+	}
+	if loaded.AgentAddress == loaded.DashboardAddress {
+		t.Fatalf("agent and dashboard selected the same address %q", loaded.AgentAddress)
+	}
+	if !strings.HasPrefix(result.Dashboard, "http://"+loaded.DashboardAddress+"/?token=") {
+		t.Fatalf("dashboard bootstrap URL %q does not use selected address %q", result.Dashboard, loaded.DashboardAddress)
+	}
+}
+
+func TestSetupMovesExistingConfigOffForeignAgentPort(t *testing.T) {
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer foreign.Close()
+
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("initial Setup: %v", err)
+	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	foreignAddress := strings.TrimPrefix(foreign.URL, "http://")
+	cfg.AgentAddress = foreignAddress
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("repeat Setup: %v", err)
+	}
+	loaded, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load repeated config: %v", err)
+	}
+	if loaded.AgentAddress == foreignAddress {
+		t.Fatalf("repeat setup retained foreign agent address %q", loaded.AgentAddress)
 	}
 }
 
@@ -102,6 +180,70 @@ func TestDoctorReportsOfflineRuntime(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing agent check: %#v", result.Checks)
+	}
+}
+
+func TestStatusRejectsForeignServiceOnAgentPort(t *testing.T) {
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer foreign.Close()
+
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	cfg.AgentAddress = strings.TrimPrefix(foreign.URL, "http://")
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	status, err := b.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Agent != "offline" {
+		t.Fatalf("foreign service reported as agent state %q, want offline", status.Agent)
+	}
+}
+
+func TestStatusAcceptsAuthenticatedExecutorHealthResponse(t *testing.T) {
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	values, err := secrets.Load(b.stateDir)
+	if err != nil {
+		t.Fatalf("Load secrets: %v", err)
+	}
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.executor/health" || r.Header.Get("X-Executor-Health-Key") != values.DashboardKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("X-Executor-Health", "ok")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer agent.Close()
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	cfg.AgentAddress = strings.TrimPrefix(agent.URL, "http://")
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+
+	status, err := b.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Agent != "online" {
+		t.Fatalf("authenticated Executor health response reported as %q, want online", status.Agent)
 	}
 }
 

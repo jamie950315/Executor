@@ -25,8 +25,9 @@ import (
 )
 
 type backend struct {
-	stateDir    string
-	loadControl func(string) (controlRuntime, error)
+	stateDir      string
+	loadControl   func(string) (controlRuntime, error)
+	defaultConfig func(string) config.Config
 }
 
 type controlRuntime interface {
@@ -37,7 +38,11 @@ type controlRuntime interface {
 type setupOptions = cli.SetupOptions
 
 func newBackend(stateDir string) *backend {
-	return &backend{stateDir: stateDir, loadControl: func(path string) (controlRuntime, error) { return control.Load(path) }}
+	return &backend{
+		stateDir:      stateDir,
+		loadControl:   func(path string) (controlRuntime, error) { return control.Load(path) },
+		defaultConfig: config.Default,
+	}
 }
 
 func defaultStateDir() string {
@@ -59,13 +64,12 @@ func (b *backend) Setup(ctx context.Context, options cli.SetupOptions) (cli.Setu
 	secretsPath := b.stateDir
 	result := cli.SetupResult{Domain: options.Domain, MCPURL: mcpURL(options.Domain)}
 	var cfg config.Config
+	isNewConfig := false
 
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		cfg = config.Default(b.stateDir)
+		cfg = b.defaultConfig(b.stateDir)
 		cfg.Domain = options.Domain
-		if err := config.Save(configPath, cfg); err != nil {
-			return cli.SetupResult{}, err
-		}
+		isNewConfig = true
 	} else if err == nil {
 		var loadErr error
 		cfg, loadErr = config.Load(configPath)
@@ -82,6 +86,14 @@ func (b *backend) Setup(ctx context.Context, options cli.SetupOptions) (cli.Setu
 		result.MCPURL = mcpURL(cfg.Domain)
 	} else {
 		return cli.SetupResult{}, err
+	}
+	if err := b.selectSetupAddresses(ctx, &cfg, isNewConfig); err != nil {
+		return cli.SetupResult{}, err
+	}
+	if isNewConfig {
+		if err := config.Save(configPath, cfg); err != nil {
+			return cli.SetupResult{}, err
+		}
 	}
 
 	if err := b.setupCloudflare(ctx, &cfg, options); err != nil {
@@ -115,7 +127,7 @@ func (b *backend) Status(ctx context.Context) (cli.Status, error) {
 	}
 	status.Broker = probeIPC(ctx, cfg.BrokerEndpoint, values.BrokerIPCKey)
 	status.Desktop = probeIPC(ctx, cfg.DesktopEndpoint, values.DesktopIPCKey)
-	status.Agent = probeTCP(ctx, cfg.AgentAddress)
+	status.Agent = probeAgent(ctx, cfg.AgentAddress, values.DashboardKey)
 	if cfg.Cloudflare.Complete() {
 		if _, err := os.Stat(cfg.Cloudflare.TokenFilePath); err == nil {
 			status.Tunnel = "configured"
@@ -422,15 +434,76 @@ func probeIPC(ctx context.Context, endpoint, key string) string {
 	return "online"
 }
 
-func probeTCP(ctx context.Context, address string) string {
+func probeAgent(ctx context.Context, address, healthKey string) string {
 	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	connection, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", address)
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+address+"/.executor/health", nil)
 	if err != nil {
 		return "offline"
 	}
-	_ = connection.Close()
+	request.Header.Set("X-Executor-Health-Key", healthKey)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "offline"
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent || response.Header.Get("X-Executor-Health") != "ok" {
+		return "offline"
+	}
 	return "online"
+}
+
+func (b *backend) selectSetupAddresses(ctx context.Context, cfg *config.Config, isNewConfig bool) error {
+	if isNewConfig {
+		agentListener, agentAddress, err := reserveLoopbackAddress(cfg.AgentAddress)
+		if err != nil {
+			return fmt.Errorf("select agent address: %w", err)
+		}
+		defer agentListener.Close()
+		dashboardListener, dashboardAddress, err := reserveLoopbackAddress(cfg.DashboardAddress)
+		if err != nil {
+			return fmt.Errorf("select dashboard address: %w", err)
+		}
+		defer dashboardListener.Close()
+		cfg.AgentAddress = agentAddress
+		cfg.DashboardAddress = dashboardAddress
+		return nil
+	}
+
+	values, err := secrets.Load(b.stateDir)
+	if err == nil && probeAgent(ctx, cfg.AgentAddress, values.DashboardKey) == "online" {
+		return nil
+	}
+	dashboardGuard, _, _ := reserveLoopbackAddress(cfg.DashboardAddress)
+	if dashboardGuard != nil {
+		defer dashboardGuard.Close()
+	}
+	agentListener, agentAddress, err := reserveLoopbackAddress(cfg.AgentAddress)
+	if err != nil {
+		return fmt.Errorf("select agent address: %w", err)
+	}
+	defer agentListener.Close()
+	cfg.AgentAddress = agentAddress
+	return nil
+}
+
+func reserveLoopbackAddress(preferred string) (net.Listener, string, error) {
+	host, _, err := net.SplitHostPort(preferred)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid loopback address %q: %w", preferred, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return nil, "", fmt.Errorf("address %q is not loopback", preferred)
+	}
+	listener, err := net.Listen("tcp", preferred)
+	if err != nil {
+		listener, err = net.Listen("tcp", net.JoinHostPort(host, "0"))
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	return listener, listener.Addr().String(), nil
 }
 
 func onlineError(state string, cause error) error {

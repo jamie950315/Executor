@@ -141,6 +141,7 @@ func RunAgent(ctx context.Context, configPath string) error {
 				http.Error(writer, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			writer.Header().Set("X-Executor-Health", "ok")
 			writer.WriteHeader(http.StatusNoContent)
 			return
 		}

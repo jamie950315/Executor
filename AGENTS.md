@@ -45,6 +45,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Resume verifies that Broker, Desktop, and Agent loaded the rotated credentials before starting the tunnel or removing the disabled marker.
 - Linux/WSL units install under the standard systemd system/user directories. Darwin release jobs build on macOS with native CoreGraphics desktop input.
 - Windows terminal sessions use the native ConPTY API with persistent input/output, case-insensitive environment overrides, cwd preservation, live resize, and bounded process-tree teardown through a kill-on-close Job Object. A real Windows amd64 test launched through WSL interoperability verifies PowerShell state, LF command input, resize, inherited Ctrl+C recovery, no-parent-console startup, and child-process termination; full Windows service and active-desktop installation still require target-machine verification.
+- Setup preserves the preferred loopback ports when available and automatically persists free loopback ports when another process owns them. Agent status and doctor probes require the authenticated Executor health marker instead of treating any TCP listener as healthy.
 - No system service has been installed from this checkout yet.
 
 ## Runtime targets

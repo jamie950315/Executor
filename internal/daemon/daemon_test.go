@@ -217,6 +217,9 @@ func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("authenticated health status = %d, want 204", response.StatusCode)
 	}
+	if got := response.Header.Get("X-Executor-Health"); got != "ok" {
+		t.Fatalf("authenticated health marker = %q, want ok", got)
+	}
 	cancel()
 	assertDaemonStopped(t, errCh)
 }
