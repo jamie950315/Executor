@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jamie950315/executor/internal/cli"
+	"github.com/jamie950315/executor/internal/cloudflare"
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/doctor"
 	"github.com/jamie950315/executor/internal/secrets"
@@ -32,7 +37,7 @@ func defaultStateDir() string {
 	return filepath.Join(".", "executor-state")
 }
 
-func (b *backend) Setup(_ context.Context, options cli.SetupOptions) (cli.SetupResult, error) {
+func (b *backend) Setup(ctx context.Context, options cli.SetupOptions) (cli.SetupResult, error) {
 	configPath := b.configPath()
 	secretsPath := b.stateDir
 	result := cli.SetupResult{Domain: options.Domain, MCPURL: mcpURL(options.Domain)}
@@ -62,13 +67,17 @@ func (b *backend) Setup(_ context.Context, options cli.SetupOptions) (cli.SetupR
 		return cli.SetupResult{}, err
 	}
 
+	if err := b.setupCloudflare(ctx, &cfg, options); err != nil {
+		return cli.SetupResult{}, err
+	}
+	if err := config.Save(configPath, cfg); err != nil {
+		return cli.SetupResult{}, err
+	}
 	created, err := secrets.Create(secretsPath)
 	if err == nil {
 		result.RecoveryKey = created.RecoveryKey
 		result.Dashboard = dashboardURL(cfg.DashboardAddress, created.DashboardKey)
-		return result, nil
-	}
-	if !strings.Contains(err.Error(), "already exist") {
+	} else if !strings.Contains(err.Error(), "already exist") {
 		return cli.SetupResult{}, err
 	}
 	return result, nil
@@ -127,6 +136,153 @@ func dashboardURL(address, token string) string {
 		return ""
 	}
 	return "http://" + address + "/?token=" + token
+}
+
+func (b *backend) setupCloudflare(ctx context.Context, cfg *config.Config, options cli.SetupOptions) error {
+	if options.CloudflareTokenFile == "" {
+		return nil
+	}
+
+	apiToken, err := readCloudflareAPITokenFile(options.CloudflareTokenFile)
+	if err != nil {
+		return err
+	}
+
+	client := cloudflare.NewClient(cloudflareAPIBaseURL(), apiToken, cloudflare.WithHTTPClient(http.DefaultClient))
+	accountID, err := selectCloudflareAccount(ctx, client, options.CloudflareAccountID, cfg.Cloudflare.AccountID)
+	if err != nil {
+		return err
+	}
+	zoneID, hostname, err := selectCloudflareZone(ctx, client, accountID, cfg.Domain, options.CloudflareZoneID, cfg.Cloudflare.ZoneID)
+	if err != nil {
+		return err
+	}
+	tunnelName := strings.TrimSpace(options.CloudflareTunnelName)
+	if tunnelName == "" {
+		tunnelName = cfg.Cloudflare.TunnelName
+	}
+	if tunnelName == "" {
+		tunnelName = "executor"
+	}
+	tokenFilePath := cfg.Cloudflare.TokenFilePath
+	if tokenFilePath == "" {
+		tokenFilePath = defaultManagedCloudflaredTokenPath(b.stateDir)
+	}
+
+	result, err := client.Apply(ctx, cloudflare.DeploymentRequest{
+		AccountID:             accountID,
+		ZoneID:                zoneID,
+		TunnelName:            tunnelName,
+		Hostname:              hostname,
+		LocalServiceURL:       "http://" + cfg.AgentAddress,
+		TokenFilePath:         tokenFilePath,
+		CloudflaredBinaryPath: "cloudflared",
+	})
+	if err != nil {
+		return err
+	}
+
+	cfg.Cloudflare = config.CloudflareMetadata{
+		AccountID:     accountID,
+		ZoneID:        zoneID,
+		TunnelID:      result.Tunnel.ID,
+		TunnelName:    result.Tunnel.Name,
+		DNSRecordID:   result.DNS.ID,
+		TokenFilePath: result.TokenFilePath,
+		Hostname:      hostname,
+	}
+	return nil
+}
+
+func readCloudflareAPITokenFile(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("cloudflare token file is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("cloudflare token file must be a regular file: %s", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != fs.FileMode(0o600) {
+		return "", fmt.Errorf("cloudflare token file must have mode 0600: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", errors.New("cloudflare token file is empty")
+	}
+	return token, nil
+}
+
+func cloudflareAPIBaseURL() string {
+	if baseURL := strings.TrimSpace(os.Getenv("EXECUTOR_CLOUDFLARE_API_BASE_URL")); baseURL != "" {
+		return strings.TrimRight(baseURL, "/")
+	}
+	return "https://api.cloudflare.com/client/v4"
+}
+
+func defaultManagedCloudflaredTokenPath(stateDir string) string {
+	if path := strings.TrimSpace(os.Getenv("EXECUTOR_CLOUDFLARED_TOKEN_PATH")); path != "" {
+		return path
+	}
+	if path := strings.TrimSpace(os.Getenv("CLOUDFLARED_TOKEN_PATH")); path != "" {
+		return path
+	}
+	return filepath.Join(stateDir, "cloudflared", "executor.token")
+}
+
+func selectCloudflareAccount(ctx context.Context, client *cloudflare.Client, explicitID, existingID string) (string, error) {
+	if explicitID = strings.TrimSpace(explicitID); explicitID != "" {
+		return explicitID, nil
+	}
+	if existingID = strings.TrimSpace(existingID); existingID != "" {
+		return existingID, nil
+	}
+	accounts, err := client.ListAccounts(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(accounts) != 1 {
+		return "", fmt.Errorf("cloudflare account selection requires exactly one account, found %d", len(accounts))
+	}
+	return accounts[0].ID, nil
+}
+
+func selectCloudflareZone(ctx context.Context, client *cloudflare.Client, accountID, hostname, explicitID, existingID string) (string, string, error) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return "", "", errors.New("domain is required for cloudflare setup")
+	}
+	if explicitID = strings.TrimSpace(explicitID); explicitID != "" {
+		return explicitID, hostname, nil
+	}
+	if existingID = strings.TrimSpace(existingID); existingID != "" {
+		return existingID, hostname, nil
+	}
+	zones, err := client.ListZones(ctx, accountID)
+	if err != nil {
+		return "", "", err
+	}
+	type match struct {
+		id   string
+		name string
+	}
+	var matches []match
+	for _, zone := range zones {
+		if hostname == zone.Name || strings.HasSuffix(hostname, "."+zone.Name) {
+			matches = append(matches, match{id: zone.ID, name: zone.Name})
+		}
+	}
+	if len(matches) == 0 {
+		return "", "", fmt.Errorf("no Cloudflare zone matches hostname %s", hostname)
+	}
+	sort.Slice(matches, func(i, j int) bool { return len(matches[i].name) > len(matches[j].name) })
+	return matches[0].id, hostname, nil
 }
 
 type fileCheck struct {

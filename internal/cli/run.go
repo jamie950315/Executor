@@ -10,7 +10,11 @@ import (
 )
 
 type SetupOptions struct {
-	Domain string
+	Domain               string
+	CloudflareTokenFile  string
+	CloudflareAccountID  string
+	CloudflareZoneID     string
+	CloudflareTunnelName string
 }
 
 type SetupResult struct {
@@ -66,10 +70,20 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		set := flag.NewFlagSet("setup", flag.ContinueOnError)
 		set.SetOutput(stderr)
 		domain := set.String("domain", "", "public Executor hostname")
+		cloudflareTokenFile := set.String("cloudflare-token-file", "", "path to a mode-600 Cloudflare API token file")
+		cloudflareAccountID := set.String("cloudflare-account-id", "", "explicit Cloudflare account ID")
+		cloudflareZoneID := set.String("cloudflare-zone-id", "", "explicit Cloudflare zone ID")
+		cloudflareTunnelName := set.String("cloudflare-tunnel-name", "", "Cloudflare named tunnel name")
 		if err := set.Parse(args[1:]); err != nil {
 			return 2
 		}
-		result, err := backend.Setup(ctx, SetupOptions{Domain: *domain})
+		result, err := backend.Setup(ctx, SetupOptions{
+			Domain:               *domain,
+			CloudflareTokenFile:  *cloudflareTokenFile,
+			CloudflareAccountID:  *cloudflareAccountID,
+			CloudflareZoneID:     *cloudflareZoneID,
+			CloudflareTunnelName: *cloudflareTunnelName,
+		})
 		if err != nil {
 			return printError(stderr, err)
 		}
@@ -167,7 +181,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, strings.TrimSpace(`Executor — sovereign machine control
 
 Usage:
-  executor setup --domain <hostname>
+  executor setup --domain <hostname> [--cloudflare-token-file <path>] [--cloudflare-account-id <id>] [--cloudflare-zone-id <id>] [--cloudflare-tunnel-name <name>]
   executor status [--json]
   executor doctor [--full] [--json]
   executor kill | resume | rotate

@@ -12,6 +12,15 @@ Executor expects a remotely-managed Cloudflare Named Tunnel and a proxied CNAME 
 
 This matches the current Cloudflare documentation for remotely-managed tunnels, including the tunnel token endpoint and `--token-file` support for `cloudflared` 2025.4.0 or later.
 
+`executor setup` can now perform the packaging-time Cloudflare preparation step when given:
+
+- `--cloudflare-token-file <path>` for a mode-600 API token file
+- optional `--cloudflare-account-id <id>`
+- optional `--cloudflare-zone-id <id>`
+- optional `--cloudflare-tunnel-name <name>`
+
+The packaging build never stores the Cloudflare API token in config. It persists only deployment metadata such as the selected account ID, zone ID, tunnel ID, DNS record ID, hostname, and managed tunnel token file path.
+
 ## Service Templates
 
 The service bundle renderer produces:
@@ -28,6 +37,7 @@ The service bundle renderer produces:
 ## Rollback
 
 - `scripts/bootstrap.sh` and `scripts/bootstrap.ps1` write a service manifest plus per-file backups under the state directory before replacing managed files or runtime startup entries.
+- Both bootstrap scripts require either a secure Cloudflare API token file for setup or a config that already contains completed Cloudflare deployment metadata. If that metadata is incomplete, they stop before installing or starting `cloudflared`.
 - `scripts/rollback.sh` and `scripts/rollback.ps1` stop managed services, restore backed up files when present, and remove files or services that were created by the current install.
 - The shell installer records whether the dedicated Unix service identity was created during the current install and removes it only in that case during rollback.
 - `scripts/uninstall.sh` and `scripts/uninstall.ps1` run rollback first, then remove the local deployment state directory.

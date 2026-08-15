@@ -29,7 +29,7 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	installStub := filepath.Join(binDir, "install")
 	mktempStub := filepath.Join(binDir, "mktemp")
 
-	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/systemd\" \"$output/systemd-user\"\n  printf '[Service]\\nUser=executor-agent\\nGroup=executor-agent\\nExecStart=/usr/local/bin/executor agent --config %s\\n' \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-agent.service\"\n  printf '[Service]\\nUser=root\\nGroup=root\\nExecStart=/usr/local/bin/executor broker --config %s\\n' \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-broker.service\"\n  printf '[Service]\\nExecStart=/usr/local/bin/cloudflared tunnel run --token-file %s\\n' \"$CLOUDFLARED_TOKEN_PATH\" > \"$output/systemd/cloudflared.service\"\n  printf '[Service]\\nExecStart=/usr/local/bin/executor desktop --config %s\\n' \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd-user/executor-desktop.service\"\n  exit 0\nfi\nexit 1\n")
+	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"\n  if [[ \" $* \" == *\" --cloudflare-token-file \"* ]]; then\n    cloudflare=',\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}'\n  else\n    cloudflare=''\n  fi\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168%s}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" \"$cloudflare\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/systemd\" \"$output/systemd-user\"\n  printf '[Service]\\nUser=executor-agent\\nGroup=executor-agent\\nExecStart=/usr/local/bin/executor agent --config %s\\n' \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-agent.service\"\n  printf '[Service]\\nUser=root\\nGroup=root\\nExecStart=/usr/local/bin/executor broker --config %s\\n' \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-broker.service\"\n  printf '[Service]\\nExecStart=/usr/local/bin/cloudflared tunnel run --token-file %s\\n' \"$CLOUDFLARED_TOKEN_PATH\" > \"$output/systemd/cloudflared.service\"\n  printf '[Service]\\nExecStart=/usr/local/bin/executor desktop --config %s\\n' \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd-user/executor-desktop.service\"\n  exit 0\nfi\nexit 1\n")
 	writeStub(t, systemctlStub, "#!/usr/bin/env bash\nprintf 'systemctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, runuserStub, "#!/usr/bin/env bash\nprintf 'runuser %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" && \"$2\" == \"executor-agent\" ]]; then exit 1; fi\nif [[ \"$1\" == \"-u\" && \"$2\" == \"jamie\" ]]; then printf '501\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nexit 0\n")
@@ -56,7 +56,11 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 		"INSTALL_BIN="+installStub,
 		"MKTEMP_BIN="+mktempStub,
 		"SUDO_USER=jamie",
+		"CLOUDFLARE_API_TOKEN_FILE="+filepath.Join(tmp, "api-token.txt"),
 	)
+	if err := os.WriteFile(filepath.Join(tmp, "api-token.txt"), []byte("api-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
 	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "executor-agent.service"))
@@ -66,7 +70,7 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 
 	commandLog := readFile(t, logPath)
 	for _, want := range []string{
-		"executor setup --domain executor.example.com",
+		"executor setup --domain executor.example.com --cloudflare-token-file " + filepath.Join(tmp, "api-token.txt"),
 		"executor render-service-bundle",
 		"useradd --system --user-group executor-agent",
 		"systemctl daemon-reload",
@@ -125,7 +129,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	sysadminctlStub := filepath.Join(binDir, "sysadminctl")
 	installStub := filepath.Join(binDir, "install")
 
-	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"\n  printf '{\"version\":1}\\n' > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/LaunchDaemons\" \"$output/LaunchAgents\"\n  printf '<plist><dict><key>Label</key><string>com.executor.agent</string></dict></plist>' > \"$output/LaunchDaemons/com.executor.agent.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.broker</string></dict></plist>' > \"$output/LaunchDaemons/com.executor.broker.plist\"\n  printf '<plist><dict><key>Label</key><string>com.cloudflare.cloudflared</string></dict></plist>' > \"$output/LaunchDaemons/com.cloudflare.cloudflared.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.desktop</string></dict></plist>' > \"$output/LaunchAgents/com.executor.desktop.plist\"\n  exit 0\nfi\nexit 1\n")
+	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"\n  if [[ \" $* \" == *\" --cloudflare-token-file \"* ]]; then\n    cloudflare=',\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}'\n  else\n    cloudflare=''\n  fi\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168%s}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" \"$cloudflare\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/LaunchDaemons\" \"$output/LaunchAgents\"\n  printf '<plist><dict><key>Label</key><string>com.executor.agent</string></dict></plist>' > \"$output/LaunchDaemons/com.executor.agent.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.broker</string></dict></plist>' > \"$output/LaunchDaemons/com.executor.broker.plist\"\n  printf '<plist><dict><key>Label</key><string>com.cloudflare.cloudflared</string></dict></plist>' > \"$output/LaunchDaemons/com.cloudflare.cloudflared.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.desktop</string></dict></plist>' > \"$output/LaunchAgents/com.executor.desktop.plist\"\n  exit 0\nfi\nexit 1\n")
 	writeStub(t, launchctlStub, "#!/usr/bin/env bash\nprintf 'launchctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nexit 0\n")
 	writeStub(t, statStub, "#!/usr/bin/env bash\nprintf '777\\n'\n")
@@ -142,6 +146,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		"EXECUTOR_DOMAIN=executor.example.com",
 		"EXECUTOR_BIN="+executorStub,
 		"EXECUTOR_CONFIG_PATH="+filepath.Join(tmp, "state", "config.json"),
+		"CLOUDFLARED_TOKEN_PATH="+filepath.Join(tmp, "state", "cloudflared", "executor.token"),
 		"LAUNCHCTL_BIN="+launchctlStub,
 		"ID_BIN="+idStub,
 		"STAT_BIN="+statStub,
@@ -149,7 +154,11 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		"SYSADMINCTL_BIN="+sysadminctlStub,
 		"INSTALL_BIN="+installStub,
 		"SUDO_UID=501",
+		"CLOUDFLARE_API_TOKEN_FILE="+filepath.Join(tmp, "api-token.txt"),
 	)
+	if err := os.WriteFile(filepath.Join(tmp, "api-token.txt"), []byte("api-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.agent.plist"))
@@ -190,7 +199,7 @@ func TestRollbackPreservesExistingDedicatedIdentity(t *testing.T) {
 	useraddStub := filepath.Join(binDir, "useradd")
 	userdelStub := filepath.Join(binDir, "userdel")
 
-	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"; printf '{\"version\":1}\\n' > \"$EXECUTOR_CONFIG_PATH\"; exit 0; fi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then shift; while [[ $# -gt 0 ]]; do case \"$1\" in --output) output=\"$2\"; shift 2 ;; *) shift ;; esac; done; mkdir -p \"$output/systemd\" \"$output/systemd-user\"; printf 'x' > \"$output/systemd/executor-agent.service\"; printf 'x' > \"$output/systemd/executor-broker.service\"; printf 'x' > \"$output/systemd/cloudflared.service\"; printf 'x' > \"$output/systemd-user/executor-desktop.service\"; exit 0; fi\nexit 1\n")
+	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"; if [[ \" $* \" == *\" --cloudflare-token-file \"* ]]; then cloudflare=',\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}'; else cloudflare=''; fi; printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168%s}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" \"$cloudflare\" > \"$EXECUTOR_CONFIG_PATH\"; exit 0; fi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then shift; while [[ $# -gt 0 ]]; do case \"$1\" in --output) output=\"$2\"; shift 2 ;; *) shift ;; esac; done; mkdir -p \"$output/systemd\" \"$output/systemd-user\"; printf 'x' > \"$output/systemd/executor-agent.service\"; printf 'x' > \"$output/systemd/executor-broker.service\"; printf 'x' > \"$output/systemd/cloudflared.service\"; printf 'x' > \"$output/systemd-user/executor-desktop.service\"; exit 0; fi\nexit 1\n")
 	writeStub(t, systemctlStub, "#!/usr/bin/env bash\nprintf 'systemctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, runuserStub, "#!/usr/bin/env bash\nprintf 'runuser %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" && \"$2\" == \"executor-agent\" ]]; then printf '900\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" && \"$2\" == \"jamie\" ]]; then printf '501\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nexit 0\n")
@@ -206,13 +215,18 @@ func TestRollbackPreservesExistingDedicatedIdentity(t *testing.T) {
 		"EXECUTOR_DOMAIN=executor.example.com",
 		"EXECUTOR_BIN="+executorStub,
 		"EXECUTOR_CONFIG_PATH="+filepath.Join(tmp, "state", "config.json"),
+		"CLOUDFLARED_TOKEN_PATH="+filepath.Join(tmp, "state", "cloudflared", "executor.token"),
 		"SYSTEMCTL_BIN="+systemctlStub,
 		"RUNUSER_BIN="+runuserStub,
 		"ID_BIN="+idStub,
 		"USERADD_BIN="+useraddStub,
 		"USERDEL_BIN="+userdelStub,
 		"SUDO_USER=jamie",
+		"CLOUDFLARE_API_TOKEN_FILE="+filepath.Join(tmp, "api-token.txt"),
 	)
+	if err := os.WriteFile(filepath.Join(tmp, "api-token.txt"), []byte("api-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
 	runScript(t, filepath.Join(root, "scripts", "rollback.sh"), env)
@@ -223,6 +237,49 @@ func TestRollbackPreservesExistingDedicatedIdentity(t *testing.T) {
 	}
 	if strings.Contains(commandLog, "userdel executor-agent") {
 		t.Fatalf("existing identity should not be deleted on rollback:\n%s", commandLog)
+	}
+}
+
+func TestBootstrapRequiresCloudflareTokenFileOrCompletedMetadata(t *testing.T) {
+	t.Parallel()
+
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	logPath := filepath.Join(tmp, "commands.log")
+	executorStub := filepath.Join(binDir, "executor")
+	idStub := filepath.Join(binDir, "id")
+	useraddStub := filepath.Join(binDir, "useradd")
+	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'executor %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\"\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  printf 'render should not run\\n' >&2\n  exit 99\nfi\nexit 1\n")
+	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" && \"$2\" == \"executor-agent\" ]]; then exit 1; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nexit 0\n")
+	writeStub(t, useraddStub, "#!/usr/bin/env bash\nexit 0\n")
+
+	env := append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"COMMAND_LOG="+logPath,
+		"EXECUTOR_STATE_DIR="+filepath.Join(tmp, "state"),
+		"EXECUTOR_INSTALL_ROOT="+filepath.Join(tmp, "install-root"),
+		"EXECUTOR_TARGET=linux",
+		"EXECUTOR_DOMAIN=executor.example.com",
+		"EXECUTOR_BIN="+executorStub,
+		"EXECUTOR_CONFIG_PATH="+filepath.Join(tmp, "state", "config.json"),
+		"ID_BIN="+idStub,
+		"USERADD_BIN="+useraddStub,
+	)
+
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "bootstrap.sh"))
+	cmd.Env = env
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bootstrap unexpectedly succeeded:\n%s", string(output))
+	}
+	if !strings.Contains(string(output), "Cloudflare") {
+		t.Fatalf("bootstrap error should mention Cloudflare readiness:\n%s", string(output))
 	}
 }
 

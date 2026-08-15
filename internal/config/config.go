@@ -12,15 +12,36 @@ import (
 const CurrentVersion = 1
 
 type Config struct {
-	Version          int    `json:"version"`
-	StateDir         string `json:"state_dir"`
-	Domain           string `json:"domain,omitempty"`
-	AgentAddress     string `json:"agent_address"`
-	DashboardAddress string `json:"dashboard_address"`
-	BrokerEndpoint   string `json:"broker_endpoint"`
-	DesktopEndpoint  string `json:"desktop_endpoint"`
-	AuditRetentionH  int    `json:"audit_retention_hours"`
-	URLSecretEnabled bool   `json:"url_secret_enabled,omitempty"`
+	Version          int                `json:"version"`
+	StateDir         string             `json:"state_dir"`
+	Domain           string             `json:"domain,omitempty"`
+	AgentAddress     string             `json:"agent_address"`
+	DashboardAddress string             `json:"dashboard_address"`
+	BrokerEndpoint   string             `json:"broker_endpoint"`
+	DesktopEndpoint  string             `json:"desktop_endpoint"`
+	AuditRetentionH  int                `json:"audit_retention_hours"`
+	URLSecretEnabled bool               `json:"url_secret_enabled,omitempty"`
+	Cloudflare       CloudflareMetadata `json:"cloudflare,omitempty"`
+}
+
+type CloudflareMetadata struct {
+	AccountID     string `json:"account_id,omitempty"`
+	ZoneID        string `json:"zone_id,omitempty"`
+	TunnelID      string `json:"tunnel_id,omitempty"`
+	TunnelName    string `json:"tunnel_name,omitempty"`
+	DNSRecordID   string `json:"dns_record_id,omitempty"`
+	TokenFilePath string `json:"token_file_path,omitempty"`
+	Hostname      string `json:"hostname,omitempty"`
+}
+
+func (m CloudflareMetadata) Complete() bool {
+	return m.AccountID != "" &&
+		m.ZoneID != "" &&
+		m.TunnelID != "" &&
+		m.TunnelName != "" &&
+		m.DNSRecordID != "" &&
+		m.TokenFilePath != "" &&
+		m.Hostname != ""
 }
 
 func Default(stateDir string) Config {

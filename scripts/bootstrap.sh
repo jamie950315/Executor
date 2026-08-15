@@ -30,6 +30,10 @@ MANIFEST_PATH="${STATE_DIR}/service-manifest.txt"
 BACKUP_ROOT="${STATE_DIR}/service-backups"
 MKTEMP_BIN="${MKTEMP_BIN:-mktemp}"
 TMP_BUNDLE=""
+CLOUDFLARE_API_TOKEN_FILE="${CLOUDFLARE_API_TOKEN_FILE:-${EXECUTOR_CLOUDFLARE_TOKEN_FILE:-}}"
+CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-${EXECUTOR_CLOUDFLARE_ACCOUNT_ID:-}}"
+CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID:-${EXECUTOR_CLOUDFLARE_ZONE_ID:-}}"
+CLOUDFLARE_TUNNEL_NAME="${CLOUDFLARE_TUNNEL_NAME:-${EXECUTOR_CLOUDFLARE_TUNNEL_NAME:-}}"
 
 case "${TARGET}" in
   darwin) TARGET="macos" ;;
@@ -143,6 +147,23 @@ desktop_gui_uid_macos() {
   exit 1
 }
 
+cloudflare_metadata_complete() {
+  python3 - "${CONFIG_PATH}" "${CLOUDFLARED_TOKEN_PATH}" <<'PY'
+import json, sys
+cfg_path, expected_token_path = sys.argv[1], sys.argv[2]
+with open(cfg_path, "r", encoding="utf-8") as fh:
+    cfg = json.load(fh)
+meta = cfg.get("cloudflare") or {}
+required = ["account_id", "zone_id", "tunnel_id", "tunnel_name", "dns_record_id", "token_file_path", "hostname"]
+missing = [name for name in required if not meta.get(name)]
+if missing:
+    raise SystemExit(1)
+if meta["token_file_path"] != expected_token_path:
+    print(f"Cloudflare token path mismatch: {meta['token_file_path']} != {expected_token_path}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
 bootstrap_linux() {
   root="$1"
   install_managed_file "${TMP_BUNDLE}/systemd/executor-agent.service" "${root}/systemd/executor-agent.service" "systemd:executor-agent.service"
@@ -183,7 +204,25 @@ case "${TARGET}" in
   macos) ensure_macos_identity ;;
 esac
 
-"${EXECUTOR_BIN}" setup --domain "${DOMAIN}"
+setup_cmd=("${EXECUTOR_BIN}" setup --domain "${DOMAIN}")
+if [[ -n "${CLOUDFLARE_API_TOKEN_FILE}" ]]; then
+  setup_cmd+=(--cloudflare-token-file "${CLOUDFLARE_API_TOKEN_FILE}")
+fi
+if [[ -n "${CLOUDFLARE_ACCOUNT_ID}" ]]; then
+  setup_cmd+=(--cloudflare-account-id "${CLOUDFLARE_ACCOUNT_ID}")
+fi
+if [[ -n "${CLOUDFLARE_ZONE_ID}" ]]; then
+  setup_cmd+=(--cloudflare-zone-id "${CLOUDFLARE_ZONE_ID}")
+fi
+if [[ -n "${CLOUDFLARE_TUNNEL_NAME}" ]]; then
+  setup_cmd+=(--cloudflare-tunnel-name "${CLOUDFLARE_TUNNEL_NAME}")
+fi
+"${setup_cmd[@]}"
+
+if ! cloudflare_metadata_complete; then
+  printf 'Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata before installing services.\n' >&2
+  exit 1
+fi
 
 TMP_BUNDLE="$("${MKTEMP_BIN}" -d)"
 "${EXECUTOR_BIN}" render-service-bundle \

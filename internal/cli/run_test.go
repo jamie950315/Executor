@@ -9,11 +9,13 @@ import (
 )
 
 type fakeBackend struct {
-	called string
+	called       string
+	setupOptions SetupOptions
 }
 
-func (f *fakeBackend) Setup(context.Context, SetupOptions) (SetupResult, error) {
+func (f *fakeBackend) Setup(_ context.Context, options SetupOptions) (SetupResult, error) {
 	f.called = "setup"
+	f.setupOptions = options
 	return SetupResult{Domain: "executor.example.com", MCPURL: "https://executor.example.com/mcp", RecoveryKey: "recovery-once"}, nil
 }
 func (f *fakeBackend) Status(context.Context) (Status, error) {
@@ -78,9 +80,28 @@ func TestRunKillAndResume(t *testing.T) {
 func TestRunSetupPrintsOneTimeConnectionMaterial(t *testing.T) {
 	backend := &fakeBackend{}
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"setup", "--domain", "executor.example.com"}, backend, &stdout, &stderr)
+	code := Run(context.Background(), []string{
+		"setup",
+		"--domain", "executor.example.com",
+		"--cloudflare-token-file", "/secure/cloudflare.token",
+		"--cloudflare-account-id", "acct-1",
+		"--cloudflare-zone-id", "zone-1",
+		"--cloudflare-tunnel-name", "executor-prod",
+	}, backend, &stdout, &stderr)
 	if code != 0 || backend.called != "setup" {
 		t.Fatalf("code=%d called=%q stderr=%q", code, backend.called, stderr.String())
+	}
+	if got := backend.setupOptions.CloudflareTokenFile; got != "/secure/cloudflare.token" {
+		t.Fatalf("cloudflare token file = %q", got)
+	}
+	if got := backend.setupOptions.CloudflareAccountID; got != "acct-1" {
+		t.Fatalf("cloudflare account ID = %q", got)
+	}
+	if got := backend.setupOptions.CloudflareZoneID; got != "zone-1" {
+		t.Fatalf("cloudflare zone ID = %q", got)
+	}
+	if got := backend.setupOptions.CloudflareTunnelName; got != "executor-prod" {
+		t.Fatalf("cloudflare tunnel name = %q", got)
 	}
 	for _, text := range []string{"executor.example.com", "https://executor.example.com/mcp", "recovery-once", "shown once"} {
 		if !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(text)) {

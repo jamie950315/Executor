@@ -18,6 +18,10 @@ $BrokerUser = if ($env:EXECUTOR_BROKER_USER) { $env:EXECUTOR_BROKER_USER } else 
 $BrokerGroup = if ($env:EXECUTOR_BROKER_GROUP) { $env:EXECUTOR_BROKER_GROUP } else { "SYSTEM" }
 $WindowsAgentService = if ($env:EXECUTOR_WINDOWS_AGENT_SERVICE) { $env:EXECUTOR_WINDOWS_AGENT_SERVICE } else { "NT SERVICE\ExecutorAgent" }
 $DesktopStartup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
+$CloudflareAPITokenFile = if ($env:CLOUDFLARE_API_TOKEN_FILE) { $env:CLOUDFLARE_API_TOKEN_FILE } elseif ($env:EXECUTOR_CLOUDFLARE_TOKEN_FILE) { $env:EXECUTOR_CLOUDFLARE_TOKEN_FILE } else { "" }
+$CloudflareAccountID = if ($env:CLOUDFLARE_ACCOUNT_ID) { $env:CLOUDFLARE_ACCOUNT_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID) { $env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID } else { "" }
+$CloudflareZoneID = if ($env:CLOUDFLARE_ZONE_ID) { $env:CLOUDFLARE_ZONE_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ZONE_ID) { $env:EXECUTOR_CLOUDFLARE_ZONE_ID } else { "" }
+$CloudflareTunnelName = if ($env:CLOUDFLARE_TUNNEL_NAME) { $env:CLOUDFLARE_TUNNEL_NAME } elseif ($env:EXECUTOR_CLOUDFLARE_TUNNEL_NAME) { $env:EXECUTOR_CLOUDFLARE_TUNNEL_NAME } else { "" }
 
 if (-not $Domain) {
   throw "Set EXECUTOR_DOMAIN."
@@ -30,7 +34,34 @@ New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
 Set-Content -Path $ManifestPath -Value $null
 
-& $ExecutorBin setup --domain $Domain
+$SetupArgs = @("setup", "--domain", $Domain)
+if ($CloudflareAPITokenFile) {
+  $SetupArgs += @("--cloudflare-token-file", $CloudflareAPITokenFile)
+}
+if ($CloudflareAccountID) {
+  $SetupArgs += @("--cloudflare-account-id", $CloudflareAccountID)
+}
+if ($CloudflareZoneID) {
+  $SetupArgs += @("--cloudflare-zone-id", $CloudflareZoneID)
+}
+if ($CloudflareTunnelName) {
+  $SetupArgs += @("--cloudflare-tunnel-name", $CloudflareTunnelName)
+}
+& $ExecutorBin @SetupArgs
+
+$ConfigJson = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
+$Cloudflare = $ConfigJson.cloudflare
+if (-not $Cloudflare `
+  -or -not $Cloudflare.account_id `
+  -or -not $Cloudflare.zone_id `
+  -or -not $Cloudflare.tunnel_id `
+  -or -not $Cloudflare.tunnel_name `
+  -or -not $Cloudflare.dns_record_id `
+  -or -not $Cloudflare.token_file_path `
+  -or -not $Cloudflare.hostname `
+  -or $Cloudflare.token_file_path -ne $CloudflaredTokenPath) {
+  throw "Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata before installing services."
+}
 
 $TempBundle = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $TempBundle -Force | Out-Null

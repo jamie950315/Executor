@@ -55,3 +55,33 @@ func TestDefaultEndpointsUseNamedPipesOnWindowsAndSocketsOnUnix(t *testing.T) {
 		t.Fatalf("unix endpoints = %q, %q", broker, desktop)
 	}
 }
+
+func TestSaveLoadRoundTripPersistsCloudflareMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	want := Default(dir)
+	want.Domain = "executor.example.com"
+	want.Cloudflare = CloudflareMetadata{
+		AccountID:     "acct-1",
+		ZoneID:        "zone-1",
+		TunnelID:      "tunnel-1",
+		TunnelName:    "executor",
+		DNSRecordID:   "dns-1",
+		TokenFilePath: filepath.Join(dir, "cloudflared", "executor.token"),
+		Hostname:      "executor.example.com",
+	}
+
+	if err := Save(path, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Cloudflare.TunnelID != "tunnel-1" || got.Cloudflare.DNSRecordID != "dns-1" {
+		t.Fatalf("unexpected Cloudflare metadata: %#v", got.Cloudflare)
+	}
+	if !got.Cloudflare.Complete() {
+		t.Fatalf("expected complete Cloudflare metadata: %#v", got.Cloudflare)
+	}
+}

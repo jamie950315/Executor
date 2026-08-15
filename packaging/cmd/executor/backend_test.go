@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
@@ -122,4 +127,121 @@ func TestRotateReturnsRecoveryKeyAndURLSecret(t *testing.T) {
 	if result.RecoveryKey == "" || result.URLSecret == "" {
 		t.Fatalf("Rotate returned incomplete credentials: %#v", result)
 	}
+}
+
+func TestSetupConfiguresCloudflareFromSecureTokenFile(t *testing.T) {
+	stateDir := t.TempDir()
+	tokenPath := filepath.Join(stateDir, "api-token.txt")
+	if err := os.WriteFile(tokenPath, []byte("top-secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer top-secret-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []map[string]any{{"id": "acct-1", "name": "Primary"}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			if got := r.URL.Query().Get("account.id"); got != "acct-1" {
+				t.Fatalf("account filter = %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []map[string]any{
+				{"id": "zone-1", "name": "example.com"},
+				{"id": "zone-2", "name": "prod.example.com"},
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-1/cfd_tunnel":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/acct-1/cfd_tunnel":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "tunnel-1", "name": "executor", "token": "issued-token"}})
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct-1/cfd_tunnel/tunnel-1/configurations":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{}})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-2/dns_records":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-2/dns_records":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "dns-1", "type": "CNAME", "name": "executor.prod.example.com", "content": "tunnel-1.cfargotunnel.com", "proxied": true}})
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct-1/cfd_tunnel/tunnel-1/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": "issued-token"})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("EXECUTOR_CLOUDFLARE_API_BASE_URL", server.URL)
+	b := newBackend(stateDir)
+	result, err := b.Setup(context.Background(), setupOptions{
+		Domain:              "executor.prod.example.com",
+		CloudflareTokenFile: tokenPath,
+	})
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if result.Domain != "executor.prod.example.com" {
+		t.Fatalf("domain = %q", result.Domain)
+	}
+	cfg, err := config.Load(filepath.Join(stateDir, "config.json"))
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	if cfg.Cloudflare.ZoneID != "zone-2" || cfg.Cloudflare.TunnelID != "tunnel-1" || cfg.Cloudflare.DNSRecordID != "dns-1" {
+		t.Fatalf("unexpected Cloudflare metadata: %#v", cfg.Cloudflare)
+	}
+	if cfg.Cloudflare.TokenFilePath == "" {
+		t.Fatalf("missing token file path: %#v", cfg.Cloudflare)
+	}
+	if strings.Contains(readFile(t, filepath.Join(stateDir, "config.json")), "top-secret-token") {
+		t.Fatal("config should not persist API token")
+	}
+}
+
+func TestSetupRejectsInsecureCloudflareTokenFilePermissions(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	tokenPath := filepath.Join(stateDir, "api-token.txt")
+	if err := os.WriteFile(tokenPath, []byte("top-secret-token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+	if _, err := b.Setup(context.Background(), setupOptions{
+		Domain:              "executor.example.com",
+		CloudflareTokenFile: tokenPath,
+	}); err == nil || !strings.Contains(err.Error(), "0600") {
+		t.Fatalf("err = %v, want 0600 validation", err)
+	}
+}
+
+func TestSetupDoesNotConsumeOneTimeRecoveryKeyBeforeCloudflareSucceeds(t *testing.T) {
+	stateDir := t.TempDir()
+	tokenPath := filepath.Join(stateDir, "api-token.txt")
+	if err := os.WriteFile(tokenPath, []byte("top-secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"temporary failure"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("EXECUTOR_CLOUDFLARE_API_BASE_URL", server.URL)
+
+	_, err := newBackend(stateDir).Setup(context.Background(), setupOptions{
+		Domain: "executor.example.com", CloudflareTokenFile: tokenPath,
+	})
+	if err == nil {
+		t.Fatal("Setup succeeded despite Cloudflare failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "secrets.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("one-time secrets were consumed before Cloudflare succeeded: %v", statErr)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
