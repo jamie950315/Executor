@@ -31,7 +31,8 @@ type Status struct {
 }
 
 type RotateResult struct {
-	URLSecret string `json:"url_secret"`
+	URLSecret   string `json:"url_secret"`
+	RecoveryKey string `json:"recovery_key"`
 }
 
 type Check struct {
@@ -111,7 +112,7 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		if err != nil {
 			return printError(stderr, err)
 		}
-		fmt.Fprintf(stdout, "Credentials rotated. New URL secret (shown once): %s\n", result.URLSecret)
+		fmt.Fprintf(stdout, "Credentials rotated.\nNew recovery key (shown once): %s\nNew URL secret (shown once): %s\n", result.RecoveryKey, result.URLSecret)
 		return 0
 	case "doctor":
 		set := flag.NewFlagSet("doctor", flag.ContinueOnError)

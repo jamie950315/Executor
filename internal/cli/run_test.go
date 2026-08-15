@@ -24,7 +24,21 @@ func (f *fakeBackend) Kill(context.Context) error   { f.called = "kill"; return 
 func (f *fakeBackend) Resume(context.Context) error { f.called = "resume"; return nil }
 func (f *fakeBackend) Rotate(context.Context) (RotateResult, error) {
 	f.called = "rotate"
-	return RotateResult{URLSecret: "rotated-once"}, nil
+	return RotateResult{URLSecret: "rotated-once", RecoveryKey: "new-recovery-once"}, nil
+}
+
+func TestRunRotatePrintsNewRecoveryMaterialOnce(t *testing.T) {
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"rotate"}, backend, &stdout, &stderr)
+	if code != 0 || backend.called != "rotate" {
+		t.Fatalf("code=%d called=%q stderr=%q", code, backend.called, stderr.String())
+	}
+	for _, text := range []string{"rotated-once", "new-recovery-once", "shown once"} {
+		if !strings.Contains(stdout.String(), text) {
+			t.Fatalf("rotate output %q missing %q", stdout.String(), text)
+		}
+	}
 }
 func (f *fakeBackend) Doctor(context.Context, bool) (DoctorResult, error) {
 	f.called = "doctor"
