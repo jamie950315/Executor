@@ -39,6 +39,23 @@ CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-${EXECUTOR_CLOUDFLARE_ACCOUNT_ID
 CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID:-${EXECUTOR_CLOUDFLARE_ZONE_ID:-}}"
 CLOUDFLARE_TUNNEL_NAME="${CLOUDFLARE_TUNNEL_NAME:-${EXECUTOR_CLOUDFLARE_TUNNEL_NAME:-}}"
 
+if ! CLOUDFLARED_BIN_RESOLVED="$(command -v "${CLOUDFLARED_BIN}" 2>/dev/null)"; then
+  CLOUDFLARED_BIN_RESOLVED=""
+fi
+if [[ -z "${CLOUDFLARED_BIN_RESOLVED}" ]]; then
+  for candidate in /opt/homebrew/bin/cloudflared /usr/local/bin/cloudflared /usr/bin/cloudflared; do
+    if [[ -x "${candidate}" ]]; then
+      CLOUDFLARED_BIN_RESOLVED="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${CLOUDFLARED_BIN_RESOLVED}" ]]; then
+  printf 'unable to resolve cloudflared executable: %s\n' "${CLOUDFLARED_BIN}" >&2
+  exit 1
+fi
+CLOUDFLARED_BIN="${CLOUDFLARED_BIN_RESOLVED}"
+
 case "${TARGET}" in
   darwin) TARGET="macos" ;;
   linux) TARGET="linux" ;;

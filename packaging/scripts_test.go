@@ -548,6 +548,21 @@ func TestWindowsBootstrapResolvesCloudflaredExecutablePathForService(t *testing.
 	}
 }
 
+func TestUnixBootstrapResolvesCloudflaredExecutablePathForService(t *testing.T) {
+	t.Parallel()
+
+	bootstrap := readFile(t, filepath.Join(repoRoot(t), "scripts", "bootstrap.sh"))
+	for _, want := range []string{
+		`CLOUDFLARED_BIN_RESOLVED="$(command -v "${CLOUDFLARED_BIN}" 2>/dev/null)"`,
+		`/opt/homebrew/bin/cloudflared`,
+		`CLOUDFLARED_BIN="${CLOUDFLARED_BIN_RESOLVED}"`,
+	} {
+		if !strings.Contains(bootstrap, want) {
+			t.Fatalf("Unix bootstrap does not resolve cloudflared to a service-safe absolute path; missing %q", want)
+		}
+	}
+}
+
 func runScript(t *testing.T, script string, env []string) {
 	t.Helper()
 	cmd := exec.Command("bash", script)
