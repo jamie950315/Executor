@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,7 @@ func TestDarwinReleaseRunsOnMacOSForNativeDesktopEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflow := string(mustReadFile(t, filepath.Join(root, ".github", "workflows", "release.yml")))
+	workflow := strings.ReplaceAll(string(mustReadFile(t, filepath.Join(root, ".github", "workflows", "release.yml"))), "\r\n", "\n")
 	if !strings.Contains(workflow, "goos: darwin\n            goarch: amd64\n            runner: macos-latest") ||
 		!strings.Contains(workflow, "goos: darwin\n            goarch: arm64\n            runner: macos-latest") ||
 		!strings.Contains(workflow, "runs-on: ${{ matrix.runner }}") {
@@ -54,6 +55,9 @@ func TestDarwinReleaseRunsOnMacOSForNativeDesktopEvents(t *testing.T) {
 
 func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("release archive script is covered by Linux and macOS jobs")
+	}
 
 	root, err := filepath.Abs("..")
 	if err != nil {

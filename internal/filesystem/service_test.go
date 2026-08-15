@@ -3,6 +3,7 @@ package filesystem
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -60,7 +61,7 @@ func TestLocalService_UnrestrictedOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat nested/two.txt: %v", err)
 	}
-	if info.Size != 8 || info.Mode.Perm() != 0o600 {
+	if info.Size != 8 || runtime.GOOS != "windows" && info.Mode.Perm() != 0o600 {
 		t.Fatalf("unexpected stat: %#v", info)
 	}
 

@@ -138,7 +138,15 @@ func TestManagerUsesConPTYWithPersistentStateAndResize(t *testing.T) {
 		t.Fatalf("write initial command: %v", err)
 	}
 	initial := waitForWindowsOutput(t, manager, session.ID, 0, "ENV:kept", "PATH_OVERRIDE:True", "SIZE:80x25")
-	if !strings.Contains(strings.ToLower(string(initial.Data)), strings.ToLower("CWD:"+dir)) {
+	cwdPattern := regexp.MustCompile(`CWD:([A-Za-z]:\\[^\r\n"]+)`)
+	cwdMatch := cwdPattern.FindStringSubmatch(string(initial.Data))
+	wantDir, wantErr := os.Stat(dir)
+	var gotDir os.FileInfo
+	var gotErr error
+	if len(cwdMatch) == 2 {
+		gotDir, gotErr = os.Stat(cwdMatch[1])
+	}
+	if wantErr != nil || gotErr != nil || !os.SameFile(wantDir, gotDir) {
 		t.Fatalf("ConPTY output missing cwd %q: %q", dir, string(initial.Data))
 	}
 

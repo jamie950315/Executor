@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func (fakeLifecycle) Resume(context.Context) error { return nil }
 
 func TestRuntimeControllerSnapshotReportsAuthenticatedReachabilityAndDisabledMarker(t *testing.T) {
 	stateDir := t.TempDir()
-	endpointDir, err := os.MkdirTemp("/tmp", "executor-dashboard-")
+	endpointDir, err := os.MkdirTemp("", "executor-dashboard-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +43,14 @@ func TestRuntimeControllerSnapshotReportsAuthenticatedReachabilityAndDisabledMar
 	cfg := config.Default(stateDir)
 	cfg.Domain = "executor.example.test"
 	cfg.AgentAddress = listener.Addr().String()
-	cfg.BrokerEndpoint = filepath.Join(endpointDir, "broker.sock")
-	cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
+	if runtime.GOOS == "windows" {
+		name := filepath.Base(endpointDir)
+		cfg.BrokerEndpoint = `\\.\pipe\` + name + "-broker"
+		cfg.DesktopEndpoint = `\\.\pipe\` + name + "-desktop"
+	} else {
+		cfg.BrokerEndpoint = filepath.Join(endpointDir, "broker.sock")
+		cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

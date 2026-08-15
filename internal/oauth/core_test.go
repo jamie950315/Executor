@@ -3,6 +3,7 @@ package oauth
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -350,7 +351,7 @@ func TestPersistAndRestoreStateAtomicallyWithPrivatePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Stat() error = %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("file mode = %#o, want 0600", got)
 	}
 	if _, err := os.Stat(statePath + ".tmp"); !os.IsNotExist(err) {

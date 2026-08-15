@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		t.Fatalf("VerifyAccessToken: %v", err)
 	}
 	info, err := os.Stat(statePath)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("OAuth state mode = %v, err=%v", info, err)
 	}
 	restarted := testOAuthCore(t)

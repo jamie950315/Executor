@@ -505,6 +505,9 @@ func TestSetupConfiguresCloudflareFromSecureTokenFile(t *testing.T) {
 
 func TestSetupRejectsInsecureCloudflareTokenFilePermissions(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
 
 	stateDir := t.TempDir()
 	tokenPath := filepath.Join(stateDir, "api-token.txt")

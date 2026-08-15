@@ -51,7 +51,7 @@ func TestDefaultEndpointsUseNamedPipesOnWindowsAndSocketsOnUnix(t *testing.T) {
 		t.Fatalf("windows endpoints = %q, %q", broker, desktop)
 	}
 	broker, desktop = defaultEndpoints("darwin", "/var/lib/executor")
-	if broker != "/var/lib/executor/broker.sock" || desktop != "/var/lib/executor/desktop.sock" {
+	if broker != filepath.Join("/var/lib/executor", "broker.sock") || desktop != filepath.Join("/var/lib/executor", "desktop.sock") {
 		t.Fatalf("unix endpoints = %q, %q", broker, desktop)
 	}
 }

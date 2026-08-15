@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -458,7 +459,7 @@ func TestRunStdioStopsOnContextCancellation(t *testing.T) {
 func daemonFixture(t *testing.T) (string, config.Config, secrets.Values) {
 	t.Helper()
 	stateDir := t.TempDir()
-	endpointDir, err := os.MkdirTemp("/tmp", "executor-daemon-")
+	endpointDir, err := os.MkdirTemp("", "executor-daemon-")
 	if err != nil {
 		t.Fatalf("create IPC endpoint directory: %v", err)
 	}
@@ -467,8 +468,14 @@ func daemonFixture(t *testing.T) (string, config.Config, secrets.Values) {
 	cfg.Domain = "executor.example.test"
 	cfg.AgentAddress = availableTCPAddress(t)
 	cfg.DashboardAddress = availableTCPAddress(t)
-	cfg.BrokerEndpoint = filepath.Join(endpointDir, "broker.sock")
-	cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
+	if runtime.GOOS == "windows" {
+		name := filepath.Base(endpointDir)
+		cfg.BrokerEndpoint = `\\.\pipe\` + name + "-broker"
+		cfg.DesktopEndpoint = `\\.\pipe\` + name + "-desktop"
+	} else {
+		cfg.BrokerEndpoint = filepath.Join(endpointDir, "broker.sock")
+		cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
+	}
 	configPath := filepath.Join(stateDir, "config.json")
 	if err := config.Save(configPath, cfg); err != nil {
 		t.Fatalf("save config: %v", err)

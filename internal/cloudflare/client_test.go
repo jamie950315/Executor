@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -165,7 +166,7 @@ func TestApplyReusesExistingResourcesAndRedactsSensitiveLogs(t *testing.T) {
 	}
 	if info, err := os.Stat(tokenPath); err != nil {
 		t.Fatalf("Stat token: %v", err)
-	} else if info.Mode().Perm() != 0o600 {
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("token file mode = %o, want 600", info.Mode().Perm())
 	}
 	if strings.Contains(logs.String(), "top-secret-token") || strings.Contains(logs.String(), "server-token") {
