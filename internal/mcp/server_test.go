@@ -39,6 +39,37 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 		if tool.Annotations != annotations {
 			t.Fatalf("tool %q annotations = %#v, want %#v", tool.Name, tool.Annotations, annotations)
 		}
+		assertConcreteToolSchema(t, tool)
+	}
+}
+
+func TestInitializeNegotiatesSupportedProtocolVersion(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(ServerConfig{
+		ServerName:    "Executor",
+		ServerVersion: "dev",
+	})
+
+	response := performHTTPRequest(t, server, "", rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "1",
+		Method:  "initialize",
+		Params: map[string]any{
+			"protocolVersion": "2025-06-18",
+			"clientInfo":      map[string]any{"name": "tester"},
+		},
+	})
+
+	var body rpcResponse
+	decodeJSON(t, response.Body.Bytes(), &body)
+	if body.Error != nil {
+		t.Fatalf("initialize returned error: %#v", body.Error)
+	}
+
+	result := body.Result.(map[string]any)
+	if got := result["protocolVersion"]; got != "2025-06-18" {
+		t.Fatalf("protocolVersion = %v, want 2025-06-18", got)
 	}
 }
 
@@ -233,6 +264,35 @@ func TestStdioHandlerUsesMCPFramingAndRetainsSession(t *testing.T) {
 	result := toolsResponse.Result.(map[string]any)
 	if len(result["tools"].([]any)) != len(BuiltinTools()) {
 		t.Fatalf("tools/list returned %d tools, want %d", len(result["tools"].([]any)), len(BuiltinTools()))
+	}
+}
+
+func assertConcreteToolSchema(t *testing.T, tool Tool) {
+	t.Helper()
+
+	if tool.InputSchema["type"] != "object" {
+		t.Fatalf("tool %q schema type = %v, want object", tool.Name, tool.InputSchema["type"])
+	}
+
+	properties, ok := tool.InputSchema["properties"].(map[string]any)
+	if !ok || len(properties) == 0 {
+		t.Fatalf("tool %q missing concrete schema properties", tool.Name)
+	}
+
+	required, ok := tool.InputSchema["required"].([]string)
+	if !ok || len(required) == 0 {
+		t.Fatalf("tool %q missing required fields", tool.Name)
+	}
+
+	if action, hasAction := properties["action"]; hasAction {
+		actionSchema, ok := action.(map[string]any)
+		if !ok {
+			t.Fatalf("tool %q action schema has unexpected type %T", tool.Name, action)
+		}
+		enumValues, ok := actionSchema["enum"].([]string)
+		if !ok || len(enumValues) == 0 {
+			t.Fatalf("tool %q action schema missing enum values", tool.Name)
+		}
 	}
 }
 

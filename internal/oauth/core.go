@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -73,6 +75,18 @@ type DynamicClientRegistrationRequest struct {
 	ClientName   string   `json:"client_name"`
 	RedirectURIs []string `json:"redirect_uris"`
 	Scopes       []string `json:"scopes,omitempty"`
+}
+
+type ClientIDURLRegistrationRequest struct {
+	ClientIDURL  string   `json:"client_id"`
+	ClientName   string   `json:"client_name"`
+	RedirectURIs []string `json:"redirect_uris"`
+	Scopes       []string `json:"scopes,omitempty"`
+}
+
+type ClientValidationRequest struct {
+	ClientID    string
+	RedirectURI string
 }
 
 type ClientRegistration struct {
@@ -173,6 +187,32 @@ type jwtClaims struct {
 	TokenID    string `json:"jti"`
 }
 
+type persistenceState struct {
+	Generation    uint64                            `json:"generation"`
+	Clients       map[string]ClientRegistration     `json:"clients"`
+	Codes         map[string]persistedCodeRecord    `json:"codes"`
+	RefreshTokens map[string]persistedRefreshRecord `json:"refresh_tokens"`
+}
+
+type persistedCodeRecord struct {
+	ClientID        string    `json:"client_id"`
+	RedirectURI     string    `json:"redirect_uri"`
+	Scopes          []string  `json:"scopes"`
+	CodeChallenge   string    `json:"code_challenge"`
+	ChallengeMethod string    `json:"challenge_method"`
+	Subject         string    `json:"subject"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	Generation      uint64    `json:"generation"`
+}
+
+type persistedRefreshRecord struct {
+	ClientID   string    `json:"client_id"`
+	Scopes     []string  `json:"scopes"`
+	Subject    string    `json:"subject"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Generation uint64    `json:"generation"`
+}
+
 func NewCore(config Config) (*Core, error) {
 	if config.Issuer == "" {
 		return nil, errors.New("issuer is required")
@@ -183,8 +223,8 @@ func NewCore(config Config) (*Core, error) {
 	if config.Audience == "" {
 		return nil, errors.New("audience is required")
 	}
-	if len(config.SigningKey) == 0 {
-		return nil, errors.New("signing key is required")
+	if len(config.SigningKey) < 32 {
+		return nil, errors.New("signing key must be at least 32 bytes")
 	}
 	if config.AccessTokenTTL <= 0 || config.AuthorizationCodeTTL <= 0 || config.RefreshTokenTTL <= 0 {
 		return nil, errors.New("token TTLs must be positive")
@@ -235,13 +275,8 @@ func (c *Core) ProtectedResourceMetadata() ProtectedResourceMetadata {
 }
 
 func (c *Core) RegisterClient(request DynamicClientRegistrationRequest) (ClientRegistration, error) {
-	if len(request.RedirectURIs) == 0 {
-		return ClientRegistration{}, errors.New("redirect URIs are required")
-	}
-	for _, redirectURI := range request.RedirectURIs {
-		if _, err := url.Parse(redirectURI); err != nil {
-			return ClientRegistration{}, fmt.Errorf("invalid redirect URI: %w", err)
-		}
+	if err := validateRedirectURIs(request.RedirectURIs); err != nil {
+		return ClientRegistration{}, err
 	}
 
 	client := ClientRegistration{
@@ -259,6 +294,48 @@ func (c *Core) RegisterClient(request DynamicClientRegistrationRequest) (ClientR
 	c.mu.Unlock()
 
 	return client, nil
+}
+
+func (c *Core) RegisterClientIDURL(request ClientIDURLRegistrationRequest) (ClientRegistration, error) {
+	if err := validateClientIDURL(request.ClientIDURL); err != nil {
+		return ClientRegistration{}, err
+	}
+	if err := validateRedirectURIs(request.RedirectURIs); err != nil {
+		return ClientRegistration{}, err
+	}
+
+	client := ClientRegistration{
+		ClientID:                request.ClientIDURL,
+		ClientName:              fallback(request.ClientName, "Executor Client"),
+		RedirectURIs:            append([]string(nil), request.RedirectURIs...),
+		Scopes:                  dedupeScopes(request.Scopes),
+		TokenEndpointAuthMethod: "none",
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+	}
+
+	c.mu.Lock()
+	c.clients[client.ClientID] = client
+	c.mu.Unlock()
+
+	return client, nil
+}
+
+func (c *Core) ValidateClient(request ClientValidationRequest) error {
+	client, ok := c.lookupClient(request.ClientID)
+	if !ok {
+		return errors.New("unknown client")
+	}
+	if request.RedirectURI == "" {
+		return nil
+	}
+	if err := validateRedirectURI(request.RedirectURI); err != nil {
+		return err
+	}
+	if !slices.Contains(client.RedirectURIs, request.RedirectURI) {
+		return errors.New("redirect URI mismatch")
+	}
+	return nil
 }
 
 func (c *Core) Authorize(request AuthorizeRequest) (AuthorizationCodeGrant, error) {
@@ -426,6 +503,102 @@ func (c *Core) RevokeAll() {
 	c.generation++
 	c.codes = make(map[string]authorizationCodeRecord)
 	c.refreshTokens = make(map[string]refreshTokenRecord)
+}
+
+func (c *Core) SaveState(path string) error {
+	if path == "" {
+		return errors.New("state path is required")
+	}
+
+	state := c.snapshotState()
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	tmpPath := path + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+
+	writeErr := func() error {
+		if _, err := file.Write(payload); err != nil {
+			return err
+		}
+		if err := file.Sync(); err != nil {
+			return err
+		}
+		return file.Close()
+	}()
+	if writeErr != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return writeErr
+	}
+
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func (c *Core) LoadState(path string) error {
+	if path == "" {
+		return errors.New("state path is required")
+	}
+
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var state persistenceState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.generation = state.Generation
+	c.clients = make(map[string]ClientRegistration, len(state.Clients))
+	for key, value := range state.Clients {
+		c.clients[key] = value
+	}
+	c.codes = make(map[string]authorizationCodeRecord, len(state.Codes))
+	for key, value := range state.Codes {
+		c.codes[key] = authorizationCodeRecord{
+			ClientID:        value.ClientID,
+			RedirectURI:     value.RedirectURI,
+			Scopes:          append([]string(nil), value.Scopes...),
+			CodeChallenge:   value.CodeChallenge,
+			ChallengeMethod: value.ChallengeMethod,
+			Subject:         value.Subject,
+			ExpiresAt:       value.ExpiresAt,
+			Generation:      value.Generation,
+		}
+	}
+	c.refreshTokens = make(map[string]refreshTokenRecord, len(state.RefreshTokens))
+	for key, value := range state.RefreshTokens {
+		c.refreshTokens[key] = refreshTokenRecord{
+			ClientID:   value.ClientID,
+			Scopes:     append([]string(nil), value.Scopes...),
+			Subject:    value.Subject,
+			ExpiresAt:  value.ExpiresAt,
+			Generation: value.Generation,
+		}
+	}
+	return nil
 }
 
 func (c *Core) issueTokens(clientID string, subject string, scopes []string) (TokenSet, error) {
@@ -602,4 +775,113 @@ func fallback(value string, fallbackValue string) string {
 		return value
 	}
 	return fallbackValue
+}
+
+func validateRedirectURIs(redirectURIs []string) error {
+	if len(redirectURIs) == 0 {
+		return errors.New("redirect URIs are required")
+	}
+	for _, redirectURI := range redirectURIs {
+		if err := validateRedirectURI(redirectURI); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRedirectURI(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid redirect URI: %w", err)
+	}
+	if !parsed.IsAbs() || parsed.Host == "" {
+		return errors.New("redirect URI must be absolute")
+	}
+	if parsed.Fragment != "" {
+		return errors.New("redirect URI fragment is not allowed")
+	}
+	if parsed.User != nil {
+		return errors.New("redirect URI userinfo is not allowed")
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(parsed.Hostname()) {
+			return nil
+		}
+		return errors.New("redirect URI must use https unless it is a loopback callback")
+	default:
+		return errors.New("redirect URI scheme is not allowed")
+	}
+}
+
+func validateClientIDURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid client_id URL: %w", err)
+	}
+	if !parsed.IsAbs() || parsed.Host == "" {
+		return errors.New("client_id URL must be absolute")
+	}
+	if parsed.Scheme != "https" {
+		return errors.New("client_id URL must use https")
+	}
+	if parsed.Fragment != "" {
+		return errors.New("client_id URL fragment is not allowed")
+	}
+	if parsed.User != nil {
+		return errors.New("client_id URL userinfo is not allowed")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Core) snapshotState() persistenceState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state := persistenceState{
+		Generation:    c.generation,
+		Clients:       make(map[string]ClientRegistration, len(c.clients)),
+		Codes:         make(map[string]persistedCodeRecord, len(c.codes)),
+		RefreshTokens: make(map[string]persistedRefreshRecord, len(c.refreshTokens)),
+	}
+	for key, value := range c.clients {
+		value.RedirectURIs = append([]string(nil), value.RedirectURIs...)
+		value.Scopes = append([]string(nil), value.Scopes...)
+		value.GrantTypes = append([]string(nil), value.GrantTypes...)
+		value.ResponseTypes = append([]string(nil), value.ResponseTypes...)
+		state.Clients[key] = value
+	}
+	for key, value := range c.codes {
+		state.Codes[key] = persistedCodeRecord{
+			ClientID:        value.ClientID,
+			RedirectURI:     value.RedirectURI,
+			Scopes:          append([]string(nil), value.Scopes...),
+			CodeChallenge:   value.CodeChallenge,
+			ChallengeMethod: value.ChallengeMethod,
+			Subject:         value.Subject,
+			ExpiresAt:       value.ExpiresAt,
+			Generation:      value.Generation,
+		}
+	}
+	for key, value := range c.refreshTokens {
+		state.RefreshTokens[key] = persistedRefreshRecord{
+			ClientID:   value.ClientID,
+			Scopes:     append([]string(nil), value.Scopes...),
+			Subject:    value.Subject,
+			ExpiresAt:  value.ExpiresAt,
+			Generation: value.Generation,
+		}
+	}
+	return state
 }

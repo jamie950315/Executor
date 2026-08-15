@@ -17,7 +17,7 @@ import (
 
 const (
 	SessionHeader         = "Mcp-Session-Id"
-	defaultProtocol       = "2026-08-15"
+	defaultProtocol       = "2025-06-18"
 	errCodeInvalidSession = -32001
 	errCodeToolFailure    = -32010
 )
@@ -98,49 +98,49 @@ func BuiltinTools() []Tool {
 		{
 			Name:        "terminal",
 			Description: "Run commands in a persistent terminal session.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: terminalToolSchema(),
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
 		{
 			Name:        "terminal_output",
 			Description: "Read buffered output from an existing terminal session.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: terminalOutputToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:        "terminal_sessions",
 			Description: "Inspect running terminal sessions.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: terminalSessionsToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:        "filesystem_read",
 			Description: "Read files from the host filesystem.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: filesystemReadToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:        "filesystem_write",
 			Description: "Create, overwrite, move, or delete filesystem content.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: filesystemWriteToolSchema(),
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
 		{
 			Name:        "desktop_observe",
 			Description: "Observe desktop state, windows, and screenshots.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: desktopObserveToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:        "desktop_control",
 			Description: "Send mouse, keyboard, and window control actions.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: desktopControlToolSchema(),
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
 		{
 			Name:        "device_status",
 			Description: "Inspect machine and desktop availability.",
-			InputSchema: map[string]any{"type": "object"},
+			InputSchema: deviceStatusToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 	}
@@ -304,12 +304,16 @@ func WriteFrame(writer io.Writer, payload []byte) error {
 func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcRequest) (*rpcResponse, int, string) {
 	switch request.Method {
 	case "initialize":
+		protocolVersion, err := s.negotiateProtocolVersion(request.Params)
+		if err != nil {
+			return errorResponse(request.ID, -32602, err.Error()), http.StatusBadRequest, ""
+		}
 		nextSessionID := s.newSession()
 		return &rpcResponse{
 			JSONRPC: "2.0",
 			ID:      request.ID,
 			Result: map[string]any{
-				"protocolVersion": s.protocolVersion,
+				"protocolVersion": protocolVersion,
 				"capabilities": map[string]any{
 					"tools": map[string]any{
 						"listChanged": false,
@@ -461,4 +465,157 @@ func fallback(value string, fallbackValue string) string {
 		return value
 	}
 	return fallbackValue
+}
+
+func (s *Server) negotiateProtocolVersion(params map[string]any) (string, error) {
+	if params == nil {
+		return s.protocolVersion, nil
+	}
+
+	requested, _ := params["protocolVersion"].(string)
+	if requested == "" {
+		return s.protocolVersion, nil
+	}
+	if requested != s.protocolVersion {
+		return "", fmt.Errorf("unsupported protocol version %q", requested)
+	}
+	return requested, nil
+}
+
+func terminalToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "create", "write", "signal", "close"),
+			"sessionId": map[string]any{
+				"type": "string",
+			},
+			"command": map[string]any{
+				"type": "string",
+			},
+			"input": map[string]any{
+				"type": "string",
+			},
+			"signal": map[string]any{
+				"type": "string",
+				"enum": []string{"interrupt", "terminate", "kill"},
+			},
+			"cwd": map[string]any{
+				"type": "string",
+			},
+			"environment": map[string]any{
+				"type":                 "object",
+				"additionalProperties": map[string]any{"type": "string"},
+			},
+		},
+		"action",
+	)
+}
+
+func terminalOutputToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"sessionId": map[string]any{"type": "string"},
+			"cursor":    map[string]any{"type": "integer", "minimum": 0},
+			"limit":     map[string]any{"type": "integer", "minimum": 1},
+		},
+		"sessionId",
+	)
+}
+
+func terminalSessionsToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "list", "inspect"),
+			"sessionId": map[string]any{
+				"type": "string",
+			},
+		},
+		"action",
+	)
+}
+
+func filesystemReadToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "read_file", "read_directory", "stat"),
+			"path":   map[string]any{"type": "string"},
+			"offset": map[string]any{"type": "integer", "minimum": 0},
+			"limit":  map[string]any{"type": "integer", "minimum": 1},
+		},
+		"action",
+		"path",
+	)
+}
+
+func filesystemWriteToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action":      enumProperty("string", "write_file", "append_file", "mkdir", "move", "delete"),
+			"path":        map[string]any{"type": "string"},
+			"destination": map[string]any{"type": "string"},
+			"content":     map[string]any{"type": "string"},
+			"recursive":   map[string]any{"type": "boolean"},
+		},
+		"action",
+		"path",
+	)
+}
+
+func desktopObserveToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "screenshot", "accessibility_tree", "windows", "applications"),
+			"windowId": map[string]any{
+				"type": "string",
+			},
+			"includeImage": map[string]any{
+				"type": "boolean",
+			},
+		},
+		"action",
+	)
+}
+
+func desktopControlToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "mouse_move", "mouse_click", "key_press", "type_text", "window_focus"),
+			"x":      map[string]any{"type": "integer"},
+			"y":      map[string]any{"type": "integer"},
+			"button": map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
+			"keys": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+			"text": map[string]any{"type": "string"},
+			"windowId": map[string]any{
+				"type": "string",
+			},
+		},
+		"action",
+	)
+}
+
+func deviceStatusToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "summary", "desktop", "terminals"),
+		},
+		"action",
+	)
+}
+
+func schemaObject(properties map[string]any, required ...string) map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   required,
+	}
+}
+
+func enumProperty(kind string, values ...string) map[string]any {
+	return map[string]any{
+		"type": kind,
+		"enum": values,
+	}
 }
