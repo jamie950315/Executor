@@ -161,7 +161,7 @@ func save(dir string, values Values) error {
 		return err
 	}
 	closed = true
-	if err := os.Rename(tmp, path); err != nil {
+	if err := replaceFileDurable(tmp, path); err != nil {
 		return err
 	}
 	return nil

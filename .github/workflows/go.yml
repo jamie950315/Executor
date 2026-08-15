@@ -19,3 +19,6 @@ jobs:
           go-version-file: go.mod
       - name: Test
         run: go test ./...
+      - name: Test privileged Unix credential rotation
+        if: runner.os != 'Windows'
+        run: sudo "$(command -v go)" test ./internal/secrets -run TestRotatePreservesExistingUnixOwner -count=1
