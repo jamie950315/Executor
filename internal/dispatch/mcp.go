@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 
+	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
 )
 
@@ -27,7 +29,14 @@ func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	case "terminal":
 		return d.terminal(ctx, call.Arguments)
 	case "terminal_output":
-		return d.call(ctx, d.privilegedCaller(call.Arguments), "terminal.read", call.Arguments)
+		sessionID, err := requiredString(call.Arguments, "sessionId")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, d.privilegedCaller(call.Arguments), desktop.RPCMethodTerminalRead, desktop.RPCTerminalReadParams{
+			SessionID: sessionID,
+			Cursor:    integer(call.Arguments["cursor"]),
+		})
 	case "terminal_sessions":
 		action, err := requiredString(call.Arguments, "action")
 		if err != nil {
@@ -67,7 +76,46 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 	if !ok {
 		return nil, fmt.Errorf("unsupported terminal action %q", action)
 	}
-	return d.call(ctx, d.privilegedCaller(arguments), method, arguments)
+	caller := d.privilegedCaller(arguments)
+	switch action {
+	case "create":
+		command, _ := arguments["command"].(string)
+		initial := []byte(nil)
+		if command != "" {
+			initial = []byte(command + "\n")
+		}
+		environment := map[string]string{}
+		if raw, ok := arguments["environment"].(map[string]any); ok {
+			for key, value := range raw {
+				if text, ok := value.(string); ok {
+					environment[key] = text
+				}
+			}
+		}
+		cwd, _ := arguments["cwd"].(string)
+		return d.call(ctx, caller, method, desktop.RPCTerminalStartParams{Dir: cwd, Env: environment, InitialInput: initial})
+	case "write":
+		sessionID, err := requiredString(arguments, "sessionId")
+		if err != nil {
+			return nil, err
+		}
+		input, _ := arguments["input"].(string)
+		return d.call(ctx, caller, method, desktop.RPCTerminalWriteParams{SessionID: sessionID, Input: []byte(input)})
+	case "signal":
+		sessionID, err := requiredString(arguments, "sessionId")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, caller, desktop.RPCMethodTerminalKill, desktop.RPCSessionParams{SessionID: sessionID})
+	case "close":
+		sessionID, err := requiredString(arguments, "sessionId")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, caller, method, desktop.RPCSessionParams{SessionID: sessionID})
+	default:
+		return nil, fmt.Errorf("unsupported terminal action %q", action)
+	}
 }
 
 func (d *MCP) filesystemRead(ctx context.Context, arguments map[string]any) (any, error) {
@@ -83,7 +131,22 @@ func (d *MCP) filesystemRead(ctx context.Context, arguments map[string]any) (any
 	if !ok {
 		return nil, fmt.Errorf("unsupported filesystem read action %q", action)
 	}
-	return d.call(ctx, d.privilegedCaller(arguments), method, arguments)
+	path, err := requiredString(arguments, "path")
+	if err != nil {
+		return nil, err
+	}
+	caller := d.privilegedCaller(arguments)
+	if action == "read_file" {
+		if caller == nil {
+			return nil, errors.New("Executor helper is unavailable")
+		}
+		var data []byte
+		if err := caller.Call(ctx, method, desktop.RPCFilesystemPathParams{Path: path}, &data); err != nil {
+			return nil, err
+		}
+		return map[string]any{"content": string(data)}, nil
+	}
+	return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
 }
 
 func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (any, error) {
@@ -101,7 +164,28 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 	if !ok {
 		return nil, fmt.Errorf("unsupported filesystem write action %q", action)
 	}
-	return d.call(ctx, d.privilegedCaller(arguments), method, arguments)
+	caller := d.privilegedCaller(arguments)
+	path, err := requiredString(arguments, "path")
+	if err != nil {
+		return nil, err
+	}
+	switch action {
+	case "write_file":
+		content, _ := arguments["content"].(string)
+		return d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: []byte(content), Perm: fs.FileMode(0o644)})
+	case "move":
+		destination, err := requiredString(arguments, "destination")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, caller, method, desktop.RPCFilesystemMoveParams{Src: path, Dst: destination})
+	case "delete":
+		return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
+	case "append_file", "mkdir":
+		return nil, fmt.Errorf("filesystem action %q is not available in this build", action)
+	default:
+		return nil, fmt.Errorf("unsupported filesystem write action %q", action)
+	}
 }
 
 func (d *MCP) desktopObserve(ctx context.Context, arguments map[string]any) (any, error) {
@@ -118,7 +202,35 @@ func (d *MCP) desktopObserve(ctx context.Context, arguments map[string]any) (any
 	if !ok {
 		return nil, fmt.Errorf("unsupported desktop observe action %q", action)
 	}
-	return d.call(ctx, d.desktop, method, arguments)
+	switch action {
+	case "windows", "accessibility_tree":
+		return d.call(ctx, d.desktop, method, struct{}{})
+	case "screenshot":
+		path, err := requiredString(arguments, "path")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, d.desktop, method, desktop.RPCDesktopScreenshotParams{Path: path})
+	case "applications":
+		windows, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopWindows, struct{}{})
+		if err != nil {
+			return nil, err
+		}
+		items, _ := windows.([]any)
+		seen := map[string]bool{}
+		applications := make([]string, 0)
+		for _, item := range items {
+			entry, _ := item.(map[string]any)
+			name, _ := entry["app"].(string)
+			if name != "" && !seen[name] {
+				seen[name] = true
+				applications = append(applications, name)
+			}
+		}
+		return map[string]any{"applications": applications}, nil
+	default:
+		return nil, fmt.Errorf("unsupported desktop observe action %q", action)
+	}
 }
 
 func (d *MCP) desktopControl(ctx context.Context, arguments map[string]any) (any, error) {
@@ -136,7 +248,39 @@ func (d *MCP) desktopControl(ctx context.Context, arguments map[string]any) (any
 	if !ok {
 		return nil, fmt.Errorf("unsupported desktop control action %q", action)
 	}
-	return d.call(ctx, d.desktop, method, arguments)
+	switch action {
+	case "mouse_move", "mouse_click":
+		button, _ := arguments["button"].(string)
+		if button == "middle" {
+			button = string(desktop.MouseButtonCenter)
+		}
+		actionType := desktop.MouseActionMove
+		if action == "mouse_click" {
+			actionType = desktop.MouseActionClick
+		}
+		return d.call(ctx, d.desktop, method, desktop.RPCDesktopMouseParams{Action: desktop.MouseAction{
+			Type: actionType, X: int(integer(arguments["x"])), Y: int(integer(arguments["y"])), Button: desktop.MouseButton(button),
+		}})
+	case "type_text":
+		text, err := requiredString(arguments, "text")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, d.desktop, method, desktop.RPCDesktopKeyboardParams{Action: desktop.KeyboardAction{Text: text}})
+	case "key_press":
+		modifiers := stringSlice(arguments["modifiers"])
+		return d.call(ctx, d.desktop, method, desktop.RPCDesktopKeyboardParams{Action: desktop.KeyboardAction{
+			KeyCode: int(integer(arguments["keyCode"])), Modifiers: modifiers,
+		}})
+	case "window_focus":
+		name, err := requiredString(arguments, "name")
+		if err != nil {
+			return nil, err
+		}
+		return d.call(ctx, d.desktop, method, desktop.RPCDesktopAppParams{Action: desktop.AppAction{Type: desktop.AppActionActivate, Name: name}})
+	default:
+		return nil, fmt.Errorf("unsupported desktop control action %q", action)
+	}
 }
 
 func (d *MCP) deviceStatus(ctx context.Context, arguments map[string]any) (any, error) {
@@ -168,7 +312,7 @@ func (d *MCP) privilegedCaller(arguments map[string]any) Caller {
 	return d.desktop
 }
 
-func (d *MCP) call(ctx context.Context, caller Caller, method string, arguments map[string]any) (any, error) {
+func (d *MCP) call(ctx context.Context, caller Caller, method string, arguments any) (any, error) {
 	if caller == nil {
 		return nil, errors.New("Executor helper is unavailable")
 	}
@@ -184,6 +328,30 @@ func (d *MCP) call(ctx context.Context, caller Caller, method string, arguments 
 		return nil, err
 	}
 	return result, nil
+}
+
+func integer(value any) int64 {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	default:
+		return 0
+	}
+}
+
+func stringSlice(value any) []string {
+	items, _ := value.([]any)
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
 }
 
 func requiredString(arguments map[string]any, name string) (string, error) {

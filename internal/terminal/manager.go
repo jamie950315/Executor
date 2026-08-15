@@ -1,16 +1,21 @@
 package terminal
 
 import (
-	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"strconv"
+	"slices"
 	"sync"
-	"sync/atomic"
+	"time"
+)
+
+const (
+	defaultOutputBufferSize = 8 << 20
+	sessionShutdownTimeout  = 3 * time.Second
 )
 
 type SessionSpec struct {
@@ -26,24 +31,34 @@ type Session struct {
 	Dir     string
 }
 
+type SessionInfo struct {
+	Session Session
+	Running bool
+}
+
 type OutputChunk struct {
-	Data       []byte
-	NextCursor int64
-	Running    bool
+	Data        []byte
+	StartCursor int64
+	NextCursor  int64
+	Running     bool
+	Truncated   bool
 }
 
 type sessionState struct {
-	meta   Session
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	mu     sync.RWMutex
-	output bytes.Buffer
-	running bool
+	meta          Session
+	cmd           *exec.Cmd
+	stdin         io.WriteCloser
+	stdinClose    sync.Once
+	mu            sync.RWMutex
+	output        *outputBuffer
+	running       bool
+	waitErr       error
+	done          chan struct{}
+	doneCloseOnce sync.Once
 }
 
 type Manager struct {
 	launcher ptyLauncher
-	seq      atomic.Uint64
 	mu       sync.RWMutex
 	sessions map[string]*sessionState
 }
@@ -56,16 +71,23 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) {
+	if err := ctx.Err(); err != nil {
+		return Session{}, err
+	}
 	if len(spec.Command) == 0 {
 		spec.Command = []string{defaultShell()}
 	}
 
-	cmd, stdin, stdout, err := m.launcher.Start(ctx, spec)
+	cmd, stdin, stdout, err := m.launcher.Start(spec)
 	if err != nil {
 		return Session{}, err
 	}
 
-	id := strconv.FormatUint(m.seq.Add(1), 10)
+	id, err := newSessionID()
+	if err != nil {
+		_ = m.launcher.Kill(cmd)
+		return Session{}, err
+	}
 	state := &sessionState{
 		meta: Session{
 			ID:      id,
@@ -75,7 +97,9 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 		},
 		cmd:     cmd,
 		stdin:   stdin,
+		output:  newOutputBuffer(defaultOutputBufferSize),
 		running: true,
+		done:    make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -83,7 +107,7 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 	m.mu.Unlock()
 
 	go state.capture(stdout)
-	go m.awaitExit(id, state)
+	go m.awaitExit(state)
 
 	return state.meta, nil
 }
@@ -110,20 +134,52 @@ func (m *Manager) Read(sessionID string, cursor int64) (OutputChunk, error) {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	data := state.output.Bytes()
-	if cursor < 0 {
-		cursor = 0
+	chunk := state.output.Read(cursor)
+	chunk.Running = state.running
+	return chunk, nil
+}
+
+func (m *Manager) List() []SessionInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sessions := make([]SessionInfo, 0, len(m.sessions))
+	for _, state := range m.sessions {
+		state.mu.RLock()
+		sessions = append(sessions, SessionInfo{
+			Session: state.meta,
+			Running: state.running,
+		})
+		state.mu.RUnlock()
 	}
-	if cursor > int64(len(data)) {
-		cursor = int64(len(data))
+	slices.SortFunc(sessions, func(a, b SessionInfo) int {
+		switch {
+		case a.Session.ID < b.Session.ID:
+			return -1
+		case a.Session.ID > b.Session.ID:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return sessions
+}
+
+func (m *Manager) Close(sessionID string) error {
+	state, err := m.session(sessionID)
+	if err != nil {
+		return err
 	}
 
-	chunk := append([]byte(nil), data[cursor:]...)
-	return OutputChunk{
-		Data:       chunk,
-		NextCursor: int64(len(data)),
-		Running:    state.running,
-	}, nil
+	state.closeInput()
+	if !waitForDone(state.done, sessionShutdownTimeout) {
+		if killErr := m.launcher.Kill(state.cmd); killErr != nil {
+			return killErr
+		}
+		_ = waitForDone(state.done, sessionShutdownTimeout)
+	}
+	m.deleteSession(sessionID)
+	return nil
 }
 
 func (m *Manager) Kill(sessionID string) error {
@@ -131,25 +187,53 @@ func (m *Manager) Kill(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	return m.launcher.Kill(state.cmd)
+	if err := m.launcher.Kill(state.cmd); err != nil {
+		return err
+	}
+	_ = waitForDone(state.done, sessionShutdownTimeout)
+	m.deleteSession(sessionID)
+	return nil
 }
+
+func (m *Manager) KillAll() error {
+	sessions := m.List()
+	var errs []error
+	for _, session := range sessions {
+		if err := m.Kill(session.Session.ID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+var ErrSessionNotFound = errors.New("session not found")
 
 func (m *Manager) session(sessionID string) (*sessionState, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	state, ok := m.sessions[sessionID]
 	if !ok {
-		return nil, fmt.Errorf("session %q not found", sessionID)
+		return nil, fmt.Errorf("%w: %q", ErrSessionNotFound, sessionID)
 	}
 	return state, nil
 }
 
-func (m *Manager) awaitExit(sessionID string, state *sessionState) {
-	_ = state.cmd.Wait()
+func (m *Manager) deleteSession(sessionID string) {
+	m.mu.Lock()
+	delete(m.sessions, sessionID)
+	m.mu.Unlock()
+}
+
+func (m *Manager) awaitExit(state *sessionState) {
+	err := state.cmd.Wait()
 	state.mu.Lock()
 	state.running = false
-	_ = state.stdin.Close()
+	state.waitErr = err
+	state.closeInput()
 	state.mu.Unlock()
+	state.doneCloseOnce.Do(func() {
+		close(state.done)
+	})
 }
 
 func (s *sessionState) capture(stdout io.ReadCloser) {
@@ -159,7 +243,7 @@ func (s *sessionState) capture(stdout io.ReadCloser) {
 		n, err := stdout.Read(buf)
 		if n > 0 {
 			s.mu.Lock()
-			s.output.Write(buf[:n])
+			s.output.Append(buf[:n])
 			s.mu.Unlock()
 		}
 		if err != nil {
@@ -168,9 +252,27 @@ func (s *sessionState) capture(stdout io.ReadCloser) {
 	}
 }
 
-func defaultShell() string {
-	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
+func (s *sessionState) closeInput() {
+	s.stdinClose.Do(func() {
+		if s.stdin != nil {
+			_ = s.stdin.Close()
+		}
+	})
+}
+
+func waitForDone(done <-chan struct{}, timeout time.Duration) bool {
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
-	return "/bin/sh"
+}
+
+func newSessionID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate session id: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }

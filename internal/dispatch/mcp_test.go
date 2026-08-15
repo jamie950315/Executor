@@ -40,9 +40,9 @@ func TestMCPRoutesOwnerAndAdminTerminalToSeparateHelpers(t *testing.T) {
 func TestMCPRoutesFilesystemAndDesktopActions(t *testing.T) {
 	t.Parallel()
 
-	broker := &recordingCaller{responses: map[string]any{"filesystem.read": map[string]any{"content": "root"}}}
+	broker := &recordingCaller{responses: map[string]any{"filesystem.read": []byte("root")}}
 	desktop := &recordingCaller{responses: map[string]any{
-		"filesystem.read": map[string]any{"content": "owner"},
+		"filesystem.read": []byte("owner"),
 		"desktop.windows": []map[string]any{{"app": "Finder", "title": "Desktop"}},
 	}}
 	dispatcher := NewMCP(broker, desktop)

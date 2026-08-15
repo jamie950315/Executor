@@ -3,7 +3,6 @@
 package terminal
 
 import (
-	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -13,7 +12,7 @@ import (
 )
 
 type ptyLauncher interface {
-	Start(ctx context.Context, spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error)
+	Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error)
 	Kill(cmd *exec.Cmd) error
 }
 
@@ -23,8 +22,8 @@ func newPTYLauncher() ptyLauncher {
 	return scriptLauncher{}
 }
 
-func (scriptLauncher) Start(ctx context.Context, spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error) {
-	cmd := buildPTYCommand(ctx, spec.Command)
+func (scriptLauncher) Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error) {
+	cmd := buildPTYCommand(spec.Command)
 	cmd.Dir = spec.Dir
 	cmd.Env = append(os.Environ(), flattenEnv(spec.Env)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -52,23 +51,12 @@ func (scriptLauncher) Kill(cmd *exec.Cmd) error {
 	return nil
 }
 
-func buildPTYCommand(ctx context.Context, command []string) *exec.Cmd {
+func buildPTYCommand(command []string) *exec.Cmd {
 	if runtime.GOOS == "darwin" {
 		args := append([]string{"-q", "/dev/null"}, command...)
-		return exec.CommandContext(ctx, "script", args...)
+		return exec.Command("script", args...)
 	}
-	return exec.CommandContext(ctx, "script", "-qfec", quoteCommand(command), "/dev/null")
-}
-
-func flattenEnv(env map[string]string) []string {
-	if len(env) == 0 {
-		return nil
-	}
-	items := make([]string, 0, len(env))
-	for key, value := range env {
-		items = append(items, key+"="+value)
-	}
-	return items
+	return exec.Command("script", "-qfec", quoteCommand(command), "/dev/null")
 }
 
 func quoteCommand(command []string) string {
