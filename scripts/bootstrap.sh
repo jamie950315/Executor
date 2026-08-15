@@ -344,6 +344,18 @@ bootstrap_linux() {
   run_desktop_systemctl restart executor-desktop.service
 }
 
+wait_launchd_unloaded() {
+  target="$1"
+  for _ in {1..50}; do
+    if ! "${LAUNCHCTL_BIN}" print "${target}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'timed out waiting for launchd service to unload: %s\n' "${target}" >&2
+  return 1
+}
+
 bootstrap_macos() {
   root="$1"
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.agent.plist" "${root}/LaunchDaemons/com.executor.agent.plist" "launchd-system:com.executor.agent"
@@ -355,11 +367,13 @@ bootstrap_macos() {
   gui_uid="$(desktop_gui_uid_macos)"
   for label in com.executor.agent com.executor.broker com.executor.dashboard com.executor.cloudflared; do
     "${LAUNCHCTL_BIN}" bootout "system/${label}" 2>/dev/null || true
+    wait_launchd_unloaded "system/${label}"
     "${LAUNCHCTL_BIN}" bootstrap system "${root}/LaunchDaemons/${label}.plist"
     "${LAUNCHCTL_BIN}" enable "system/${label}"
     "${LAUNCHCTL_BIN}" kickstart -k "system/${label}"
   done
   "${LAUNCHCTL_BIN}" bootout "gui/${gui_uid}/com.executor.desktop" 2>/dev/null || true
+  wait_launchd_unloaded "gui/${gui_uid}/com.executor.desktop"
   "${LAUNCHCTL_BIN}" bootstrap "gui/${gui_uid}" "${root}/LaunchAgents/com.executor.desktop.plist"
   "${LAUNCHCTL_BIN}" enable "gui/${gui_uid}/com.executor.desktop"
   "${LAUNCHCTL_BIN}" kickstart -k "gui/${gui_uid}/com.executor.desktop"
