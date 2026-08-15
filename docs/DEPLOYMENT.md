@@ -21,6 +21,8 @@ This matches the current Cloudflare documentation for remotely-managed tunnels, 
 
 The packaging build never stores the Cloudflare API token in config. It persists only deployment metadata such as the selected account ID, zone ID, tunnel ID, DNS record ID, hostname, and managed tunnel token file path.
 
+Executor runs its remotely managed tunnel through an isolated service: `com.executor.cloudflared` on macOS, `executor-cloudflared.service` on Linux/WSL, and `ExecutorCloudflared` on Windows. Normal bootstrap, rollback, Resume, and Kill Switch operations manage only that service. A one-time upgrade migration may stop a generic `cloudflared` service only when an earlier Executor manifest, ownership record, or Executor-created ImagePath backup proves that Executor previously created or replaced it; unrelated host services remain untouched, and restored host services return to their prior running state.
+
 ## Service Templates
 
 The service bundle renderer produces:
@@ -28,12 +30,12 @@ The service bundle renderer produces:
 - macOS LaunchDaemons for `executor agent` and `executor broker`
 - macOS LaunchDaemon for `executor dashboard`
 - macOS LaunchAgent for `executor desktop`, loaded into the real console owner's `gui/<uid>` session rather than `gui/0`
-- macOS LaunchDaemon for `cloudflared` using `--token-file`
+- macOS LaunchDaemon `com.executor.cloudflared` using `--token-file`
 - Linux systemd units for `agent` and `broker`
 - Linux systemd unit for `dashboard`
 - Linux user unit for `desktop`, enabled through the invoking desktop user with `XDG_RUNTIME_DIR`
-- Linux systemd unit for `cloudflared` using `--token-file`
-- Windows PowerShell scripts for Executor service install, including `ExecutorDashboard` as a LocalSystem service, per-user desktop startup, and `cloudflared` registry configuration with `--token-file`; the agent service uses a virtual service account instead of a persisted plaintext password
+- Linux systemd unit `executor-cloudflared.service` using `--token-file`
+- Windows PowerShell scripts for Executor service install, including `ExecutorDashboard` as a LocalSystem service, per-user desktop startup, and the isolated `ExecutorCloudflared` service with `--token-file`; the agent service uses a virtual service account instead of a persisted plaintext password
 - WSL guidance that keeps desktop control on the Windows companion
 
 Release artifacts include both `executor` and `executor-kill`. The bootstrap scripts install those bundled binaries into stable locations before creating services or tasks:
@@ -68,5 +70,5 @@ Service templates always point at the stable installed `executor` path, never at
 ## Current platform verification boundary
 
 - macOS arm64 has process-level end-to-end evidence for OAuth, MCP, owner terminal/filesystem, desktop observation, screenshot, Kill, Resume, and Dashboard key rollover. System LaunchDaemon installation and root Broker execution have not been exercised from this checkout.
-- Linux, WSL, and Windows currently have automated tests and cross-build evidence only.
-- Windows terminal execution currently uses persistent redirected pipes, not ConPTY, so full interactive-console behavior is not yet claimed.
+- Linux and WSL currently have automated tests and cross-build evidence only.
+- Windows terminal execution uses the native ConPTY API on Windows 10 version 1809, Windows Server 2019, or newer. Each terminal process tree is assigned to a kill-on-close Windows Job Object, so forced shutdown does not depend on `ClosePseudoConsole` returning promptly. A real Windows amd64 runtime test launched through WSL interoperability verifies persistent PowerShell state, case-insensitive environment overrides, working-directory preservation, live terminal resizing, LF command input, Ctrl+C interruption even when the launcher inherited an ignored Ctrl+C state, bounded Kill, and child-process termination. The same test verifies startup when the launcher has no parent console, as expected for a Windows Service. Windows service and active-desktop installation still require a full target-machine test.

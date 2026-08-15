@@ -24,7 +24,7 @@ func TestLinuxCommandsUseInstalledCloudflaredUnitAndDesktopRuntime(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := cloudflared, []commandSpec{{name: "systemctl", args: []string{"stop", "cloudflared.service"}}}; !reflect.DeepEqual(got, want) {
+	if got, want := cloudflared, []commandSpec{{name: "systemctl", args: []string{"stop", "executor-cloudflared.service"}}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("cloudflared command = %#v, want %#v", got, want)
 	}
 	desktop, err := serviceCommands("linux", "start", Desktop, env, lookup)
@@ -58,7 +58,7 @@ func TestWindowsUsesSCForServicesAndScheduledTaskForDesktop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := cloudflared, []commandSpec{{name: "sc.exe", args: []string{"start", "cloudflared"}}}; !reflect.DeepEqual(got, want) {
+	if got, want := cloudflared, []commandSpec{{name: "sc.exe", args: []string{"start", "ExecutorCloudflared"}}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("cloudflared command = %#v, want %#v", got, want)
 	}
 	desktopStop, err := serviceCommands("windows", "stop", Desktop, env, nil)
@@ -99,6 +99,17 @@ func TestDarwinStopAndStartAreReversible(t *testing.T) {
 	}
 	if !reflect.DeepEqual(start, wantStart) {
 		t.Fatalf("start = %#v, want %#v", start, wantStart)
+	}
+}
+
+func TestDarwinCloudflaredUsesExecutorOwnedLabel(t *testing.T) {
+	stop, err := serviceCommands("darwin", "stop", Cloudflared, func(string) string { return "" }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []commandSpec{{name: "launchctl", args: []string{"bootout", "system/com.executor.cloudflared"}}}
+	if !reflect.DeepEqual(stop, want) {
+		t.Fatalf("cloudflared stop = %#v, want %#v", stop, want)
 	}
 }
 

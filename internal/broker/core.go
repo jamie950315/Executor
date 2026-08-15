@@ -28,6 +28,7 @@ type TerminalExecutor interface {
 	Kill(sessionID string) error
 	KillAll() error
 	Signal(sessionID string, signal terminal.Signal) error
+	Resize(sessionID string, columns, rows int) error
 }
 
 type DesktopController interface {
@@ -77,6 +78,14 @@ func (c *Core) ReadSession(sessionID string, cursor int64, privilege Privilege) 
 		return terminal.OutputChunk{}, err
 	}
 	return executor.Read(sessionID, cursor)
+}
+
+func (c *Core) ResizeSession(sessionID string, columns, rows int, privilege Privilege) error {
+	executor, err := c.executor(privilege)
+	if err != nil {
+		return err
+	}
+	return executor.Resize(sessionID, columns, rows)
 }
 
 func (c *Core) KillSession(sessionID string, privilege Privilege) error {

@@ -35,7 +35,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Repository initialized on branch `main`.
 - Config, private fallback secret store, metadata-only audit store, OAuth 2.1 with CIMD/DCR, authenticated localhost dashboard, Streamable HTTP MCP, and local stdio MCP are implemented with tests.
 - Agent, privileged Broker, active-user Desktop helper, persistent terminal/filesystem/desktop tools, lifecycle control, independent Kill Switch, and Cloudflare named-Tunnel setup are implemented.
-- Release archives install stable `executor` and `executor-kill` binaries plus persistent Agent, Broker, Dashboard, Desktop, and cloudflared services with manifest-backed rollback.
+- Release archives install stable `executor` and `executor-kill` binaries plus persistent Agent, Broker, Dashboard, Desktop, and Executor-owned cloudflared services with manifest-backed rollback. Existing generic cloudflared services are not replaced or stopped except for an ownership-proven one-time migration from an older Executor install; replaced host services are restored and returned to their prior running state.
 - macOS, Linux, and Windows amd64/arm64 builds are verified by cross-compilation. Windows service/Scheduled Task and Linux systemd/X11/Wayland behavior still require real target-machine runtime verification.
 - Live Cloudflare deployment is not verified because no deployment API token file or hostname has been supplied.
 - A real macOS arm64 process-level test has verified separate Agent/Broker/Desktop/Dashboard processes, OAuth DCR + PKCE, MCP initialization, owner filesystem and terminal calls, window observation, a 3024x1964 screenshot, immediate Kill quiescing, secret rotation, old-token rejection after Resume, and immediate Dashboard key rollover. This did not install system services or prove root execution.
@@ -44,7 +44,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - OAuth DCR accepts standard metadata but restricts callback hosts to ChatGPT or loopback, and the consent page displays the requesting client and redirect destination. MCP stdio uses newline-delimited JSON; Streamable HTTP validates Origin and protocol headers.
 - Resume verifies that Broker, Desktop, and Agent loaded the rotated credentials before starting the tunnel or removing the disabled marker.
 - Linux/WSL units install under the standard systemd system/user directories. Darwin release jobs build on macOS with native CoreGraphics desktop input.
-- Windows terminal sessions currently use persistent redirected pipes rather than ConPTY. Basic execution is implemented and cross-built, but full interactive-console semantics remain incomplete until a real ConPTY backend and Windows runtime test are added.
+- Windows terminal sessions use the native ConPTY API with persistent input/output, case-insensitive environment overrides, cwd preservation, live resize, and bounded process-tree teardown through a kill-on-close Job Object. A real Windows amd64 test launched through WSL interoperability verifies PowerShell state, LF command input, resize, inherited Ctrl+C recovery, no-parent-console startup, and child-process termination; full Windows service and active-desktop installation still require target-machine verification.
 - No system service has been installed from this checkout yet.
 
 ## Runtime targets

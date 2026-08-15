@@ -79,6 +79,13 @@ func TestHelperRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 	}, &struct{}{}); err != nil {
 		t.Fatalf("terminal.signal: %v", err)
 	}
+	if err := client.Call(context.Background(), RPCMethodTerminalResize, map[string]any{
+		"session_id": "owner",
+		"columns":    132,
+		"rows":       43,
+	}, &struct{}{}); err != nil {
+		t.Fatalf("terminal.resize: %v", err)
+	}
 	if err := client.Call(context.Background(), RPCMethodFilesystemAppend, map[string]any{
 		"path": "/tmp/a.txt",
 		"data": []byte("x"),
@@ -99,6 +106,9 @@ func TestHelperRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 	}
 	if status.Component != "desktop" || !status.Available || status.TerminalSessions != 2 {
 		t.Fatalf("unexpected device status: %#v", status)
+	}
+	if term.resizeSessionID != "owner" || term.resizeColumns != 132 || term.resizeRows != 43 {
+		t.Fatalf("terminal resize = %#v", term)
 	}
 
 	cancel()
@@ -128,6 +138,7 @@ func (helperTerminal) KillAll() error               { return nil }
 func (helperTerminal) Signal(sessionID string, signal terminal.Signal) error {
 	return nil
 }
+func (helperTerminal) Resize(sessionID string, columns, rows int) error { return nil }
 
 type helperFilesystem struct{}
 
@@ -160,6 +171,9 @@ func (helperDesktop) Available(ctx context.Context) bool                        
 type helperStatusTerminal struct {
 	signalSessionID string
 	signal          terminal.Signal
+	resizeSessionID string
+	resizeColumns   int
+	resizeRows      int
 }
 
 func (h *helperStatusTerminal) Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error) {
@@ -176,6 +190,12 @@ func (h *helperStatusTerminal) KillAll() error               { return nil }
 func (h *helperStatusTerminal) Signal(sessionID string, signal terminal.Signal) error {
 	h.signalSessionID = sessionID
 	h.signal = signal
+	return nil
+}
+func (h *helperStatusTerminal) Resize(sessionID string, columns, rows int) error {
+	h.resizeSessionID = sessionID
+	h.resizeColumns = columns
+	h.resizeRows = rows
 	return nil
 }
 

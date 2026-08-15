@@ -6,17 +6,43 @@ $InstallRoot = if ($env:EXECUTOR_INSTALL_ROOT) { $env:EXECUTOR_INSTALL_ROOT } el
 $BackupRoot = Join-Path $StateDir "service-backups"
 $ManifestPath = Join-Path $StateDir "service-manifest.txt"
 $OwnedServicesPath = Join-Path $StateDir "owned-services.txt"
-$CloudflaredTokenPath = if ($env:CLOUDFLARED_TOKEN_PATH) { $env:CLOUDFLARED_TOKEN_PATH } else { Join-Path $StateDir "cloudflared\executor.token" }
-$CloudflaredBackupPath = Join-Path (Split-Path $CloudflaredTokenPath -Parent) "cloudflared-service-imagepath.bak"
 $IsUninstall = $env:EXECUTOR_UNINSTALL -eq "1"
 $ServicesToRestart = @()
+
+function Remove-OwnedService {
+  param([string]$Name)
+  if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) {
+    return
+  }
+  Stop-Service -Name $Name -Force -ErrorAction Stop
+  & sc.exe delete $Name | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "service deletion did not complete for $Name (sc.exe exit code $LASTEXITCODE)"
+  }
+  $DeleteDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  while ((Get-Service -Name $Name -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $DeleteDeadline) {
+    Start-Sleep -Milliseconds 100
+  }
+  if (Get-Service -Name $Name -ErrorAction SilentlyContinue) {
+    throw "service deletion did not complete for $Name (service still exists after sc.exe delete)"
+  }
+}
 
 if (-not (Test-Path $ManifestPath)) {
   Write-Host "no manifest found at $ManifestPath"
   exit 0
 }
 
-foreach ($service in @("ExecutorAgent", "ExecutorBroker", "ExecutorDashboard", "cloudflared")) {
+$ManifestEntries = Get-Content -Path $ManifestPath | Where-Object { $_ -and $_.Contains("|") }
+$OwnedServices = if (Test-Path $OwnedServicesPath) { @(Get-Content -Path $OwnedServicesPath | Where-Object { $_ }) } else { @() }
+$ManagedServices = @()
+foreach ($Entry in $ManifestEntries) {
+  $Parts = $Entry.Split("|", 3)
+  if ($Parts[0] -eq "service" -and $OwnedServices -contains $Parts[1]) {
+    $ManagedServices += $Parts[1]
+  }
+}
+foreach ($service in ($ManagedServices | Select-Object -Unique)) {
   if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     try {
       Stop-Service -Name $service -Force -ErrorAction Stop
@@ -25,7 +51,6 @@ foreach ($service in @("ExecutorAgent", "ExecutorBroker", "ExecutorDashboard", "
   }
 }
 
-$ManifestEntries = Get-Content -Path $ManifestPath | Where-Object { $_ -and $_.Contains("|") }
 foreach ($Entry in $ManifestEntries) {
   $Parts = $Entry.Split("|", 3)
   $Kind = $Parts[0]
@@ -33,6 +58,15 @@ foreach ($Entry in $ManifestEntries) {
   $Mode = $Parts[2]
 
   switch ($Kind) {
+	"service-imagepath" {
+	  if (($OwnedServices -contains $PathValue) -and $Mode.StartsWith("restore:") -and (Get-Service -Name $PathValue -ErrorAction SilentlyContinue)) {
+		$BackupPath = $Mode.Substring(8)
+		if (Test-Path $BackupPath) {
+		  $ImagePath = (Get-Content -Path $BackupPath -Raw).Trim()
+		  Set-ItemProperty -Path ("HKLM:\SYSTEM\CurrentControlSet\Services\" + $PathValue) -Name ImagePath -Value $ImagePath
+		}
+	  }
+	}
     "scheduled-task" {
       if (Get-ScheduledTask -TaskName $PathValue -ErrorAction SilentlyContinue) {
         try {
@@ -50,16 +84,16 @@ foreach ($Entry in $ManifestEntries) {
       }
     }
     "service" {
-      $Owned = (Test-Path $OwnedServicesPath) -and ((Get-Content -Path $OwnedServicesPath) -contains $PathValue)
-      $DeleteService = $Mode -eq "delete" -or ($IsUninstall -and $Owned)
-      if ($DeleteService -and (Get-Service -Name $PathValue -ErrorAction SilentlyContinue)) {
-        & sc.exe delete $PathValue | Out-Null
+      $Owned = $OwnedServices -contains $PathValue
+	  $DeleteService = $Owned -and ($Mode -eq "delete" -or $IsUninstall)
+      if ($DeleteService) {
+		Remove-OwnedService -Name $PathValue
       }
       if ($DeleteService -and (Test-Path $OwnedServicesPath)) {
         $RemainingServices = @(Get-Content -Path $OwnedServicesPath | Where-Object { $_ -and $_ -ne $PathValue })
         Set-Content -Path $OwnedServicesPath -Value $RemainingServices
       }
-      if (-not $DeleteService -and $Mode -eq "keep-running") {
+	  if ($Owned -and -not $DeleteService -and $Mode -eq "keep-running") {
         $ServicesToRestart += $PathValue
       }
     }
@@ -86,11 +120,6 @@ foreach ($Entry in $ManifestEntries) {
       }
     }
   }
-}
-
-if ((Test-Path $CloudflaredBackupPath) -and (Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue)) {
-  $ImagePath = Get-Content -Path $CloudflaredBackupPath -Raw
-  Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\cloudflared" -Name ImagePath -Value $ImagePath.Trim()
 }
 
 foreach ($ServiceName in $ServicesToRestart) {

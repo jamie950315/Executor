@@ -46,6 +46,7 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 
 	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s %s\\n' \"$0\" \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\" \"$(dirname \"$CLOUDFLARED_TOKEN_PATH\")\"\n  printf '{\"bootstrap_secret\":\"secret\"}\\n' > \"${EXECUTOR_STATE_DIR}/secrets.json\"\n  printf 'cf-token\\n' > \"$CLOUDFLARED_TOKEN_PATH\"\n  if [[ \" $* \" == *\" --cloudflare-token-file \"* ]]; then\n    cloudflare=',\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}'\n  else\n    cloudflare=''\n  fi\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168%s}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" \"$cloudflare\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  output=''\n  binary=''\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      --binary-path) binary=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/systemd\" \"$output/systemd-user\"\n  printf '[Service]\\nExecStart=%s agent --config %s\\n' \"$binary\" \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-agent.service\"\n  printf '[Service]\\nUser=root\\nGroup=root\\nExecStart=%s broker --config %s\\n' \"$binary\" \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-broker.service\"\n  printf '[Service]\\nUser=root\\nGroup=root\\nExecStart=%s dashboard --config %s\\n' \"$binary\" \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd/executor-dashboard.service\"\n  printf '[Service]\\nExecStart=/usr/local/bin/cloudflared tunnel run --token-file %s\\n' \"$CLOUDFLARED_TOKEN_PATH\" > \"$output/systemd/cloudflared.service\"\n  printf '[Service]\\nExecStart=%s desktop --config %s\\n' \"$binary\" \"$EXECUTOR_CONFIG_PATH\" > \"$output/systemd-user/executor-desktop.service\"\n  exit 0\nfi\nexit 1\n")
 	writeStub(t, executorKillStub, "#!/usr/bin/env bash\necho kill\n")
+	replaceInFile(t, executorStub, "systemd/cloudflared.service", "systemd/executor-cloudflared.service")
 	writeStub(t, systemctlStub, "#!/usr/bin/env bash\nprintf 'systemctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, runuserStub, "#!/usr/bin/env bash\nprintf 'runuser %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" && \"$2\" == \"jamie\" ]]; then printf '501\\n'; exit 0; fi\nif [[ \"$1\" == \"-gn\" && \"$2\" == \"jamie\" ]]; then printf 'jamie\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nexit 0\n")
@@ -83,12 +84,38 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, "api-token.txt"), []byte("api-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	legacyService := filepath.Join(tmp, "install-root", "systemd", "system", "cloudflared.service")
+	if err := os.MkdirAll(filepath.Dir(legacyService), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyService, []byte("legacy Executor tunnel\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(tmp, "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalHostService := "original host tunnel\n"
+	legacyBackup := filepath.Join(stateDir, "service-backups") + legacyService
+	if err := os.MkdirAll(filepath.Dir(legacyBackup), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyBackup, []byte(originalHostService), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyManifest := "systemd:cloudflared.service|" + legacyService + "|restore\n"
+	if err := os.WriteFile(filepath.Join(stateDir, "service-manifest.txt"), []byte(legacyManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
+	if got := readFile(t, legacyService); got != originalHostService {
+		t.Fatalf("legacy host cloudflared service was not restored:\n%s", got)
+	}
 	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-agent.service"))
 	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-broker.service"))
 	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-dashboard.service"))
-	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "cloudflared.service"))
+	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "system", "executor-cloudflared.service"))
 	assertFileExists(t, filepath.Join(tmp, "install-root", "systemd", "user", "executor-desktop.service"))
 	assertFileExists(t, stableExecutorPath)
 	assertFileExists(t, stableKillPath)
@@ -108,8 +135,12 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 		"chown -R jamie:jamie " + filepath.Join(tmp, "state"),
 		"chmod -R u+rwX,go-rwx " + filepath.Join(tmp, "state"),
 		"systemctl daemon-reload",
-		"systemctl enable executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service",
-		"systemctl restart executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service",
+		"systemctl stop cloudflared.service",
+		"systemctl disable cloudflared.service",
+		"systemctl enable cloudflared.service",
+		"systemctl start cloudflared.service",
+		"systemctl enable executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service",
+		"systemctl restart executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service",
 		"runuser -u jamie -- env XDG_RUNTIME_DIR=/run/user/501",
 		"systemctl --user enable executor-desktop.service",
 		"systemctl --user restart executor-desktop.service",
@@ -117,6 +148,11 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 		if !strings.Contains(commandLog, want) {
 			t.Fatalf("command log missing %q:\n%s", want, commandLog)
 		}
+	}
+	newTunnelStart := strings.Index(commandLog, "systemctl restart executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service")
+	legacyTunnelStop := strings.Index(commandLog, "systemctl stop cloudflared.service")
+	if newTunnelStart < 0 || legacyTunnelStop < 0 || newTunnelStart >= legacyTunnelStop {
+		t.Fatal("legacy cloudflared migration must run after the isolated tunnel starts")
 	}
 	if strings.Contains(commandLog, "useradd --system --user-group executor-agent") {
 		t.Fatalf("bootstrap should not create a dedicated executor-agent identity:\n%s", commandLog)
@@ -134,8 +170,8 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	}
 	commandLog = readFile(t, logPath)
 	for _, want := range []string{
-		"systemctl stop executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service",
-		"systemctl disable executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service",
+		"systemctl stop executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service",
+		"systemctl disable executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service",
 		"runuser -u jamie -- env XDG_RUNTIME_DIR=/run/user/501",
 		"systemctl --user stop executor-desktop.service",
 		"systemctl --user disable executor-desktop.service",
@@ -185,6 +221,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 
 	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s %s\\n' \"$0\" \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\" \"$(dirname \"$CLOUDFLARED_TOKEN_PATH\")\"\n  printf '{\"bootstrap_secret\":\"secret\"}\\n' > \"${EXECUTOR_STATE_DIR}/secrets.json\"\n  printf 'cf-token\\n' > \"$CLOUDFLARED_TOKEN_PATH\"\n  if [[ \" $* \" == *\" --cloudflare-token-file \"* ]]; then\n    cloudflare=',\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}'\n  else\n    cloudflare=''\n  fi\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168%s}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" \"$cloudflare\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  output=''\n  binary=''\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      --binary-path) binary=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/LaunchDaemons\" \"$output/LaunchAgents\"\n  printf '<plist><dict><key>Label</key><string>com.executor.agent</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchDaemons/com.executor.agent.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.broker</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchDaemons/com.executor.broker.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.dashboard</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchDaemons/com.executor.dashboard.plist\"\n  printf '<plist><dict><key>Label</key><string>com.cloudflare.cloudflared</string></dict></plist>' > \"$output/LaunchDaemons/com.cloudflare.cloudflared.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.desktop</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchAgents/com.executor.desktop.plist\"\n  exit 0\nfi\nexit 1\n")
 	writeStub(t, executorKillStub, "#!/usr/bin/env bash\necho kill\n")
+	replaceInFile(t, executorStub, "com.cloudflare.cloudflared", "com.executor.cloudflared")
 	writeStub(t, launchctlStub, "#!/usr/bin/env bash\nprintf 'launchctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-gn\" && \"$2\" == \"jamie\" ]]; then printf 'staff\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nexit 0\n")
 	writeStub(t, statStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%u\" ]]; then printf '777\\n'; exit 0; fi\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%Su\" ]]; then printf 'console-user\\n'; exit 0; fi\nprintf '777\\n'\n")
@@ -226,7 +263,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.agent.plist"))
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.broker.plist"))
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.dashboard.plist"))
-	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.cloudflare.cloudflared.plist"))
+	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.cloudflared.plist"))
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchAgents", "com.executor.desktop.plist"))
 	assertFileExists(t, stableExecutorPath)
 	assertFileExists(t, stableKillPath)
@@ -339,12 +376,29 @@ func TestBootstrapRequiresCloudflareTokenFileOrCompletedMetadata(t *testing.T) {
 	writeStub(t, executorKillStub, "#!/usr/bin/env bash\necho kill\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" && \"$2\" == \"jamie\" ]]; then printf '501\\n'; exit 0; fi\nif [[ \"$1\" == \"-gn\" && \"$2\" == \"jamie\" ]]; then printf 'jamie\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nexit 0\n")
 	writeStub(t, useraddStub, "#!/usr/bin/env bash\nexit 0\n")
+	stateDir := filepath.Join(tmp, "state")
+	installRoot := filepath.Join(tmp, "install-root")
+	legacyService := filepath.Join(installRoot, "systemd", "system", "cloudflared.service")
+	if err := os.MkdirAll(filepath.Dir(legacyService), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyBody := "working legacy Executor tunnel\n"
+	if err := os.WriteFile(legacyService, []byte(legacyBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacyManifest := "systemd:cloudflared.service|" + legacyService + "|remove\n"
+	if err := os.WriteFile(filepath.Join(stateDir, "service-manifest.txt"), []byte(legacyManifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	env := append(os.Environ(),
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"COMMAND_LOG="+logPath,
-		"EXECUTOR_STATE_DIR="+filepath.Join(tmp, "state"),
-		"EXECUTOR_INSTALL_ROOT="+filepath.Join(tmp, "install-root"),
+		"EXECUTOR_STATE_DIR="+stateDir,
+		"EXECUTOR_INSTALL_ROOT="+installRoot,
 		"EXECUTOR_TARGET=linux",
 		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
 		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
@@ -365,6 +419,12 @@ func TestBootstrapRequiresCloudflareTokenFileOrCompletedMetadata(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "Cloudflare") {
 		t.Fatalf("bootstrap error should mention Cloudflare readiness:\n%s", string(output))
+	}
+	if got := readFile(t, legacyService); got != legacyBody {
+		t.Fatalf("failed bootstrap changed working legacy tunnel:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "legacy-cloudflared-manifest.txt")); err != nil {
+		t.Fatalf("legacy migration evidence was not preserved: %v", err)
 	}
 }
 
@@ -391,6 +451,15 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"Add-ManifestRecord -Kind \"scheduled-task\" -PathValue $DesktopTaskName",
 		"Record-ScheduledTaskState -DesktopTaskName $DesktopTaskName",
 		"Record-ServiceState -Name \"ExecutorDashboard\"",
+		"Record-ServiceState -Name \"ExecutorCloudflared\"",
+		"$LegacyOwnedCloudflared = $OwnedServices -contains \"cloudflared\"",
+		"$LegacyCloudflaredBackupPath",
+		"Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\cloudflared\"",
+		"Start-Service -Name \"cloudflared\"",
+		"sc.exe delete cloudflared",
+		"$LASTEXITCODE",
+		"Legacy cloudflared service deletion did not complete",
+		"service-imagepath",
 		"$OwnedServicesPath = Join-Path $StateDir \"owned-services.txt\"",
 		"Add-Content -Path $OwnedServicesPath -Value $Name",
 		"if ($OwnedServices -contains $Name)",
@@ -417,20 +486,33 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 	if serviceInstall < 0 || stateACL < 0 || serviceStart < 0 || !(serviceInstall < stateACL && stateACL < serviceStart) {
 		t.Fatalf("Windows bootstrap must create service identity before ACLs and start only afterward")
 	}
+	newTunnelStart := strings.LastIndex(bootstrap, "windows\\configure-cloudflared.ps1")
+	legacyMigration := strings.LastIndex(bootstrap, "if ((Test-Path $LegacyCloudflaredBackupPath)")
+	if newTunnelStart < 0 || legacyMigration < 0 || newTunnelStart >= legacyMigration {
+		t.Fatal("Windows legacy cloudflared migration must run after the isolated tunnel starts")
+	}
 
 	for _, want := range []string{
-		"ExecutorDashboard",
 		"$OwnedServicesPath = Join-Path $StateDir \"owned-services.txt\"",
+		"$ManagedServices = @()",
+		"$OwnedServices -contains $Parts[1]",
+		"Select-Object -Unique",
 		"$IsUninstall = $env:EXECUTOR_UNINSTALL -eq \"1\"",
-		"$DeleteService = $Mode -eq \"delete\" -or ($IsUninstall -and $Owned)",
+		"$DeleteService = $Owned -and ($Mode -eq \"delete\" -or $IsUninstall)",
 		"$ServicesToRestart += $PathValue",
 		"Stop-ScheduledTask -TaskName $PathValue",
 		"Unregister-ScheduledTask -TaskName $PathValue -Confirm:$false",
 		"Register-ScheduledTask -TaskName $PathValue -Xml",
+		"service-imagepath",
+		"Set-ItemProperty -Path (\"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\\" + $PathValue)",
+		"service deletion did not complete",
 	} {
 		if !strings.Contains(rollback, want) {
 			t.Fatalf("rollback.ps1 missing %q:\n%s", want, rollback)
 		}
+	}
+	if strings.Contains(rollback, "foreach ($service in @(\"ExecutorAgent\"") {
+		t.Fatal("rollback.ps1 must not stop services before proving ownership")
 	}
 
 	if !strings.Contains(uninstall, "rollback.ps1") || !strings.Contains(uninstall, "$env:EXECUTOR_UNINSTALL = \"1\"") {
@@ -463,6 +545,17 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func replaceInFile(t *testing.T, path, old, replacement string) {
+	t.Helper()
+	body := readFile(t, path)
+	if !strings.Contains(body, old) {
+		t.Fatalf("%s does not contain %q", path, old)
+	}
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(body, old, replacement)), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertFileExists(t *testing.T, path string) {

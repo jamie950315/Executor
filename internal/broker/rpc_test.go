@@ -143,6 +143,9 @@ func TestDesktopRPCClient_TalksToHelperRPCServer(t *testing.T) {
 	if err := client.Terminal.Signal("owner", terminal.SignalInterrupt); err != nil {
 		t.Fatalf("client.Signal: %v", err)
 	}
+	if err := client.Terminal.Resize("owner", 132, 43); err != nil {
+		t.Fatalf("client.Resize: %v", err)
+	}
 
 	if data, err := client.Filesystem.ReadFile("/tmp/a.txt"); err != nil || string(data) != "owner-data" {
 		t.Fatalf("client.ReadFile = %q, %v", string(data), err)
@@ -195,7 +198,7 @@ func TestDesktopRPCClient_TalksToHelperRPCServer(t *testing.T) {
 		t.Fatalf("client.Status = %#v, %v", status, err)
 	}
 
-	if term.writeSessionID != "owner" || term.readCursor != 2 || term.closeSessionID != "owner" || term.killSessionID != "owner" || term.killAllCount != 1 || term.signalSessionID != "owner" || term.signal != terminal.SignalInterrupt {
+	if term.writeSessionID != "owner" || term.readCursor != 2 || term.closeSessionID != "owner" || term.killSessionID != "owner" || term.killAllCount != 1 || term.signalSessionID != "owner" || term.signal != terminal.SignalInterrupt || term.resizeSessionID != "owner" || term.resizeColumns != 132 || term.resizeRows != 43 {
 		t.Fatalf("unexpected terminal RPC calls: %#v", term)
 	}
 	if files.writePath != "/tmp/b.txt" || files.appendPath != "/tmp/b.txt" || files.mkdirPath != "/tmp/dir" || files.moveSrc != "/tmp/a.txt" || files.moveDst != "/tmp/b.txt" || files.deletePath != "/tmp/b.txt" {
@@ -230,6 +233,9 @@ type rpcTestTerminal struct {
 	killAllCount    int
 	signalSessionID string
 	signal          terminal.Signal
+	resizeSessionID string
+	resizeColumns   int
+	resizeRows      int
 }
 
 func (f *rpcTestTerminal) Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error) {
@@ -270,6 +276,13 @@ func (f *rpcTestTerminal) KillAll() error {
 func (f *rpcTestTerminal) Signal(sessionID string, signal terminal.Signal) error {
 	f.signalSessionID = sessionID
 	f.signal = signal
+	return nil
+}
+
+func (f *rpcTestTerminal) Resize(sessionID string, columns, rows int) error {
+	f.resizeSessionID = sessionID
+	f.resizeColumns = columns
+	f.resizeRows = rows
 	return nil
 }
 
@@ -395,6 +408,13 @@ func TestAdminRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 		"signal":     "terminate",
 	}, &struct{}{}); err != nil {
 		t.Fatalf("terminal.signal: %v", err)
+	}
+	if err := client.Call(context.Background(), desktop.RPCMethodTerminalResize, map[string]any{
+		"session_id": "admin",
+		"columns":    100,
+		"rows":       40,
+	}, &struct{}{}); err != nil {
+		t.Fatalf("terminal.resize: %v", err)
 	}
 	if err := client.Call(context.Background(), desktop.RPCMethodFilesystemAppend, map[string]any{
 		"path": "/tmp/a.txt",

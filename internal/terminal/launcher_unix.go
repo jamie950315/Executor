@@ -11,19 +11,13 @@ import (
 	"syscall"
 )
 
-type ptyLauncher interface {
-	Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error)
-	Kill(cmd *exec.Cmd) error
-	Signal(cmd *exec.Cmd, signal Signal) error
-}
-
 type scriptLauncher struct{}
 
 func newPTYLauncher() ptyLauncher {
 	return scriptLauncher{}
 }
 
-func (scriptLauncher) Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.ReadCloser, error) {
+func (scriptLauncher) Start(spec SessionSpec) (terminalProcess, error) {
 	cmd := buildPTYCommand(spec.Command)
 	cmd.Dir = spec.Dir
 	cmd.Env = append(os.Environ(), flattenEnv(spec.Env)...)
@@ -31,29 +25,42 @@ func (scriptLauncher) Start(spec SessionSpec) (*exec.Cmd, io.WriteCloser, io.Rea
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	return cmd, stdin, stdout, nil
+	return &execTerminalProcess{cmd: cmd, stdin: stdin, stdout: stdout}, nil
 }
 
-func (scriptLauncher) Kill(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
+type execTerminalProcess struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+}
+
+func (p *execTerminalProcess) PID() int                       { return p.cmd.Process.Pid }
+func (p *execTerminalProcess) Read(data []byte) (int, error)  { return p.stdout.Read(data) }
+func (p *execTerminalProcess) Write(data []byte) (int, error) { return p.stdin.Write(data) }
+func (p *execTerminalProcess) Wait() error                    { return p.cmd.Wait() }
+func (p *execTerminalProcess) CloseInput() error              { return p.stdin.Close() }
+func (p *execTerminalProcess) Resize(int, int) error          { return ErrResizeUnsupported }
+
+func (p *execTerminalProcess) Kill() error {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
 	return nil
 }
 
-func (scriptLauncher) Signal(cmd *exec.Cmd, signal Signal) error {
-	if cmd == nil || cmd.Process == nil {
+func (p *execTerminalProcess) Signal(signal Signal) error {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
 	var sig syscall.Signal
@@ -67,7 +74,7 @@ func (scriptLauncher) Signal(cmd *exec.Cmd, signal Signal) error {
 	default:
 		return nil
 	}
-	return syscall.Kill(-cmd.Process.Pid, sig)
+	return syscall.Kill(-p.cmd.Process.Pid, sig)
 }
 
 func buildPTYCommand(command []string) *exec.Cmd {

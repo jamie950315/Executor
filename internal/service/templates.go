@@ -73,11 +73,11 @@ func targetTemplates(target Target) map[string]string {
 	switch target {
 	case TargetMacOS:
 		return map[string]string{
-			"LaunchDaemons/com.executor.agent.plist":         "templates/macos-agent.plist.tmpl",
-			"LaunchDaemons/com.executor.broker.plist":        "templates/macos-broker.plist.tmpl",
-			"LaunchDaemons/com.executor.dashboard.plist":     "templates/macos-dashboard.plist.tmpl",
-			"LaunchAgents/com.executor.desktop.plist":        "templates/macos-desktop.plist.tmpl",
-			"LaunchDaemons/com.cloudflare.cloudflared.plist": "templates/macos-cloudflared.plist.tmpl",
+			"LaunchDaemons/com.executor.agent.plist":       "templates/macos-agent.plist.tmpl",
+			"LaunchDaemons/com.executor.broker.plist":      "templates/macos-broker.plist.tmpl",
+			"LaunchDaemons/com.executor.dashboard.plist":   "templates/macos-dashboard.plist.tmpl",
+			"LaunchAgents/com.executor.desktop.plist":      "templates/macos-desktop.plist.tmpl",
+			"LaunchDaemons/com.executor.cloudflared.plist": "templates/macos-cloudflared.plist.tmpl",
 		}
 	case TargetLinux:
 		return map[string]string{
@@ -85,7 +85,7 @@ func targetTemplates(target Target) map[string]string {
 			"systemd/executor-broker.service":       "templates/linux-broker.service.tmpl",
 			"systemd/executor-dashboard.service":    "templates/linux-dashboard.service.tmpl",
 			"systemd-user/executor-desktop.service": "templates/linux-desktop.service.tmpl",
-			"systemd/cloudflared.service":           "templates/linux-cloudflared.service.tmpl",
+			"systemd/executor-cloudflared.service":  "templates/linux-cloudflared.service.tmpl",
 		}
 	case TargetWindows:
 		return map[string]string{
@@ -99,7 +99,7 @@ func targetTemplates(target Target) map[string]string {
 			"systemd/executor-broker.service":       "templates/linux-broker.service.tmpl",
 			"systemd/executor-dashboard.service":    "templates/linux-dashboard.service.tmpl",
 			"systemd-user/executor-desktop.service": "templates/linux-desktop.service.tmpl",
-			"systemd/cloudflared.service":           "templates/linux-cloudflared.service.tmpl",
+			"systemd/executor-cloudflared.service":  "templates/linux-cloudflared.service.tmpl",
 			"wsl/README.txt":                        "templates/wsl-readme.txt.tmpl",
 		}
 	default:

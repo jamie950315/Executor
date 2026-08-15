@@ -131,6 +131,7 @@ type fakeTerminalExecutor struct {
 	listCount    int
 	closeCount   int
 	killAllCount int
+	resizeCount  int
 }
 
 func (f *fakeTerminalExecutor) Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error) {
@@ -166,6 +167,11 @@ func (f *fakeTerminalExecutor) KillAll() error {
 }
 
 func (f *fakeTerminalExecutor) Signal(sessionID string, signal terminal.Signal) error {
+	return nil
+}
+
+func (f *fakeTerminalExecutor) Resize(sessionID string, columns, rows int) error {
+	f.resizeCount++
 	return nil
 }
 

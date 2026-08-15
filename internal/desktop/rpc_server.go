@@ -21,6 +21,7 @@ type HelperTerminal interface {
 	Kill(sessionID string) error
 	KillAll() error
 	Signal(sessionID string, signal terminal.Signal) error
+	Resize(sessionID string, columns, rows int) error
 }
 
 type HelperFilesystem interface {
@@ -124,6 +125,18 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return nil, terminal.Signal(request.SessionID, request.Signal)
+		case RPCMethodTerminalResize:
+			var request RPCTerminalResizeParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateSessionParams(method, request.SessionID); err != nil {
+				return nil, err
+			}
+			if request.Columns < 1 || request.Rows < 1 || request.Columns > 32767 || request.Rows > 32767 {
+				return nil, errors.New("terminal.resize requires columns and rows between 1 and 32767")
+			}
+			return nil, terminal.Resize(request.SessionID, request.Columns, request.Rows)
 		case RPCMethodFilesystemRead:
 			var request RPCFilesystemPathParams
 			if err := decodeStrictParams(method, params, &request); err != nil {

@@ -30,6 +30,7 @@ BROKER_USER="${EXECUTOR_BROKER_USER:-root}"
 BROKER_GROUP="${EXECUTOR_BROKER_GROUP:-root}"
 WINDOWS_AGENT_SERVICE="${EXECUTOR_WINDOWS_AGENT_SERVICE:-NT SERVICE\ExecutorAgent}"
 MANIFEST_PATH="${STATE_DIR}/service-manifest.txt"
+LEGACY_MANIFEST_PATH="${STATE_DIR}/legacy-cloudflared-manifest.txt"
 BACKUP_ROOT="${STATE_DIR}/service-backups"
 MKTEMP_BIN="${MKTEMP_BIN:-mktemp}"
 TMP_BUNDLE=""
@@ -227,17 +228,99 @@ if meta["token_file_path"] != expected_token_path:
 PY
 }
 
+discover_owned_legacy_cloudflared() {
+	case "${TARGET}" in
+		linux|wsl)
+			LEGACY_CLOUDFLARED_PATH="$(service_root)/systemd/system/cloudflared.service"
+			LEGACY_CLOUDFLARED_LABEL="systemd:cloudflared.service"
+			;;
+		macos)
+			LEGACY_CLOUDFLARED_PATH="$(service_root)/LaunchDaemons/com.cloudflare.cloudflared.plist"
+			LEGACY_CLOUDFLARED_LABEL="launchd-system:com.cloudflare.cloudflared"
+			;;
+		*) return 0 ;;
+	esac
+	legacy_source=""
+	if [[ -f "${LEGACY_MANIFEST_PATH}" ]]; then
+		legacy_source="${LEGACY_MANIFEST_PATH}"
+	elif [[ -f "${MANIFEST_PATH}" ]]; then
+		legacy_source="${MANIFEST_PATH}"
+	fi
+	[[ -n "${legacy_source}" ]] || return 0
+	LEGACY_CLOUDFLARED_MODE=""
+	while IFS='|' read -r label path mode; do
+		if [[ "${label}" == "${LEGACY_CLOUDFLARED_LABEL}" && "${path}" == "${LEGACY_CLOUDFLARED_PATH}" ]]; then
+			LEGACY_CLOUDFLARED_MODE="${mode}"
+			break
+		fi
+	done < "${legacy_source}"
+	[[ -n "${LEGACY_CLOUDFLARED_MODE}" ]] || return 0
+	if [[ "${legacy_source}" == "${MANIFEST_PATH}" ]]; then
+		cp "${MANIFEST_PATH}" "${LEGACY_MANIFEST_PATH}"
+	fi
+}
+
+migrate_owned_legacy_cloudflared() {
+	[[ -n "${LEGACY_CLOUDFLARED_MODE:-}" ]] || return 0
+	if [[ "${LEGACY_CLOUDFLARED_MODE}" != "restore" && "${LEGACY_CLOUDFLARED_MODE}" != "remove" ]]; then
+		printf 'unsupported legacy cloudflared manifest mode: %s\n' "${LEGACY_CLOUDFLARED_MODE}" >&2
+		return 1
+	fi
+	legacy_backup="${BACKUP_ROOT}${LEGACY_CLOUDFLARED_PATH}"
+	if [[ "${LEGACY_CLOUDFLARED_MODE}" == "restore" && ! -f "${legacy_backup}" ]]; then
+		printf 'legacy cloudflared backup is missing: %s\n' "${legacy_backup}" >&2
+		return 1
+	fi
+	case "${TARGET}" in
+		linux|wsl)
+			legacy_was_active=0
+			legacy_was_enabled=0
+			"${SYSTEMCTL_BIN}" is-active --quiet cloudflared.service && legacy_was_active=1 || true
+			"${SYSTEMCTL_BIN}" is-enabled --quiet cloudflared.service && legacy_was_enabled=1 || true
+			"${SYSTEMCTL_BIN}" stop cloudflared.service
+			"${SYSTEMCTL_BIN}" disable cloudflared.service
+			;;
+		macos)
+			legacy_was_loaded=0
+			"${LAUNCHCTL_BIN}" print system/com.cloudflare.cloudflared >/dev/null 2>&1 && legacy_was_loaded=1 || true
+			"${LAUNCHCTL_BIN}" bootout system/com.cloudflare.cloudflared 2>/dev/null || true
+			;;
+	esac
+	if [[ "${LEGACY_CLOUDFLARED_MODE}" == "restore" && -f "${legacy_backup}" ]]; then
+		mkdir -p "$(dirname "${LEGACY_CLOUDFLARED_PATH}")"
+		cp "${legacy_backup}" "${LEGACY_CLOUDFLARED_PATH}"
+	else
+		rm -f "${LEGACY_CLOUDFLARED_PATH}"
+	fi
+	if [[ "${TARGET}" == "linux" || "${TARGET}" == "wsl" ]]; then
+		"${SYSTEMCTL_BIN}" daemon-reload
+		if [[ "${LEGACY_CLOUDFLARED_MODE}" == "restore" ]]; then
+			if [[ "${legacy_was_enabled}" == "1" ]]; then
+				"${SYSTEMCTL_BIN}" enable cloudflared.service
+			fi
+			if [[ "${legacy_was_active}" == "1" ]]; then
+				"${SYSTEMCTL_BIN}" start cloudflared.service
+			fi
+		fi
+	elif [[ "${TARGET}" == "macos" && "${LEGACY_CLOUDFLARED_MODE}" == "restore" && "${legacy_was_loaded}" == "1" ]]; then
+		"${LAUNCHCTL_BIN}" bootstrap system "${LEGACY_CLOUDFLARED_PATH}"
+		"${LAUNCHCTL_BIN}" enable system/com.cloudflare.cloudflared
+		"${LAUNCHCTL_BIN}" kickstart -k system/com.cloudflare.cloudflared
+	fi
+	rm -f "${LEGACY_MANIFEST_PATH}"
+}
+
 bootstrap_linux() {
   root="$1"
   install_managed_file "${TMP_BUNDLE}/systemd/executor-agent.service" "${root}/systemd/system/executor-agent.service" "systemd:executor-agent.service"
   install_managed_file "${TMP_BUNDLE}/systemd/executor-broker.service" "${root}/systemd/system/executor-broker.service" "systemd:executor-broker.service"
   install_managed_file "${TMP_BUNDLE}/systemd/executor-dashboard.service" "${root}/systemd/system/executor-dashboard.service" "systemd:executor-dashboard.service"
-  install_managed_file "${TMP_BUNDLE}/systemd/cloudflared.service" "${root}/systemd/system/cloudflared.service" "systemd:cloudflared.service"
+  install_managed_file "${TMP_BUNDLE}/systemd/executor-cloudflared.service" "${root}/systemd/system/executor-cloudflared.service" "systemd:executor-cloudflared.service"
   install_managed_file "${TMP_BUNDLE}/systemd-user/executor-desktop.service" "${root}/systemd/user/executor-desktop.service" "systemd-user:executor-desktop.service"
 
   "${SYSTEMCTL_BIN}" daemon-reload
-  "${SYSTEMCTL_BIN}" enable executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
-  "${SYSTEMCTL_BIN}" restart executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
+  "${SYSTEMCTL_BIN}" enable executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service
+  "${SYSTEMCTL_BIN}" restart executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service
   run_desktop_systemctl enable executor-desktop.service
   run_desktop_systemctl restart executor-desktop.service
 }
@@ -247,11 +330,11 @@ bootstrap_macos() {
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.agent.plist" "${root}/LaunchDaemons/com.executor.agent.plist" "launchd-system:com.executor.agent"
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.broker.plist" "${root}/LaunchDaemons/com.executor.broker.plist" "launchd-system:com.executor.broker"
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.dashboard.plist" "${root}/LaunchDaemons/com.executor.dashboard.plist" "launchd-system:com.executor.dashboard"
-  install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.cloudflare.cloudflared.plist" "${root}/LaunchDaemons/com.cloudflare.cloudflared.plist" "launchd-system:com.cloudflare.cloudflared"
+  install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.cloudflared.plist" "${root}/LaunchDaemons/com.executor.cloudflared.plist" "launchd-system:com.executor.cloudflared"
   install_managed_file "${TMP_BUNDLE}/LaunchAgents/com.executor.desktop.plist" "${root}/LaunchAgents/com.executor.desktop.plist" "launchd-gui:com.executor.desktop"
 
   gui_uid="$(desktop_gui_uid_macos)"
-  for label in com.executor.agent com.executor.broker com.executor.dashboard com.cloudflare.cloudflared; do
+  for label in com.executor.agent com.executor.broker com.executor.dashboard com.executor.cloudflared; do
     "${LAUNCHCTL_BIN}" bootout "system/${label}" 2>/dev/null || true
     "${LAUNCHCTL_BIN}" bootstrap system "${root}/LaunchDaemons/${label}.plist"
     "${LAUNCHCTL_BIN}" enable "system/${label}"
@@ -264,6 +347,7 @@ bootstrap_macos() {
 }
 
 mkdir -p "${STATE_DIR}" "${DATA_DIR}" "$(dirname "${CONFIG_PATH}")" "$(dirname "${CLOUDFLARED_TOKEN_PATH}")" "${BACKUP_ROOT}"
+discover_owned_legacy_cloudflared
 : > "${MANIFEST_PATH}"
 
 case "${TARGET}" in
@@ -326,6 +410,7 @@ case "${TARGET}" in
   linux|wsl) bootstrap_linux "${ROOT}" ;;
   macos) bootstrap_macos "${ROOT}" ;;
 esac
+migrate_owned_legacy_cloudflared
 
 printf 'service bundle installed to %s\n' "${ROOT}"
 printf 'manifest path: %s\n' "${MANIFEST_PATH}"

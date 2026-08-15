@@ -22,8 +22,8 @@ if [[ ! -f "${MANIFEST_PATH}" ]]; then
 fi
 
 stop_linux() {
-  "${SYSTEMCTL_BIN}" stop executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
-  "${SYSTEMCTL_BIN}" disable executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
+  "${SYSTEMCTL_BIN}" stop executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service
+  "${SYSTEMCTL_BIN}" disable executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service
   desktop_user="$(desktop_user_linux)" || return 0
   desktop_uid="$(${ID_BIN} -u "${desktop_user}")"
   runtime_dir="/run/user/${desktop_uid}"
@@ -39,7 +39,7 @@ stop_linux() {
 
 stop_macos() {
   gui_uid="$(desktop_gui_uid_macos)"
-  for label in com.executor.agent com.executor.broker com.executor.dashboard com.cloudflare.cloudflared; do
+  for label in com.executor.agent com.executor.broker com.executor.dashboard com.executor.cloudflared; do
     "${LAUNCHCTL_BIN}" bootout "system/${label}" || true
     "${LAUNCHCTL_BIN}" disable "system/${label}" || true
   done

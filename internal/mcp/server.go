@@ -495,7 +495,7 @@ func (s *Server) negotiateProtocolVersion(params map[string]any) (string, error)
 func terminalToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action":    enumProperty("string", "create", "write", "signal", "close"),
+			"action":    enumProperty("string", "create", "write", "signal", "resize", "close"),
 			"privilege": enumProperty("string", "owner", "admin"),
 			"sessionId": map[string]any{
 				"type": "string",
@@ -513,6 +513,8 @@ func terminalToolSchema() map[string]any {
 			"cwd": map[string]any{
 				"type": "string",
 			},
+			"columns": map[string]any{"type": "integer", "minimum": 1, "maximum": 32767},
+			"rows":    map[string]any{"type": "integer", "minimum": 1, "maximum": 32767},
 			"environment": map[string]any{
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "string"},

@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"os/exec"
 	"slices"
 	"sync"
 	"time"
@@ -22,6 +20,8 @@ type SessionSpec struct {
 	Command []string
 	Dir     string
 	Env     map[string]string
+	Columns int
+	Rows    int
 }
 
 type Session struct {
@@ -54,8 +54,8 @@ type OutputChunk struct {
 
 type sessionState struct {
 	meta          Session
-	cmd           *exec.Cmd
-	stdin         io.WriteCloser
+	process       terminalProcess
+	inputMu       sync.Mutex
 	stdinClose    sync.Once
 	mu            sync.RWMutex
 	output        *outputBuffer
@@ -85,26 +85,28 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 	if len(spec.Command) == 0 {
 		spec.Command = []string{defaultShell()}
 	}
+	if spec.Columns < 0 || spec.Rows < 0 || spec.Columns > MaxDimension || spec.Rows > MaxDimension {
+		return Session{}, fmt.Errorf("terminal dimensions must be between 1 and %d when provided", MaxDimension)
+	}
 
-	cmd, stdin, stdout, err := m.launcher.Start(spec)
+	process, err := m.launcher.Start(spec)
 	if err != nil {
 		return Session{}, err
 	}
 
 	id, err := newSessionID()
 	if err != nil {
-		_ = m.launcher.Kill(cmd)
+		_ = process.Kill()
 		return Session{}, err
 	}
 	state := &sessionState{
 		meta: Session{
 			ID:      id,
-			PID:     cmd.Process.Pid,
+			PID:     process.PID(),
 			Command: append([]string(nil), spec.Command...),
 			Dir:     spec.Dir,
 		},
-		cmd:     cmd,
-		stdin:   stdin,
+		process: process,
 		output:  newOutputBuffer(defaultOutputBufferSize),
 		running: true,
 		done:    make(chan struct{}),
@@ -114,7 +116,7 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 	m.sessions[id] = state
 	m.mu.Unlock()
 
-	go state.capture(stdout)
+	go state.capture(process)
 	go m.awaitExit(state)
 
 	return state.meta, nil
@@ -126,11 +128,15 @@ func (m *Manager) Write(sessionID string, input []byte) error {
 		return err
 	}
 	state.mu.RLock()
-	defer state.mu.RUnlock()
-	if !state.running {
+	running := state.running
+	process := state.process
+	state.mu.RUnlock()
+	if !running {
 		return errors.New("session is not running")
 	}
-	_, err = state.stdin.Write(input)
+	state.inputMu.Lock()
+	defer state.inputMu.Unlock()
+	_, err = process.Write(input)
 	return err
 }
 
@@ -181,7 +187,7 @@ func (m *Manager) Close(sessionID string) error {
 
 	state.closeInput()
 	if !waitForDone(state.done, sessionShutdownTimeout) {
-		if killErr := m.launcher.Kill(state.cmd); killErr != nil {
+		if killErr := state.process.Kill(); killErr != nil {
 			return killErr
 		}
 		_ = waitForDone(state.done, sessionShutdownTimeout)
@@ -195,12 +201,10 @@ func (m *Manager) Kill(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.launcher.Kill(state.cmd); err != nil {
-		return err
-	}
+	killErr := state.process.Kill()
 	_ = waitForDone(state.done, sessionShutdownTimeout)
 	m.deleteSession(sessionID)
-	return nil
+	return killErr
 }
 
 func (m *Manager) KillAll() error {
@@ -215,24 +219,42 @@ func (m *Manager) KillAll() error {
 }
 
 func (m *Manager) Signal(sessionID string, signal Signal) error {
+	if signal != SignalInterrupt && signal != SignalTerminate && signal != SignalKill {
+		return fmt.Errorf("unsupported terminal signal %q", signal)
+	}
+	if signal == SignalInterrupt {
+		return m.Write(sessionID, []byte{3})
+	}
 	state, err := m.session(sessionID)
 	if err != nil {
 		return err
 	}
-	if signal == SignalInterrupt {
-		state.mu.RLock()
-		running := state.running
-		stdin := state.stdin
-		state.mu.RUnlock()
-		if !running {
-			return errors.New("session is not running")
-		}
-		if stdin != nil {
-			_, err := stdin.Write([]byte{3})
-			return err
-		}
+	state.mu.RLock()
+	running := state.running
+	process := state.process
+	state.mu.RUnlock()
+	if !running {
+		return errors.New("session is not running")
 	}
-	return m.launcher.Signal(state.cmd, signal)
+	return process.Signal(signal)
+}
+
+func (m *Manager) Resize(sessionID string, columns, rows int) error {
+	if columns < 1 || rows < 1 || columns > MaxDimension || rows > MaxDimension {
+		return fmt.Errorf("terminal dimensions must be between 1 and %d", MaxDimension)
+	}
+	state, err := m.session(sessionID)
+	if err != nil {
+		return err
+	}
+	state.mu.RLock()
+	running := state.running
+	process := state.process
+	state.mu.RUnlock()
+	if !running {
+		return errors.New("session is not running")
+	}
+	return process.Resize(columns, rows)
 }
 
 var ErrSessionNotFound = errors.New("session not found")
@@ -254,22 +276,21 @@ func (m *Manager) deleteSession(sessionID string) {
 }
 
 func (m *Manager) awaitExit(state *sessionState) {
-	err := state.cmd.Wait()
+	err := state.process.Wait()
 	state.mu.Lock()
 	state.running = false
 	state.waitErr = err
-	state.closeInput()
 	state.mu.Unlock()
+	state.closeInput()
 	state.doneCloseOnce.Do(func() {
 		close(state.done)
 	})
 }
 
-func (s *sessionState) capture(stdout io.ReadCloser) {
-	defer stdout.Close()
+func (s *sessionState) capture(output terminalProcess) {
 	buf := make([]byte, 4096)
 	for {
-		n, err := stdout.Read(buf)
+		n, err := output.Read(buf)
 		if n > 0 {
 			s.mu.Lock()
 			s.output.Append(buf[:n])
@@ -283,8 +304,8 @@ func (s *sessionState) capture(stdout io.ReadCloser) {
 
 func (s *sessionState) closeInput() {
 	s.stdinClose.Do(func() {
-		if s.stdin != nil {
-			_ = s.stdin.Close()
+		if s.process != nil {
+			_ = s.process.CloseInput()
 		}
 	})
 }

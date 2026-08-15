@@ -72,10 +72,10 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	}
 
 	linuxEntries := readTarEntries(t, filepath.Join(outDir, "executor_linux_amd64.tar.gz"))
-	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md")
+	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md", "THIRD_PARTY_NOTICES.md")
 
 	windowsEntries := readZipEntries(t, filepath.Join(outDir, "executor_windows_amd64.zip"))
-	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "docs/DEPLOYMENT.md")
+	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "docs/DEPLOYMENT.md", "THIRD_PARTY_NOTICES.md")
 
 	sums := string(mustReadFile(t, filepath.Join(outDir, "SHA256SUMS.txt")))
 	for _, want := range []string{

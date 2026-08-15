@@ -118,6 +118,49 @@ func TestMCPTerminalSignalPreservesRequestedSignal(t *testing.T) {
 	}
 }
 
+func TestMCPTerminalResizeRoutesDimensions(t *testing.T) {
+	t.Parallel()
+	desktop := &recordingCaller{responses: map[string]any{"terminal.resize": map[string]any{"ok": true}}}
+	_, err := NewMCP(nil, desktop).Dispatch(context.Background(), mcp.ToolCall{Name: "terminal", Arguments: map[string]any{
+		"action": "resize", "sessionId": "session-1", "columns": 132, "rows": 43,
+	}})
+	if err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+	call := desktop.calls[0]
+	if call.method != "terminal.resize" || call.params["columns"] != float64(132) || call.params["rows"] != float64(43) {
+		t.Fatalf("resize call = %#v", call)
+	}
+}
+
+func TestMCPTerminalResizeRejectsInvalidDimensionsBeforeIPC(t *testing.T) {
+	t.Parallel()
+	desktop := &recordingCaller{}
+	_, err := NewMCP(nil, desktop).Dispatch(context.Background(), mcp.ToolCall{Name: "terminal", Arguments: map[string]any{
+		"action": "resize", "sessionId": "session-1", "columns": 0, "rows": 24,
+	}})
+	if err == nil {
+		t.Fatal("zero-width resize succeeded")
+	}
+	if len(desktop.calls) != 0 {
+		t.Fatalf("invalid resize reached IPC: %#v", desktop.calls)
+	}
+}
+
+func TestMCPTerminalResizeRejectsOverflowingDimensionsBeforeIPC(t *testing.T) {
+	t.Parallel()
+	desktop := &recordingCaller{}
+	_, err := NewMCP(nil, desktop).Dispatch(context.Background(), mcp.ToolCall{Name: "terminal", Arguments: map[string]any{
+		"action": "resize", "sessionId": "session-1", "columns": 32768, "rows": 24,
+	}})
+	if err == nil {
+		t.Fatal("overflowing resize succeeded")
+	}
+	if len(desktop.calls) != 0 {
+		t.Fatalf("invalid resize reached IPC: %#v", desktop.calls)
+	}
+}
+
 type recordingCaller struct {
 	calls     []recordedCall
 	responses map[string]any

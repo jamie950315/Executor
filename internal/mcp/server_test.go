@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,28 @@ func TestDesktopToolSchemasMatchExecutableArguments(t *testing.T) {
 					t.Fatalf("desktop_control property %q is missing", name)
 				}
 			}
+		}
+	}
+}
+
+func TestTerminalToolSchemaExposesResizeDimensions(t *testing.T) {
+	t.Parallel()
+	var terminal Tool
+	for _, tool := range BuiltinTools() {
+		if tool.Name == "terminal" {
+			terminal = tool
+			break
+		}
+	}
+	properties := terminal.InputSchema["properties"].(map[string]any)
+	actions := properties["action"].(map[string]any)["enum"].([]string)
+	if !slices.Contains(actions, "resize") {
+		t.Fatalf("terminal actions = %#v, missing resize", actions)
+	}
+	for _, name := range []string{"columns", "rows"} {
+		property, ok := properties[name].(map[string]any)
+		if !ok || property["minimum"] != 1 || property["maximum"] != 32767 {
+			t.Fatalf("terminal %s schema = %#v", name, properties[name])
 		}
 	}
 }

@@ -95,6 +95,7 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 		"create": "terminal.start",
 		"write":  "terminal.write",
 		"signal": desktop.RPCMethodTerminalSignal,
+		"resize": desktop.RPCMethodTerminalResize,
 		"close":  "terminal.close",
 	}[action]
 	if !ok {
@@ -116,8 +117,16 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 				}
 			}
 		}
+		columns := int(integer(arguments["columns"]))
+		rows := int(integer(arguments["rows"]))
+		if columns < 0 || rows < 0 || columns > terminal.MaxDimension || rows > terminal.MaxDimension {
+			return nil, fmt.Errorf("terminal dimensions must be between 1 and %d when provided", terminal.MaxDimension)
+		}
 		cwd, _ := arguments["cwd"].(string)
-		return d.call(ctx, caller, method, desktop.RPCTerminalStartParams{Dir: cwd, Env: environment, InitialInput: initial})
+		return d.call(ctx, caller, method, desktop.RPCTerminalStartParams{
+			Dir: cwd, Env: environment, InitialInput: initial,
+			Columns: columns, Rows: rows,
+		})
 	case "write":
 		sessionID, err := requiredString(arguments, "sessionId")
 		if err != nil {
@@ -139,6 +148,17 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 			return nil, fmt.Errorf("unsupported terminal signal %q", signalName)
 		}
 		return d.call(ctx, caller, desktop.RPCMethodTerminalSignal, desktop.RPCTerminalSignalParams{SessionID: sessionID, Signal: signal})
+	case "resize":
+		sessionID, err := requiredString(arguments, "sessionId")
+		if err != nil {
+			return nil, err
+		}
+		columns := int(integer(arguments["columns"]))
+		rows := int(integer(arguments["rows"]))
+		if columns < 1 || rows < 1 || columns > terminal.MaxDimension || rows > terminal.MaxDimension {
+			return nil, fmt.Errorf("terminal resize requires columns and rows between 1 and %d", terminal.MaxDimension)
+		}
+		return d.call(ctx, caller, desktop.RPCMethodTerminalResize, desktop.RPCTerminalResizeParams{SessionID: sessionID, Columns: columns, Rows: rows})
 	case "close":
 		sessionID, err := requiredString(arguments, "sessionId")
 		if err != nil {

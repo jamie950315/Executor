@@ -19,6 +19,7 @@ const (
 	RPCMethodTerminalKill    = "terminal.kill"
 	RPCMethodTerminalKillAll = "terminal.kill-all"
 	RPCMethodTerminalSignal  = "terminal.signal"
+	RPCMethodTerminalResize  = "terminal.resize"
 
 	RPCMethodFilesystemRead   = "filesystem.read"
 	RPCMethodFilesystemList   = "filesystem.list"
@@ -44,6 +45,8 @@ type RPCTerminalStartParams struct {
 	Dir          string            `json:"dir,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`
 	InitialInput []byte            `json:"initial_input,omitempty"`
+	Columns      int               `json:"columns,omitempty"`
+	Rows         int               `json:"rows,omitempty"`
 }
 
 type RPCTerminalWriteParams struct {
@@ -63,6 +66,12 @@ type RPCSessionParams struct {
 type RPCTerminalSignalParams struct {
 	SessionID string          `json:"session_id"`
 	Signal    terminal.Signal `json:"signal"`
+}
+
+type RPCTerminalResizeParams struct {
+	SessionID string `json:"session_id"`
+	Columns   int    `json:"columns"`
+	Rows      int    `json:"rows"`
 }
 
 type RPCFilesystemPathParams struct {
@@ -177,5 +186,7 @@ func terminalStartSpec(params RPCTerminalStartParams) terminal.SessionSpec {
 		Command: append([]string(nil), params.Command...),
 		Dir:     params.Dir,
 		Env:     params.Env,
+		Columns: params.Columns,
+		Rows:    params.Rows,
 	}
 }

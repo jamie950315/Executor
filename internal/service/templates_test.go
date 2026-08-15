@@ -46,10 +46,14 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"<string>dashboard</string>",
 		"<string>/etc/executor/config.json</string>",
 	)
-	assertContainsAll(t, mac.Files["LaunchDaemons/com.cloudflare.cloudflared.plist"],
+	assertContainsAll(t, mac.Files["LaunchDaemons/com.executor.cloudflared.plist"],
+		"<string>com.executor.cloudflared</string>",
 		"--token-file",
 		"/etc/cloudflared/executor.token",
 	)
+	if _, exists := mac.Files["LaunchDaemons/com.cloudflare.cloudflared.plist"]; exists {
+		t.Fatal("macOS bundle would replace the host cloudflared LaunchDaemon")
+	}
 
 	linux, err := RenderBundle(TargetLinux, cfg)
 	if err != nil {
@@ -70,9 +74,12 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"User=root",
 		"Group=root",
 	)
-	assertContainsAll(t, linux.Files["systemd/cloudflared.service"],
+	assertContainsAll(t, linux.Files["systemd/executor-cloudflared.service"],
 		"run --token-file /etc/cloudflared/executor.token",
 	)
+	if _, exists := linux.Files["systemd/cloudflared.service"]; exists {
+		t.Fatal("Linux bundle would replace the host cloudflared service")
+	}
 
 	wsl, err := RenderBundle(TargetWSL, cfg)
 	if err != nil {
@@ -83,7 +90,7 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"systemd/executor-broker.service",
 		"systemd/executor-dashboard.service",
 		"systemd-user/executor-desktop.service",
-		"systemd/cloudflared.service",
+		"systemd/executor-cloudflared.service",
 		"wsl/README.txt",
 	} {
 		if wsl.Files[name] == "" {
@@ -114,11 +121,12 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		t.Fatalf("windows agent service should not use plaintext password conversion:\n%s", windows.Files["windows/install-services.ps1"])
 	}
 	assertContainsAll(t, windows.Files["windows/configure-cloudflared.ps1"],
-		"New-Service -Name \"cloudflared\"",
-		"Set-Content -Path $BackupPath",
-		"Set-ItemProperty",
+		"New-Service -Name \"ExecutorCloudflared\"",
 		"--token-file",
 	)
+	if strings.Contains(windows.Files["windows/configure-cloudflared.ps1"], "Get-Service -Name \"cloudflared\"") {
+		t.Fatal("Windows bundle would inspect or replace the host cloudflared service")
+	}
 	assertContainsAll(t, windows.Files["windows/register-desktop-startup.ps1"],
 		"$TaskName = \"ExecutorDesktop\"",
 		"New-ScheduledTaskAction",

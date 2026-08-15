@@ -26,6 +26,8 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				Command: append([]string(nil), request.Command...),
 				Dir:     request.Dir,
 				Env:     request.Env,
+				Columns: request.Columns,
+				Rows:    request.Rows,
 			})
 			if err != nil {
 				return nil, err
@@ -94,6 +96,18 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				return nil, errors.New("terminal.signal requires session_id")
 			}
 			return nil, executor.Signal(request.SessionID, request.Signal)
+		case desktop.RPCMethodTerminalResize:
+			var request desktop.RPCTerminalResizeParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.SessionID == "" {
+				return nil, errors.New("terminal.resize requires session_id")
+			}
+			if request.Columns < 1 || request.Rows < 1 || request.Columns > terminal.MaxDimension || request.Rows > terminal.MaxDimension {
+				return nil, fmt.Errorf("terminal.resize requires columns and rows between 1 and %d", terminal.MaxDimension)
+			}
+			return nil, executor.Resize(request.SessionID, request.Columns, request.Rows)
 		case desktop.RPCMethodFilesystemRead:
 			var request desktop.RPCFilesystemPathParams
 			if err := decodeAdminParams(method, params, &request); err != nil {
@@ -224,6 +238,8 @@ func (c *RemoteTerminalRPCClient) Start(ctx context.Context, spec terminal.Sessi
 		Command: append([]string(nil), spec.Command...),
 		Dir:     spec.Dir,
 		Env:     spec.Env,
+		Columns: spec.Columns,
+		Rows:    spec.Rows,
 	}, &session)
 	return session, err
 }
@@ -262,6 +278,14 @@ func (c *RemoteTerminalRPCClient) Signal(sessionID string, signal terminal.Signa
 	return c.client.Call(context.Background(), desktop.RPCMethodTerminalSignal, desktop.RPCTerminalSignalParams{
 		SessionID: sessionID,
 		Signal:    signal,
+	}, nil)
+}
+
+func (c *RemoteTerminalRPCClient) Resize(sessionID string, columns, rows int) error {
+	return c.client.Call(context.Background(), desktop.RPCMethodTerminalResize, desktop.RPCTerminalResizeParams{
+		SessionID: sessionID,
+		Columns:   columns,
+		Rows:      rows,
 	}, nil)
 }
 

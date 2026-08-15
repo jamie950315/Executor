@@ -36,6 +36,7 @@ for target in ${BUILD_TARGETS}; do
   cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
   mkdir -p "${STAGING_DIR}/docs"
   cp "${ROOT_DIR}/docs/DEPLOYMENT.md" "${STAGING_DIR}/docs/DEPLOYMENT.md"
+  cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${STAGING_DIR}/THIRD_PARTY_NOTICES.md"
 
   if [[ "${GOOS}" == "windows" ]]; then
     (cd "${STAGING_DIR}" && zip -qr "${OUT_DIR}/${ARCHIVE_NAME}.zip" .)

@@ -18,6 +18,7 @@ $LogPath = if ($env:EXECUTOR_LOG_PATH) { $env:EXECUTOR_LOG_PATH } else { Join-Pa
 $CloudflaredBin = if ($env:CLOUDFLARED_BIN) { $env:CLOUDFLARED_BIN } else { "cloudflared.exe" }
 $CloudflaredTokenPath = if ($env:CLOUDFLARED_TOKEN_PATH) { $env:CLOUDFLARED_TOKEN_PATH } else { Join-Path $StateDir "cloudflared\executor.token" }
 $CloudflaredLogPath = if ($env:CLOUDFLARED_LOG_PATH) { $env:CLOUDFLARED_LOG_PATH } else { Join-Path $StateDir "cloudflared\cloudflared.log" }
+$LegacyCloudflaredBackupPath = Join-Path (Split-Path $CloudflaredTokenPath -Parent) "cloudflared-service-imagepath.bak"
 $BrokerUser = if ($env:EXECUTOR_BROKER_USER) { $env:EXECUTOR_BROKER_USER } else { "SYSTEM" }
 $BrokerGroup = if ($env:EXECUTOR_BROKER_GROUP) { $env:EXECUTOR_BROKER_GROUP } else { "SYSTEM" }
 $WindowsAgentService = if ($env:EXECUTOR_WINDOWS_AGENT_SERVICE) { $env:EXECUTOR_WINDOWS_AGENT_SERVICE } else { "NT SERVICE\ExecutorAgent" }
@@ -45,6 +46,9 @@ if (-not (Test-Path $OwnedServicesPath)) {
   Set-Content -Path $OwnedServicesPath -Value $null
 }
 $OwnedServices = @(Get-Content -Path $OwnedServicesPath | Where-Object { $_ })
+$LegacyOwnedCloudflared = $OwnedServices -contains "cloudflared"
+$LegacyCloudflaredService = Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue
+$LegacyCloudflaredWasRunning = $LegacyCloudflaredService -and $LegacyCloudflaredService.Status -eq "Running"
 
 function Add-ManifestRecord {
   param(
@@ -143,13 +147,14 @@ function Record-ServiceState {
       $script:OwnedServices += $Name
     }
   } elseif ($OwnedServices -contains $Name) {
+	$ImagePathBackup = Join-Path $BackupRoot ("service-imagepath-" + $Name + ".txt")
+	$ImagePath = (Get-ItemProperty -Path ("HKLM:\SYSTEM\CurrentControlSet\Services\" + $Name) -Name ImagePath).ImagePath
+	$ImagePath | Set-Content -Path $ImagePathBackup -Encoding Unicode
+	Add-ManifestRecord -Kind "service-imagepath" -PathValue $Name -Mode ("restore:" + $ImagePathBackup)
     $Mode = if ($Existing.Status -eq "Running") { "keep-running" } else { "keep-stopped" }
     Add-ManifestRecord -Kind "service" -PathValue $Name -Mode $Mode
-  } elseif ($Name -ne "cloudflared") {
-    throw "Refusing to replace unmanaged Windows service: $Name"
   } else {
-    $Mode = if ($Existing.Status -eq "Running") { "keep-running" } else { "keep-stopped" }
-    Add-ManifestRecord -Kind "service" -PathValue $Name -Mode $Mode
+	throw "Refusing to replace unmanaged Windows service: $Name"
   }
 }
 
@@ -177,7 +182,7 @@ Record-ScheduledTaskState -DesktopTaskName $DesktopTaskName
 Record-ServiceState -Name "ExecutorAgent"
 Record-ServiceState -Name "ExecutorBroker"
 Record-ServiceState -Name "ExecutorDashboard"
-Record-ServiceState -Name "cloudflared"
+Record-ServiceState -Name "ExecutorCloudflared"
 
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\install-services.ps1')
 
@@ -212,11 +217,47 @@ function Start-OrRestartService {
   }
 }
 
+function Remove-LegacyCloudflaredService {
+  if (-not (Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue)) {
+    return
+  }
+  Stop-Service -Name "cloudflared" -Force -ErrorAction Stop
+  & sc.exe delete cloudflared | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Legacy cloudflared service deletion did not complete (sc.exe exit code $LASTEXITCODE)"
+  }
+  $DeleteDeadline = [DateTime]::UtcNow.AddSeconds(10)
+  while ((Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $DeleteDeadline) {
+    Start-Sleep -Milliseconds 100
+  }
+  if (Get-Service -Name "cloudflared" -ErrorAction SilentlyContinue) {
+    throw "Legacy cloudflared service deletion did not complete (service still exists after sc.exe delete)"
+  }
+}
+
 Start-OrRestartService -Name "ExecutorBroker"
 Start-OrRestartService -Name "ExecutorDashboard"
 Start-OrRestartService -Name "ExecutorAgent"
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\register-desktop-startup.ps1')
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\configure-cloudflared.ps1')
+
+if ((Test-Path $LegacyCloudflaredBackupPath) -and $LegacyCloudflaredService) {
+  Stop-Service -Name "cloudflared" -Force -ErrorAction Stop
+  $LegacyImagePath = (Get-Content -Path $LegacyCloudflaredBackupPath -Raw).Trim()
+  Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\cloudflared" -Name ImagePath -Value $LegacyImagePath
+  if ($LegacyCloudflaredWasRunning) {
+    Start-Service -Name "cloudflared" -ErrorAction Stop
+  }
+  Remove-Item -Path $LegacyCloudflaredBackupPath -Force
+  $OwnedServices = @($OwnedServices | Where-Object { $_ -ne "cloudflared" })
+  Set-Content -Path $OwnedServicesPath -Value $OwnedServices
+} elseif ($LegacyOwnedCloudflared) {
+  if ($LegacyCloudflaredService) {
+    Remove-LegacyCloudflaredService
+  }
+  $OwnedServices = @($OwnedServices | Where-Object { $_ -ne "cloudflared" })
+  Set-Content -Path $OwnedServicesPath -Value $OwnedServices
+}
 
 Write-Host "service bundle installed to $InstallRoot"
 Write-Host "manifest path: $ManifestPath"

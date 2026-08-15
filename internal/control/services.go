@@ -78,7 +78,7 @@ func linuxCommands(action string, service Service, env func(string) string, look
 		}
 		return []commandSpec{{name: "runuser", args: []string{"-u", owner, "--", "env", "XDG_RUNTIME_DIR=/run/user/" + uid, "systemctl", "--user", action, "executor-desktop.service"}}}, nil
 	}
-	unit := map[Service]string{Agent: "executor-agent.service", Broker: "executor-broker.service", Cloudflared: "cloudflared.service"}[service]
+	unit := map[Service]string{Agent: "executor-agent.service", Broker: "executor-broker.service", Cloudflared: "executor-cloudflared.service"}[service]
 	if unit == "" {
 		return nil, fmt.Errorf("unknown service %q", service)
 	}
@@ -90,7 +90,7 @@ func windowsCommands(action string, service Service) ([]commandSpec, error) {
 		taskAction := map[string]string{"stop": "/End", "start": "/Run"}[action]
 		return []commandSpec{{name: "schtasks.exe", args: []string{taskAction, "/TN", "ExecutorDesktop"}}}, nil
 	}
-	name := map[Service]string{Agent: "ExecutorAgent", Broker: "ExecutorBroker", Cloudflared: "cloudflared"}[service]
+	name := map[Service]string{Agent: "ExecutorAgent", Broker: "ExecutorBroker", Cloudflared: "ExecutorCloudflared"}[service]
 	if name == "" {
 		return nil, fmt.Errorf("unknown service %q", service)
 	}
@@ -98,7 +98,7 @@ func windowsCommands(action string, service Service) ([]commandSpec, error) {
 }
 
 func darwinCommands(action string, service Service, env func(string) string, lookup uidLookup) ([]commandSpec, error) {
-	label := map[Service]string{Agent: "com.executor.agent", Broker: "com.executor.broker", Desktop: "com.executor.desktop", Cloudflared: "com.cloudflare.cloudflared"}[service]
+	label := map[Service]string{Agent: "com.executor.agent", Broker: "com.executor.broker", Desktop: "com.executor.desktop", Cloudflared: "com.executor.cloudflared"}[service]
 	if label == "" {
 		return nil, fmt.Errorf("unknown service %q", service)
 	}
