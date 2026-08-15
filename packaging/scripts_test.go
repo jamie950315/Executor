@@ -467,7 +467,9 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"if ($OwnedServices -contains $Name)",
 		"keep-running",
 		"Refusing to replace unmanaged Windows service",
-		"& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\\install-services.ps1')",
+		"function Invoke-PowerShellScript",
+		"throw \"PowerShell script failed with exit code $LASTEXITCODE",
+		"Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\install-services.ps1')",
 		"ExecutorDashboard",
 		"icacls $StateDir /grant:r",
 		"${WindowsAgentService}:(OI)(CI)(M)",
@@ -476,13 +478,14 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"icacls $SecretsPath /inheritance:r /grant:r",
 		"icacls $CloudflaredTokenPath /inheritance:r /grant:r",
 		"SYSTEM:(OI)(CI)(F)",
-		"& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\\register-desktop-startup.ps1')",
+		"Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\register-desktop-startup.ps1')",
+		"Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\configure-cloudflared.ps1')",
 	} {
 		if !strings.Contains(bootstrap, want) {
 			t.Fatalf("bootstrap.ps1 missing %q:\n%s", want, bootstrap)
 		}
 	}
-	serviceInstall := strings.Index(bootstrap, "& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\\install-services.ps1')")
+	serviceInstall := strings.Index(bootstrap, "Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\install-services.ps1')")
 	stateACL := strings.Index(bootstrap, "icacls $StateDir /grant:r")
 	serviceStart := strings.Index(bootstrap, "Start-OrRestartService -Name \"ExecutorAgent\"")
 	if serviceInstall < 0 || stateACL < 0 || serviceStart < 0 || !(serviceInstall < stateACL && stateACL < serviceStart) {

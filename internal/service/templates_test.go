@@ -131,11 +131,15 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"$TaskName = \"ExecutorDesktop\"",
 		"New-ScheduledTaskAction",
 		"New-ScheduledTaskTrigger -AtLogOn",
+		"-LogonType Interactive",
 		"Register-ScheduledTask -TaskName $TaskName",
 		"Start-ScheduledTask -TaskName $TaskName",
 	)
 	if strings.Contains(windows.Files["windows/register-desktop-startup.ps1"], "executor-desktop.cmd") {
 		t.Fatalf("windows desktop script should not use Startup cmd anymore:\n%s", windows.Files["windows/register-desktop-startup.ps1"])
+	}
+	if strings.Contains(windows.Files["windows/register-desktop-startup.ps1"], "InteractiveToken") {
+		t.Fatalf("windows desktop script uses unsupported PowerShell 5.1 logon type:\n%s", windows.Files["windows/register-desktop-startup.ps1"])
 	}
 }
 

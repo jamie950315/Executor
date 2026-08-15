@@ -87,6 +87,14 @@ function Install-ManagedFile {
   Copy-Item -Path $Source -Destination $Destination -Force
 }
 
+function Invoke-PowerShellScript {
+  param([string]$Path)
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Path
+  if ($LASTEXITCODE -ne 0) {
+    throw "PowerShell script failed with exit code $LASTEXITCODE`: $Path"
+  }
+}
+
 Install-ManagedFile -Source $BundledExecutorPath -Destination $ExecutorInstallPath
 Install-ManagedFile -Source $BundledExecutorKillPath -Destination $ExecutorKillInstallPath
 
@@ -184,7 +192,7 @@ Record-ServiceState -Name "ExecutorBroker"
 Record-ServiceState -Name "ExecutorDashboard"
 Record-ServiceState -Name "ExecutorCloudflared"
 
-& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\install-services.ps1')
+Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\install-services.ps1')
 
 if (Test-Path $StateDir) {
   & icacls $StateDir /grant:r "${WindowsAgentService}:(OI)(CI)(M)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
@@ -238,8 +246,8 @@ function Remove-LegacyCloudflaredService {
 Start-OrRestartService -Name "ExecutorBroker"
 Start-OrRestartService -Name "ExecutorDashboard"
 Start-OrRestartService -Name "ExecutorAgent"
-& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\register-desktop-startup.ps1')
-& powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\configure-cloudflared.ps1')
+Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\register-desktop-startup.ps1')
+Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\configure-cloudflared.ps1')
 
 if ((Test-Path $LegacyCloudflaredBackupPath) -and $LegacyCloudflaredService) {
   Stop-Service -Name "cloudflared" -Force -ErrorAction Stop
