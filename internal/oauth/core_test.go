@@ -1,9 +1,6 @@
 package oauth
 
 import (
-	"crypto/sha256"
-	"encoding/base64"
-	"strings"
 	"testing"
 	"time"
 )
@@ -238,16 +235,16 @@ func newTestCore(t *testing.T) *Core {
 	t.Helper()
 
 	core, err := NewCore(Config{
-		Issuer:              "https://executor.example.com",
-		Resource:            "https://executor.example.com",
-		Audience:            "executor-cli",
-		AuthorizationPath:   "/oauth/authorize",
-		TokenPath:           "/oauth/token",
-		RegistrationPath:    "/oauth/register",
-		AccessTokenTTL:      2 * time.Minute,
+		Issuer:               "https://executor.example.com",
+		Resource:             "https://executor.example.com",
+		Audience:             "executor-cli",
+		AuthorizationPath:    "/oauth/authorize",
+		TokenPath:            "/oauth/token",
+		RegistrationPath:     "/oauth/register",
+		AccessTokenTTL:       2 * time.Minute,
 		AuthorizationCodeTTL: time.Minute,
-		RefreshTokenTTL:     10 * time.Minute,
-		SigningKey:          []byte("test-signing-key-please-change"),
+		RefreshTokenTTL:      10 * time.Minute,
+		SigningKey:           []byte("test-signing-key-please-change"),
 		Now: func() time.Time {
 			return time.Unix(1_760_000_000, 0)
 		},
@@ -270,9 +267,4 @@ func registerClientForTest(t *testing.T, core *Core) ClientRegistration {
 		t.Fatalf("RegisterClient() error = %v", err)
 	}
 	return client
-}
-
-func s256Challenge(verifier string) string {
-	sum := sha256.Sum256([]byte(verifier))
-	return strings.TrimRight(base64.URLEncoding.EncodeToString(sum[:]), "=")
 }

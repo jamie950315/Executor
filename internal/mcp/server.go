@@ -1,0 +1,464 @@
+package mcp
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+const (
+	SessionHeader         = "Mcp-Session-Id"
+	defaultProtocol       = "2026-08-15"
+	errCodeInvalidSession = -32001
+	errCodeToolFailure    = -32010
+)
+
+type ToolAnnotations struct {
+	ReadOnlyHint    bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool `json:"destructiveHint,omitempty"`
+}
+
+type Tool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema map[string]any  `json:"inputSchema,omitempty"`
+	Annotations ToolAnnotations `json:"annotations,omitempty"`
+}
+
+type ToolCall struct {
+	SessionID string
+	Name      string
+	Arguments map[string]any
+}
+
+type Dispatcher func(ctx context.Context, call ToolCall) (any, error)
+
+type ServerConfig struct {
+	ServerName      string
+	ServerVersion   string
+	ProtocolVersion string
+	Tools           []Tool
+	Dispatcher      Dispatcher
+	NewSessionID    func() string
+}
+
+type Server struct {
+	serverName      string
+	serverVersion   string
+	protocolVersion string
+	tools           []Tool
+	dispatcher      Dispatcher
+	newSessionID    func() string
+
+	mu       sync.Mutex
+	sessions map[string]*sessionState
+}
+
+type sessionState struct {
+	Initialized bool
+}
+
+type rpcRequest struct {
+	JSONRPC string         `json:"jsonrpc"`
+	ID      any            `json:"id,omitempty"`
+	Method  string         `json:"method"`
+	Params  map[string]any `json:"params,omitempty"`
+}
+
+type rpcResponse struct {
+	JSONRPC string    `json:"jsonrpc"`
+	ID      any       `json:"id,omitempty"`
+	Result  any       `json:"result,omitempty"`
+	Error   *rpcError `json:"error,omitempty"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type StdioHandler struct {
+	server *Server
+
+	mu        sync.Mutex
+	sessionID string
+}
+
+func BuiltinTools() []Tool {
+	return []Tool{
+		{
+			Name:        "terminal",
+			Description: "Run commands in a persistent terminal session.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{DestructiveHint: true},
+		},
+		{
+			Name:        "terminal_output",
+			Description: "Read buffered output from an existing terminal session.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{ReadOnlyHint: true},
+		},
+		{
+			Name:        "terminal_sessions",
+			Description: "Inspect running terminal sessions.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{ReadOnlyHint: true},
+		},
+		{
+			Name:        "filesystem_read",
+			Description: "Read files from the host filesystem.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{ReadOnlyHint: true},
+		},
+		{
+			Name:        "filesystem_write",
+			Description: "Create, overwrite, move, or delete filesystem content.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{DestructiveHint: true},
+		},
+		{
+			Name:        "desktop_observe",
+			Description: "Observe desktop state, windows, and screenshots.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{ReadOnlyHint: true},
+		},
+		{
+			Name:        "desktop_control",
+			Description: "Send mouse, keyboard, and window control actions.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{DestructiveHint: true},
+		},
+		{
+			Name:        "device_status",
+			Description: "Inspect machine and desktop availability.",
+			InputSchema: map[string]any{"type": "object"},
+			Annotations: ToolAnnotations{ReadOnlyHint: true},
+		},
+	}
+}
+
+func NewServer(config ServerConfig) *Server {
+	tools := config.Tools
+	if len(tools) == 0 {
+		tools = BuiltinTools()
+	}
+
+	protocolVersion := config.ProtocolVersion
+	if protocolVersion == "" {
+		protocolVersion = defaultProtocol
+	}
+
+	newSessionID := config.NewSessionID
+	if newSessionID == nil {
+		newSessionID = defaultSessionID
+	}
+
+	return &Server{
+		serverName:      fallback(config.ServerName, "Executor"),
+		serverVersion:   fallback(config.ServerVersion, "dev"),
+		protocolVersion: protocolVersion,
+		tools:           append([]Tool(nil), tools...),
+		dispatcher:      config.Dispatcher,
+		newSessionID:    newSessionID,
+		sessions:        make(map[string]*sessionState),
+	}
+}
+
+func NewStdioHandler(server *Server) *StdioHandler {
+	return &StdioHandler{server: server}
+}
+
+func (s *Server) HandleStreamableHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var rpcReq rpcRequest
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(&rpcReq); err != nil {
+		writeRPCResponse(writer, http.StatusBadRequest, "", rpcResponse{
+			JSONRPC: "2.0",
+			Error:   &rpcError{Code: -32700, Message: "invalid JSON payload"},
+		})
+		return
+	}
+
+	response, status, sessionID := s.handleRPC(request.Context(), request.Header.Get(SessionHeader), rpcReq)
+	if response == nil {
+		if sessionID != "" {
+			writer.Header().Set(SessionHeader, sessionID)
+		}
+		writer.WriteHeader(status)
+		return
+	}
+
+	writeRPCResponse(writer, status, sessionID, *response)
+}
+
+func (s *StdioHandler) Serve(ctx context.Context, reader io.Reader, writer io.Writer) error {
+	buffered := bufio.NewReader(reader)
+	for {
+		frame, err := ReadFrame(buffered)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		response, err := s.HandleFrame(ctx, frame)
+		if err != nil {
+			return err
+		}
+		if len(response) == 0 {
+			continue
+		}
+		if err := WriteFrame(writer, response); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *StdioHandler) HandleFrame(ctx context.Context, frame []byte) ([]byte, error) {
+	var rpcReq rpcRequest
+	if err := json.Unmarshal(frame, &rpcReq); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	sessionID := s.sessionID
+	s.mu.Unlock()
+
+	response, _, nextSessionID := s.server.handleRPC(ctx, sessionID, rpcReq)
+	if nextSessionID != "" {
+		s.mu.Lock()
+		s.sessionID = nextSessionID
+		s.mu.Unlock()
+	}
+
+	if response == nil {
+		return nil, nil
+	}
+
+	return json.Marshal(response)
+}
+
+func ReadFrame(reader *bufio.Reader) ([]byte, error) {
+	contentLength := -1
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break
+		}
+
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid frame header %q", line)
+		}
+
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if name == "content-length" {
+			length, err := strconv.Atoi(value)
+			if err != nil || length < 0 {
+				return nil, fmt.Errorf("invalid content length %q", value)
+			}
+			contentLength = length
+		}
+	}
+
+	if contentLength < 0 {
+		return nil, errors.New("missing content-length header")
+	}
+
+	payload := make([]byte, contentLength)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func WriteFrame(writer io.Writer, payload []byte) error {
+	if _, err := fmt.Fprintf(writer, "Content-Length: %d\r\n\r\n", len(payload)); err != nil {
+		return err
+	}
+	_, err := writer.Write(payload)
+	return err
+}
+
+func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcRequest) (*rpcResponse, int, string) {
+	switch request.Method {
+	case "initialize":
+		nextSessionID := s.newSession()
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			ID:      request.ID,
+			Result: map[string]any{
+				"protocolVersion": s.protocolVersion,
+				"capabilities": map[string]any{
+					"tools": map[string]any{
+						"listChanged": false,
+					},
+				},
+				"serverInfo": map[string]any{
+					"name":    s.serverName,
+					"version": s.serverVersion,
+				},
+				"sessionId": nextSessionID,
+			},
+		}, http.StatusOK, nextSessionID
+	case "notifications/initialized":
+		if !s.hasSession(sessionID) {
+			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+		}
+		s.mu.Lock()
+		s.sessions[sessionID].Initialized = true
+		s.mu.Unlock()
+		return nil, http.StatusNoContent, sessionID
+	case "ping":
+		if !s.hasSession(sessionID) {
+			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+		}
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			ID:      request.ID,
+			Result:  map[string]any{},
+		}, http.StatusOK, sessionID
+	case "tools/list":
+		if !s.hasSession(sessionID) {
+			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+		}
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			ID:      request.ID,
+			Result: map[string]any{
+				"tools": s.tools,
+			},
+		}, http.StatusOK, sessionID
+	case "tools/call":
+		if !s.hasSession(sessionID) {
+			return errorResponse(request.ID, errCodeInvalidSession, "unknown session"), http.StatusUnauthorized, ""
+		}
+
+		name, _ := request.Params["name"].(string)
+		if name == "" {
+			return errorResponse(request.ID, -32602, "missing tool name"), http.StatusBadRequest, sessionID
+		}
+		if !s.toolExists(name) {
+			return errorResponse(request.ID, -32602, "unknown tool"), http.StatusBadRequest, sessionID
+		}
+		if s.dispatcher == nil {
+			return errorResponse(request.ID, errCodeToolFailure, "tool dispatcher unavailable"), http.StatusInternalServerError, sessionID
+		}
+
+		arguments := map[string]any{}
+		if rawArguments, ok := request.Params["arguments"].(map[string]any); ok {
+			arguments = rawArguments
+		}
+
+		result, err := s.dispatcher(ctx, ToolCall{
+			SessionID: sessionID,
+			Name:      name,
+			Arguments: arguments,
+		})
+		if err != nil {
+			return errorResponse(request.ID, errCodeToolFailure, err.Error()), http.StatusInternalServerError, sessionID
+		}
+
+		return &rpcResponse{
+			JSONRPC: "2.0",
+			ID:      request.ID,
+			Result: map[string]any{
+				"toolName":          name,
+				"structuredContent": result,
+				"content":           []any{},
+				"isError":           false,
+			},
+		}, http.StatusOK, sessionID
+	default:
+		return errorResponse(request.ID, -32601, "method not found"), http.StatusNotFound, sessionID
+	}
+}
+
+func (s *Server) hasSession(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.sessions[sessionID]
+	return ok
+}
+
+func (s *Server) newSession() string {
+	sessionID := s.newSessionID()
+
+	s.mu.Lock()
+	s.sessions[sessionID] = &sessionState{}
+	s.mu.Unlock()
+
+	return sessionID
+}
+
+func (s *Server) toolExists(name string) bool {
+	for _, tool := range s.tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func writeRPCResponse(writer http.ResponseWriter, status int, sessionID string, response rpcResponse) {
+	payload, err := json.Marshal(response)
+	if err != nil {
+		writer.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	writer.Header().Set("Content-Type", "application/json")
+	if sessionID != "" {
+		writer.Header().Set(SessionHeader, sessionID)
+	}
+	writer.WriteHeader(status)
+	_, _ = writer.Write(payload)
+}
+
+func errorResponse(id any, code int, message string) *rpcResponse {
+	return &rpcResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   &rpcError{Code: code, Message: message},
+	}
+}
+
+func defaultSessionID() string {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(bytes[:])
+}
+
+func fallback(value string, fallbackValue string) string {
+	if value != "" {
+		return value
+	}
+	return fallbackValue
+}

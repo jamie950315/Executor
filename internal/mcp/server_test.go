@@ -16,14 +16,14 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 	t.Parallel()
 
 	want := map[string]ToolAnnotations{
-		"terminal":         {DestructiveHint: true},
-		"terminal_output":  {ReadOnlyHint: true},
+		"terminal":          {DestructiveHint: true},
+		"terminal_output":   {ReadOnlyHint: true},
 		"terminal_sessions": {ReadOnlyHint: true},
-		"filesystem_read":  {ReadOnlyHint: true},
-		"filesystem_write": {DestructiveHint: true},
-		"desktop_observe":  {ReadOnlyHint: true},
-		"desktop_control":  {DestructiveHint: true},
-		"device_status":    {ReadOnlyHint: true},
+		"filesystem_read":   {ReadOnlyHint: true},
+		"filesystem_write":  {DestructiveHint: true},
+		"desktop_observe":   {ReadOnlyHint: true},
+		"desktop_control":   {DestructiveHint: true},
+		"device_status":     {ReadOnlyHint: true},
 	}
 
 	tools := BuiltinTools()
@@ -65,7 +65,7 @@ func TestStreamableHTTPInitializePingToolsAndNotifications(t *testing.T) {
 	}
 
 	initializeResponse := performHTTPRequest(t, server, "", initialize)
-	sessionID := initializeResponse.Header.Get(SessionHeader)
+	sessionID := initializeResponse.Result().Header.Get(SessionHeader)
 	if sessionID == "" {
 		t.Fatal("initialize response missing session id header")
 	}
@@ -100,7 +100,7 @@ func TestStreamableHTTPInitializePingToolsAndNotifications(t *testing.T) {
 		Method:  "ping",
 	}
 	pingResponse := performHTTPRequest(t, server, sessionID, ping)
-	if got := pingResponse.Header.Get(SessionHeader); got != sessionID {
+	if got := pingResponse.Result().Header.Get(SessionHeader); got != sessionID {
 		t.Fatalf("ping session header = %q, want %q", got, sessionID)
 	}
 
