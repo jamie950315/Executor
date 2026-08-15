@@ -2,7 +2,10 @@ package secrets
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,11 +15,13 @@ import (
 const secretsFile = "secrets.json"
 
 type Values struct {
-	RecoveryKey string `json:"recovery_key"`
-	URLSecret   string `json:"url_secret"`
-	IPCKey      string `json:"ipc_key"`
-	OAuthKey    string `json:"oauth_signing_key"`
-	Generation  uint64 `json:"generation"`
+	RecoveryKey     string `json:"-"`
+	URLSecret       string `json:"-"`
+	RecoveryKeyHash string `json:"recovery_key_hash"`
+	URLSecretHash   string `json:"url_secret_hash"`
+	IPCKey          string `json:"ipc_key"`
+	OAuthKey        string `json:"oauth_signing_key"`
+	Generation      uint64 `json:"generation"`
 }
 
 func Create(dir string) (Values, error) {
@@ -41,7 +46,7 @@ func Load(dir string) (Values, error) {
 	if err := json.Unmarshal(data, &values); err != nil {
 		return Values{}, err
 	}
-	if values.Generation == 0 || values.RecoveryKey == "" || values.URLSecret == "" || values.IPCKey == "" || values.OAuthKey == "" {
+	if values.Generation == 0 || values.RecoveryKeyHash == "" || values.URLSecretHash == "" || values.IPCKey == "" || values.OAuthKey == "" {
 		return Values{}, fmt.Errorf("incomplete secret store")
 	}
 	return values, nil
@@ -68,7 +73,33 @@ func generate(generation uint64) (Values, error) {
 		}
 		items[i] = base64.RawURLEncoding.EncodeToString(buf)
 	}
-	return Values{RecoveryKey: items[0], URLSecret: items[1], IPCKey: items[2], OAuthKey: items[3], Generation: generation}, nil
+	return Values{
+		RecoveryKey:     items[0],
+		URLSecret:       items[1],
+		RecoveryKeyHash: secretHash(items[0]),
+		URLSecretHash:   secretHash(items[1]),
+		IPCKey:          items[2],
+		OAuthKey:        items[3],
+		Generation:      generation,
+	}, nil
+}
+
+func (v Values) VerifyRecoveryKey(candidate string) bool {
+	return verifyHash(v.RecoveryKeyHash, candidate)
+}
+
+func (v Values) VerifyURLSecret(candidate string) bool {
+	return verifyHash(v.URLSecretHash, candidate)
+}
+
+func secretHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func verifyHash(want, candidate string) bool {
+	got := secretHash(candidate)
+	return len(want) == len(got) && subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
 }
 
 func save(dir string, values Values) error {

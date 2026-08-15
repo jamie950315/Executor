@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestCreatePersistsPrivateSecretsAndReturnsRecoveryOnce(t *testing.T) {
+func TestCreatePersistsOnlyCredentialHashesAndReturnsRecoveryOnce(t *testing.T) {
 	dir := t.TempDir()
 	created, err := Create(dir)
 	if err != nil {
@@ -20,8 +20,14 @@ func TestCreatePersistsPrivateSecretsAndReturnsRecoveryOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.RecoveryKey != created.RecoveryKey || loaded.URLSecret != created.URLSecret || loaded.IPCKey != created.IPCKey {
-		t.Fatal("loaded secrets differ from created secrets")
+	if loaded.RecoveryKey != "" || loaded.URLSecret != "" {
+		t.Fatal("one-time credentials were persisted in plaintext")
+	}
+	if !loaded.VerifyRecoveryKey(created.RecoveryKey) || !loaded.VerifyURLSecret(created.URLSecret) {
+		t.Fatal("persisted hashes do not verify one-time credentials")
+	}
+	if loaded.IPCKey != created.IPCKey || loaded.OAuthKey != created.OAuthKey {
+		t.Fatal("service keys differ from created keys")
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(filepath.Join(dir, secretsFile))
