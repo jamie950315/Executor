@@ -9,3 +9,4 @@
 *.pem
 executor-state/
 /executor
+/executor-kill
