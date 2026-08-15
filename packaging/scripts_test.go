@@ -417,7 +417,7 @@ func TestBootstrapRequiresCloudflareTokenFileOrCompletedMetadata(t *testing.T) {
 	)
 
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "bootstrap.sh"))
-	cmd.Env = append(env, "CLOUDFLARED_BIN=/bin/true")
+	cmd.Env = append(env, "CLOUDFLARED_BIN=/usr/bin/true")
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -566,7 +566,7 @@ func TestUnixBootstrapResolvesCloudflaredExecutablePathForService(t *testing.T) 
 func runScript(t *testing.T, script string, env []string) {
 	t.Helper()
 	cmd := exec.Command("bash", script)
-	cmd.Env = append(env, "CLOUDFLARED_BIN=/bin/true")
+	cmd.Env = append(env, "CLOUDFLARED_BIN=/usr/bin/true")
 	cmd.Dir = filepath.Dir(filepath.Dir(script))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
