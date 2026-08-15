@@ -55,8 +55,7 @@ func (p *execTerminalProcess) Kill() error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
-	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
-	return nil
+	return killProcessTree(p.cmd.Process.Pid)
 }
 
 func (p *execTerminalProcess) Signal(signal Signal) error {

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -120,32 +119,13 @@ func TestManager_KillStopsBackgroundProcessTree(t *testing.T) {
 		t.Fatalf("write session: %v", err)
 	}
 
-	chunk := waitForOutput(t, manager, session.ID, 0, "READY:")
-	output := string(chunk.Data)
-	pidText := strings.TrimSpace(output[strings.LastIndex(output, "READY:")+len("READY:"):])
-	pidText = strings.Fields(pidText)[0]
-	childPID, err := strconv.Atoi(pidText)
-	if err != nil {
-		t.Fatalf("parse child pid from %q: %v", output, err)
-	}
+	childPID := waitForBackgroundPID(t, manager, session.ID, "READY:")
 
 	if err := manager.Kill(session.ID); err != nil {
 		t.Fatalf("kill session: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		err := syscall.Kill(childPID, 0)
-		if err != nil {
-			if err == syscall.ESRCH {
-				return
-			}
-			t.Fatalf("probe child pid %d: %v", childPID, err)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	t.Fatalf("background process %d still alive after session kill", childPID)
+	waitForPIDExit(t, childPID)
 }
 
 func TestManager_SignalInterruptStopsForegroundCommandWithoutRemovingSession(t *testing.T) {
@@ -310,8 +290,8 @@ func TestManager_KillAllStopsAllProcessTrees(t *testing.T) {
 		t.Fatalf("write second session: %v", err)
 	}
 
-	firstPID := parseBackgroundPID(t, waitForOutput(t, manager, first.ID, 0, "READY1:"), "READY1:")
-	secondPID := parseBackgroundPID(t, waitForOutput(t, manager, second.ID, 0, "READY2:"), "READY2:")
+	firstPID := waitForBackgroundPID(t, manager, first.ID, "READY1:")
+	secondPID := waitForBackgroundPID(t, manager, second.ID, "READY2:")
 
 	if err := manager.KillAll(); err != nil {
 		t.Fatalf("kill all sessions: %v", err)
@@ -374,28 +354,41 @@ func waitForOutput(t *testing.T, manager *Manager, sessionID string, cursor int6
 	return OutputChunk{}
 }
 
-func parseBackgroundPID(t *testing.T, chunk OutputChunk, marker string) int {
+func waitForBackgroundPID(t *testing.T, manager *Manager, sessionID, marker string) int {
 	t.Helper()
-	output := string(chunk.Data)
-	pidText := strings.TrimSpace(output[strings.LastIndex(output, marker)+len(marker):])
-	pidText = strings.Fields(pidText)[0]
-	childPID, err := strconv.Atoi(pidText)
-	if err != nil {
-		t.Fatalf("parse child pid from %q: %v", output, err)
+	pattern := regexp.MustCompile(regexp.QuoteMeta(marker) + `([0-9]+)`)
+	deadline := time.Now().Add(5 * time.Second)
+	var output string
+	for time.Now().Before(deadline) {
+		chunk, err := manager.Read(sessionID, 0)
+		if err != nil {
+			t.Fatalf("read background pid output: %v", err)
+		}
+		output = string(chunk.Data)
+		match := pattern.FindStringSubmatch(output)
+		if len(match) == 2 {
+			pid, err := strconv.Atoi(match[1])
+			if err != nil {
+				t.Fatalf("parse child pid from %q: %v", output, err)
+			}
+			return pid
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return childPID
+	t.Fatalf("timed out waiting for numeric background pid after %q in %q", marker, output)
+	return 0
 }
 
 func waitForPIDExit(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		err := syscall.Kill(pid, 0)
+		stopped, err := processStopped(pid)
 		if err != nil {
-			if err == syscall.ESRCH {
-				return
-			}
 			t.Fatalf("probe child pid %d: %v", pid, err)
+		}
+		if stopped {
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

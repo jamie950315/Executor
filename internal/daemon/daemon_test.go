@@ -373,7 +373,7 @@ func TestRunAgentRestoresAndPersistsOAuthState(t *testing.T) {
 }
 
 func TestRunStdioDispatchesWithoutOAuth(t *testing.T) {
-	configPath, cfg, _ := daemonFixture(t)
+	configPath, cfg, values := daemonFixture(t)
 	brokerCtx, cancelBroker := context.WithCancel(context.Background())
 	desktopCtx, cancelDesktop := context.WithCancel(context.Background())
 	brokerErr := startDaemon(t, func() error { return RunBroker(brokerCtx, configPath) })
@@ -384,6 +384,17 @@ func TestRunStdioDispatchesWithoutOAuth(t *testing.T) {
 		assertDaemonStopped(t, brokerErr)
 		assertDaemonStopped(t, desktopErr)
 	}()
+	var sessions []terminal.SessionInfo
+	waitFor(t, func() error {
+		return ipc.NewRPCClient(cfg.BrokerEndpoint, []byte(values.BrokerIPCKey)).Call(
+			context.Background(), desktop.RPCMethodTerminalList, struct{}{}, &sessions,
+		)
+	})
+	waitFor(t, func() error {
+		return ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey)).Call(
+			context.Background(), desktop.RPCMethodTerminalList, struct{}{}, &sessions,
+		)
+	})
 
 	var input bytes.Buffer
 	writeMCPFrame(t, &input, initializeRequest("1"))
@@ -407,8 +418,14 @@ func TestRunStdioDispatchesWithoutOAuth(t *testing.T) {
 		Result struct {
 			IsError bool `json:"isError"`
 		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	decodeMCPFrame(t, reader, &call)
+	if call.Error != nil {
+		t.Fatalf("stdio dispatcher returned a JSON-RPC error: %s", call.Error.Message)
+	}
 	if call.Result.IsError {
 		t.Fatal("stdio dispatcher returned an MCP tool error")
 	}
