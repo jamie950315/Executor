@@ -534,6 +534,20 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 	}
 }
 
+func TestWindowsBootstrapResolvesCloudflaredExecutablePathForService(t *testing.T) {
+	t.Parallel()
+
+	bootstrap := readFile(t, filepath.Join(repoRoot(t), "scripts", "bootstrap.ps1"))
+	for _, want := range []string{
+		"Get-Command $CloudflaredBinInput -ErrorAction Stop",
+		"$CloudflaredBin = $CloudflaredCommand.Source",
+	} {
+		if !strings.Contains(bootstrap, want) {
+			t.Fatalf("Windows bootstrap does not resolve cloudflared to a service-safe absolute path; missing %q", want)
+		}
+	}
+}
+
 func runScript(t *testing.T, script string, env []string) {
 	t.Helper()
 	cmd := exec.Command("bash", script)

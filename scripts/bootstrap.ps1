@@ -15,7 +15,15 @@ $BundledExecutorKillPath = if ($env:EXECUTOR_BUNDLED_KILL_BINARY_PATH) { $env:EX
 $ConfigPath = if ($env:EXECUTOR_CONFIG_PATH) { $env:EXECUTOR_CONFIG_PATH } else { Join-Path $StateDir "config.json" }
 $DataDir = if ($env:EXECUTOR_DATA_DIR) { $env:EXECUTOR_DATA_DIR } else { Join-Path $StateDir "data" }
 $LogPath = if ($env:EXECUTOR_LOG_PATH) { $env:EXECUTOR_LOG_PATH } else { Join-Path $StateDir "executor.log" }
-$CloudflaredBin = if ($env:CLOUDFLARED_BIN) { $env:CLOUDFLARED_BIN } else { "cloudflared.exe" }
+$CloudflaredBinInput = if ($env:CLOUDFLARED_BIN) { $env:CLOUDFLARED_BIN } else { "cloudflared.exe" }
+$CloudflaredCommand = Get-Command $CloudflaredBinInput -ErrorAction Stop
+$CloudflaredBin = $CloudflaredCommand.Source
+if (-not $CloudflaredBin) {
+  $CloudflaredBin = $CloudflaredCommand.Path
+}
+if (-not $CloudflaredBin) {
+  throw "Unable to resolve cloudflared executable: $CloudflaredBinInput"
+}
 $CloudflaredTokenPath = if ($env:CLOUDFLARED_TOKEN_PATH) { $env:CLOUDFLARED_TOKEN_PATH } else { Join-Path $StateDir "cloudflared\executor.token" }
 $CloudflaredLogPath = if ($env:CLOUDFLARED_LOG_PATH) { $env:CLOUDFLARED_LOG_PATH } else { Join-Path $StateDir "cloudflared\cloudflared.log" }
 $LegacyCloudflaredBackupPath = Join-Path (Split-Path $CloudflaredTokenPath -Parent) "cloudflared-service-imagepath.bak"
