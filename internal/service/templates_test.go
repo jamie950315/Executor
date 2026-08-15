@@ -16,8 +16,8 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		CloudflaredBinaryPath: "/usr/local/bin/cloudflared",
 		CloudflaredTokenPath:  "/etc/cloudflared/executor.token",
 		CloudflaredLogPath:    "/var/log/cloudflared.log",
-		AgentUser:             "executor-agent",
-		AgentGroup:            "executor-agent",
+		AgentUser:             "jamie",
+		AgentGroup:            "staff",
 		BrokerUser:            "root",
 		BrokerGroup:           "root",
 		WindowsAgentService:   "ExecutorAgentSvc",
@@ -30,9 +30,9 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 	assertContainsAll(t, mac.Files["LaunchDaemons/com.executor.agent.plist"],
 		"<string>com.executor.agent</string>",
 		"<key>UserName</key>",
-		"<string>executor-agent</string>",
+		"<string>jamie</string>",
 		"<key>GroupName</key>",
-		"<string>executor-agent</string>",
+		"<string>staff</string>",
 	)
 	assertContainsAll(t, mac.Files["LaunchDaemons/com.executor.broker.plist"],
 		"<string>com.executor.broker</string>",
@@ -50,8 +50,8 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 	}
 	assertContainsAll(t, linux.Files["systemd/executor-agent.service"],
 		"ExecStart=/usr/local/bin/executor agent --config /etc/executor/config.json",
-		"User=executor-agent",
-		"Group=executor-agent",
+		"User=jamie",
+		"Group=staff",
 	)
 	assertContainsAll(t, linux.Files["systemd/executor-broker.service"],
 		"ExecStart=/usr/local/bin/executor broker --config /etc/executor/config.json",
@@ -87,6 +87,16 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"Set-ItemProperty",
 		"--token-file",
 	)
+	assertContainsAll(t, windows.Files["windows/register-desktop-startup.ps1"],
+		"$TaskName = \"ExecutorDesktop\"",
+		"New-ScheduledTaskAction",
+		"New-ScheduledTaskTrigger -AtLogOn",
+		"Register-ScheduledTask -TaskName $TaskName",
+		"Start-ScheduledTask -TaskName $TaskName",
+	)
+	if strings.Contains(windows.Files["windows/register-desktop-startup.ps1"], "executor-desktop.cmd") {
+		t.Fatalf("windows desktop script should not use Startup cmd anymore:\n%s", windows.Files["windows/register-desktop-startup.ps1"])
+	}
 }
 
 func assertContainsAll(t *testing.T, body string, wants ...string) {

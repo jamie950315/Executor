@@ -12,12 +12,14 @@ $LogPath = if ($env:EXECUTOR_LOG_PATH) { $env:EXECUTOR_LOG_PATH } else { Join-Pa
 $CloudflaredBin = if ($env:CLOUDFLARED_BIN) { $env:CLOUDFLARED_BIN } else { "cloudflared.exe" }
 $CloudflaredTokenPath = if ($env:CLOUDFLARED_TOKEN_PATH) { $env:CLOUDFLARED_TOKEN_PATH } else { Join-Path $StateDir "cloudflared\executor.token" }
 $CloudflaredLogPath = if ($env:CLOUDFLARED_LOG_PATH) { $env:CLOUDFLARED_LOG_PATH } else { Join-Path $StateDir "cloudflared\cloudflared.log" }
-$AgentUser = if ($env:EXECUTOR_AGENT_USER) { $env:EXECUTOR_AGENT_USER } else { "executor-agent" }
-$AgentGroup = if ($env:EXECUTOR_AGENT_GROUP) { $env:EXECUTOR_AGENT_GROUP } else { "executor-agent" }
 $BrokerUser = if ($env:EXECUTOR_BROKER_USER) { $env:EXECUTOR_BROKER_USER } else { "SYSTEM" }
 $BrokerGroup = if ($env:EXECUTOR_BROKER_GROUP) { $env:EXECUTOR_BROKER_GROUP } else { "SYSTEM" }
 $WindowsAgentService = if ($env:EXECUTOR_WINDOWS_AGENT_SERVICE) { $env:EXECUTOR_WINDOWS_AGENT_SERVICE } else { "NT SERVICE\ExecutorAgent" }
+$DesktopUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$AgentUser = if ($env:EXECUTOR_AGENT_USER) { $env:EXECUTOR_AGENT_USER } else { $DesktopUser }
+$AgentGroup = if ($env:EXECUTOR_AGENT_GROUP) { $env:EXECUTOR_AGENT_GROUP } else { $DesktopUser }
 $DesktopStartup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
+$DesktopTaskName = "ExecutorDesktop"
 $CloudflareAPITokenFile = if ($env:CLOUDFLARE_API_TOKEN_FILE) { $env:CLOUDFLARE_API_TOKEN_FILE } elseif ($env:EXECUTOR_CLOUDFLARE_TOKEN_FILE) { $env:EXECUTOR_CLOUDFLARE_TOKEN_FILE } else { "" }
 $CloudflareAccountID = if ($env:CLOUDFLARE_ACCOUNT_ID) { $env:CLOUDFLARE_ACCOUNT_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID) { $env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID } else { "" }
 $CloudflareZoneID = if ($env:CLOUDFLARE_ZONE_ID) { $env:CLOUDFLARE_ZONE_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ZONE_ID) { $env:EXECUTOR_CLOUDFLARE_ZONE_ID } else { "" }
@@ -122,14 +124,51 @@ function Record-ServiceState {
   }
 }
 
+function Record-ScheduledTaskState {
+  param([string]$DesktopTaskName)
+  $ExistingTask = Get-ScheduledTask -TaskName $DesktopTaskName -ErrorAction SilentlyContinue
+  if ($ExistingTask) {
+    $BackupPath = Join-Path $BackupRoot ("scheduled-task-" + $DesktopTaskName + ".xml")
+    Export-ScheduledTask -TaskName $DesktopTaskName | Set-Content -Path $BackupPath -Encoding UTF8
+    Add-ManifestRecord -Kind "scheduled-task" -PathValue $DesktopTaskName -Mode ("restore:" + $BackupPath)
+  } else {
+    Add-ManifestRecord -Kind "scheduled-task" -PathValue $DesktopTaskName -Mode "delete"
+  }
+}
+
 Install-ManagedFile -Source (Join-Path $TempBundle 'windows\install-services.ps1') -Destination (Join-Path $InstallRoot 'windows\install-services.ps1')
 Install-ManagedFile -Source (Join-Path $TempBundle 'windows\register-desktop-startup.ps1') -Destination (Join-Path $InstallRoot 'windows\register-desktop-startup.ps1')
 Install-ManagedFile -Source (Join-Path $TempBundle 'windows\configure-cloudflared.ps1') -Destination (Join-Path $InstallRoot 'windows\configure-cloudflared.ps1')
 Backup-ManagedPath -PathValue $DesktopStartup -Kind "runtime-file"
+if (Test-Path $DesktopStartup) {
+  Remove-Item -Path $DesktopStartup -Force
+}
+Record-ScheduledTaskState -DesktopTaskName $DesktopTaskName
 
 Record-ServiceState -Name "ExecutorAgent"
 Record-ServiceState -Name "ExecutorBroker"
 Record-ServiceState -Name "cloudflared"
+
+if (Test-Path $StateDir) {
+  & icacls $StateDir /grant:r "${WindowsAgentService}:(OI)(CI)(RX)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
+}
+if (Test-Path $DataDir) {
+  & icacls $DataDir /grant:r "${WindowsAgentService}:(OI)(CI)(RX)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
+}
+$CloudflaredDir = Split-Path $CloudflaredTokenPath -Parent
+if (Test-Path $CloudflaredDir) {
+  & icacls $CloudflaredDir /grant:r "${WindowsAgentService}:(OI)(CI)(RX)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
+}
+if (Test-Path $ConfigPath) {
+  & icacls $ConfigPath /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
+}
+$SecretsPath = Join-Path $StateDir "secrets.json"
+if (Test-Path $SecretsPath) {
+  & icacls $SecretsPath /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
+}
+if (Test-Path $CloudflaredTokenPath) {
+  & icacls $CloudflaredTokenPath /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
+}
 
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\install-services.ps1')
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\register-desktop-startup.ps1')

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,8 +34,8 @@ func TestRPCServerAndClientUseAuthenticatedUnixSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat socket: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("socket mode = %o, want 600", info.Mode().Perm())
+	if info.Mode().Perm() != 0o666 {
+		t.Fatalf("socket mode = %o, want 666 for cross-user authenticated RPC", info.Mode().Perm())
 	}
 
 	client := NewRPCClient(endpoint, key)
@@ -57,6 +58,16 @@ func TestRPCServerAndClientUseAuthenticatedUnixSocket(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not stop after cancellation")
+	}
+}
+
+func TestWindowsPipeDescriptorAllowsAuthenticatedServiceAccountsButNotAnonymous(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(windowsPipeSecurityDescriptor, ";;;AU)") {
+		t.Fatalf("pipe descriptor does not allow authenticated service accounts: %s", windowsPipeSecurityDescriptor)
+	}
+	if strings.Contains(windowsPipeSecurityDescriptor, ";;;WD)") || strings.Contains(windowsPipeSecurityDescriptor, ";;;AN)") {
+		t.Fatalf("pipe descriptor allows anonymous/everyone: %s", windowsPipeSecurityDescriptor)
 	}
 }
 

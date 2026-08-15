@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	defaultRPCWindow = 30 * time.Second
-	maxRPCMessage    = 16 << 20
+	defaultRPCWindow              = 30 * time.Second
+	maxRPCMessage                 = 16 << 20
+	windowsPipeSecurityDescriptor = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
 )
 
 type RPCHandler func(ctx context.Context, method string, params []byte) (any, error)

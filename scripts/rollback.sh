@@ -8,10 +8,8 @@ LAUNCHCTL_BIN="${LAUNCHCTL_BIN:-launchctl}"
 ID_BIN="${ID_BIN:-id}"
 STAT_BIN="${STAT_BIN:-stat}"
 RUNUSER_BIN="${RUNUSER_BIN:-runuser}"
-USERDEL_BIN="${USERDEL_BIN:-userdel}"
 MANIFEST_PATH="${STATE_DIR}/service-manifest.txt"
 BACKUP_ROOT="${STATE_DIR}/service-backups"
-SYSADMINCTL_BIN="${SYSADMINCTL_BIN:-sysadminctl}"
 
 case "${TARGET}" in
   darwin) TARGET="macos" ;;
@@ -97,12 +95,6 @@ esac
 
 while IFS='|' read -r label path mode; do
   if [[ "${label}" == "identity:user" ]]; then
-    if [[ "${mode}" == "delete" ]]; then
-      case "${TARGET}" in
-        linux|wsl) "${USERDEL_BIN}" "${path}" || true ;;
-        macos) "${SYSADMINCTL_BIN}" -deleteUser "${path}" || true ;;
-      esac
-    fi
     continue
   fi
   backup="${BACKUP_ROOT}${path}"

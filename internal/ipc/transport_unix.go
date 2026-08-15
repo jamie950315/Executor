@@ -32,7 +32,10 @@ func listenEndpoint(endpoint string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(endpoint, 0o600); err != nil {
+	// The socket may cross owner/root/service identities. Possessing the path is
+	// not authority: every request and response still requires HMAC, freshness,
+	// and nonce verification.
+	if err := os.Chmod(endpoint, 0o666); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(endpoint)
 		return nil, err

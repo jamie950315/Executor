@@ -1,7 +1,15 @@
 $Binary = "{{ .BinaryPath }}"
 $Config = "{{ .ConfigPath }}"
-$Startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
-@"
-@echo off
-"$Binary" desktop --config "$Config"
-"@ | Set-Content -Path $Startup -Encoding ASCII
+$TaskName = "ExecutorDesktop"
+$CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$Action = New-ScheduledTaskAction -Execute $Binary -Argument "desktop --config `"$Config`""
+$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
+$Principal = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType InteractiveToken -RunLevel Limited
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Executor desktop helper" -Force | Out-Null
+
+try {
+  Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+} catch {
+}

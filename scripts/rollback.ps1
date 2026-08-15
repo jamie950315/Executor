@@ -29,6 +29,22 @@ foreach ($Entry in $ManifestEntries) {
   $Mode = $Parts[2]
 
   switch ($Kind) {
+    "scheduled-task" {
+      if (Get-ScheduledTask -TaskName $PathValue -ErrorAction SilentlyContinue) {
+        try {
+          Stop-ScheduledTask -TaskName $PathValue -ErrorAction Stop
+        } catch {
+        }
+        Unregister-ScheduledTask -TaskName $PathValue -Confirm:$false -ErrorAction SilentlyContinue
+      }
+      if ($Mode.StartsWith("restore:")) {
+        $BackupPath = $Mode.Substring(8)
+        if (Test-Path $BackupPath) {
+          $TaskXML = Get-Content -Path $BackupPath -Raw
+          Register-ScheduledTask -TaskName $PathValue -Xml $TaskXML -Force | Out-Null
+        }
+      }
+    }
     "service" {
       if ($Mode -eq "delete" -and (Get-Service -Name $PathValue -ErrorAction SilentlyContinue)) {
         & sc.exe delete $PathValue | Out-Null

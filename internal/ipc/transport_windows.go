@@ -11,7 +11,7 @@ import (
 
 func listenEndpoint(endpoint string) (net.Listener, error) {
 	return winio.ListenPipe(endpoint, &winio.PipeConfig{
-		SecurityDescriptor: "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)",
+		SecurityDescriptor: windowsPipeSecurityDescriptor,
 		MessageMode:        false,
 		InputBufferSize:    64 << 10,
 		OutputBufferSize:   64 << 10,

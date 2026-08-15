@@ -17,12 +17,10 @@ LAUNCHCTL_BIN="${LAUNCHCTL_BIN:-launchctl}"
 ID_BIN="${ID_BIN:-id}"
 STAT_BIN="${STAT_BIN:-stat}"
 RUNUSER_BIN="${RUNUSER_BIN:-runuser}"
-USERADD_BIN="${USERADD_BIN:-useradd}"
-USERDEL_BIN="${USERDEL_BIN:-userdel}"
-DSCL_BIN="${DSCL_BIN:-dscl}"
-SYSADMINCTL_BIN="${SYSADMINCTL_BIN:-sysadminctl}"
-AGENT_USER="${EXECUTOR_AGENT_USER:-executor-agent}"
-AGENT_GROUP="${EXECUTOR_AGENT_GROUP:-executor-agent}"
+CHOWN_BIN="${CHOWN_BIN:-chown}"
+CHMOD_BIN="${CHMOD_BIN:-chmod}"
+AGENT_USER=""
+AGENT_GROUP=""
 BROKER_USER="${EXECUTOR_BROKER_USER:-root}"
 BROKER_GROUP="${EXECUTOR_BROKER_GROUP:-root}"
 WINDOWS_AGENT_SERVICE="${EXECUTOR_WINDOWS_AGENT_SERVICE:-NT SERVICE\ExecutorAgent}"
@@ -46,20 +44,6 @@ service_root() {
     linux|wsl) printf '%s\n' "${EXECUTOR_INSTALL_ROOT:-/etc}" ;;
     *) printf 'unsupported EXECUTOR_TARGET: %s\n' "${TARGET}" >&2; exit 1 ;;
   esac
-}
-
-ensure_linux_identity() {
-  if ! "${ID_BIN}" -u "${AGENT_USER}" >/dev/null 2>&1; then
-    "${USERADD_BIN}" --system --user-group "${AGENT_USER}"
-    record_manifest "identity:user" "${AGENT_USER}" "delete"
-  fi
-}
-
-ensure_macos_identity() {
-  if ! "${DSCL_BIN}" . -read "/Users/${AGENT_USER}" >/dev/null 2>&1; then
-    "${SYSADMINCTL_BIN}" -addUser "${AGENT_USER}" -shell /usr/bin/false -password "-"
-    record_manifest "identity:user" "${AGENT_USER}" "delete"
-  fi
 }
 
 cleanup() {
@@ -106,6 +90,68 @@ desktop_user_linux() {
     return 0
   fi
   return 1
+}
+
+desktop_user_macos() {
+  if [[ -n "${EXECUTOR_DESKTOP_USER:-}" ]]; then
+    printf '%s\n' "${EXECUTOR_DESKTOP_USER}"
+    return 0
+  fi
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    printf '%s\n' "${SUDO_USER}"
+    return 0
+  fi
+  if console_user="$("${STAT_BIN}" -f %Su /dev/console 2>/dev/null)"; then
+    if [[ -n "${console_user}" && "${console_user}" != "root" ]]; then
+      printf '%s\n' "${console_user}"
+      return 0
+    fi
+  fi
+  current_uid="$(${ID_BIN} -u)"
+  if [[ "${current_uid}" != "0" ]]; then
+    "${ID_BIN}" -un
+    return 0
+  fi
+  printf 'unable to determine desktop owner user\n' >&2
+  exit 1
+}
+
+desktop_group_for_user() {
+  "${ID_BIN}" -gn "$1"
+}
+
+set_owner_readable_tree() {
+  path="$1"
+  if [[ -e "${path}" ]]; then
+    "${CHOWN_BIN}" -R "${AGENT_USER}:${AGENT_GROUP}" "${path}"
+    "${CHMOD_BIN}" -R u+rwX,go-rwx "${path}"
+  fi
+}
+
+set_owner_readable_file() {
+  path="$1"
+  if [[ -f "${path}" ]]; then
+    "${CHOWN_BIN}" "${AGENT_USER}:${AGENT_GROUP}" "${path}"
+    "${CHMOD_BIN}" u+rw,go-rwx "${path}"
+  fi
+}
+
+configure_unix_state_permissions() {
+  set_owner_readable_tree "${STATE_DIR}"
+  if [[ "${DATA_DIR}" != "${STATE_DIR}" ]]; then
+    set_owner_readable_tree "${DATA_DIR}"
+  fi
+  config_parent="$(dirname "${CONFIG_PATH}")"
+  if [[ "${config_parent}" != "${STATE_DIR}" ]]; then
+    set_owner_readable_tree "${config_parent}"
+  fi
+  token_parent="$(dirname "${CLOUDFLARED_TOKEN_PATH}")"
+  if [[ "${token_parent}" != "${STATE_DIR}" && "${token_parent}" != "${config_parent}" ]]; then
+    set_owner_readable_tree "${token_parent}"
+  fi
+  set_owner_readable_file "${CONFIG_PATH}"
+  set_owner_readable_file "${STATE_DIR}/secrets.json"
+  set_owner_readable_file "${CLOUDFLARED_TOKEN_PATH}"
 }
 
 run_desktop_systemctl() {
@@ -200,8 +246,14 @@ mkdir -p "${STATE_DIR}" "${DATA_DIR}" "$(dirname "${CONFIG_PATH}")" "$(dirname "
 : > "${MANIFEST_PATH}"
 
 case "${TARGET}" in
-  linux|wsl) ensure_linux_identity ;;
-  macos) ensure_macos_identity ;;
+  linux|wsl)
+    AGENT_USER="$(desktop_user_linux)"
+    AGENT_GROUP="$(desktop_group_for_user "${AGENT_USER}")"
+    ;;
+  macos)
+    AGENT_USER="$(desktop_user_macos)"
+    AGENT_GROUP="$(desktop_group_for_user "${AGENT_USER}")"
+    ;;
 esac
 
 setup_cmd=("${EXECUTOR_BIN}" setup --domain "${DOMAIN}")
@@ -223,6 +275,10 @@ if ! cloudflare_metadata_complete; then
   printf 'Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata before installing services.\n' >&2
   exit 1
 fi
+
+case "${TARGET}" in
+  linux|wsl|macos) configure_unix_state_permissions ;;
+esac
 
 TMP_BUNDLE="$("${MKTEMP_BIN}" -d)"
 "${EXECUTOR_BIN}" render-service-bundle \
