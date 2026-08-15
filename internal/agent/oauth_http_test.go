@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/jamie950315/executor/internal/oauth"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 	core := testOAuthCore(t)
@@ -99,6 +104,53 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 	}
 	if _, err := core.VerifyAccessToken(tokens.AccessToken, oauth.VerifyOptions{Audience: "https://executor.example.com", Scope: "executor.full"}); err != nil {
 		t.Fatalf("VerifyAccessToken: %v", err)
+	}
+}
+
+func TestOAuthHTTPResolvesChatGPTClientMetadataDocument(t *testing.T) {
+	core := testOAuthCore(t)
+	clientID := "https://chatgpt.com/oauth/executor/client.json"
+	callback := "https://chatgpt.com/connector/oauth/executor"
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != clientID {
+			t.Fatalf("CIMD request URL = %q", r.URL.String())
+		}
+		body := `{"client_name":"ChatGPT","redirect_uris":["` + callback + `"],"scope":"executor.full"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	h := NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true }, WithCIMDHTTPClient(httpClient))
+	values := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {callback},
+		"scope":                 {"executor.full"},
+		"code_challenge":        {strings.Repeat("a", 43)},
+		"code_challenge_method": {"S256"},
+	}
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("authorize status=%d body=%q", res.Code, res.Body.String())
+	}
+	if err := core.ValidateClient(oauth.ClientValidationRequest{ClientID: clientID, RedirectURI: callback}); err != nil {
+		t.Fatalf("CIMD client was not registered: %v", err)
+	}
+}
+
+func TestOAuthHTTPRejectsUntrustedClientMetadataHost(t *testing.T) {
+	core := testOAuthCore(t)
+	h := NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true })
+	values := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {"https://127.0.0.1/client.json"},
+		"redirect_uri":          {"https://chatgpt.com/connector/oauth/test"},
+		"code_challenge":        {strings.Repeat("a", 43)},
+		"code_challenge_method": {"S256"},
+	}
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", res.Code)
 	}
 }
 

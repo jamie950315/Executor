@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/jamie950315/executor/internal/oauth"
 )
@@ -16,10 +20,30 @@ type oauthHandler struct {
 	core           *oauth.Core
 	resource       string
 	verifyRecovery RecoveryVerifier
+	cimdClient     *http.Client
 }
 
-func NewOAuthHandler(core *oauth.Core, resource string, verifyRecovery RecoveryVerifier) http.Handler {
-	return &oauthHandler{core: core, resource: strings.TrimRight(resource, "/"), verifyRecovery: verifyRecovery}
+type OAuthOption func(*oauthHandler)
+
+func WithCIMDHTTPClient(client *http.Client) OAuthOption {
+	return func(handler *oauthHandler) {
+		if client != nil {
+			handler.cimdClient = client
+		}
+	}
+}
+
+func NewOAuthHandler(core *oauth.Core, resource string, verifyRecovery RecoveryVerifier, options ...OAuthOption) http.Handler {
+	handler := &oauthHandler{
+		core:           core,
+		resource:       strings.TrimRight(resource, "/"),
+		verifyRecovery: verifyRecovery,
+		cimdClient:     &http.Client{Timeout: 5 * time.Second},
+	}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 func (h *oauthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +85,7 @@ func (h *oauthHandler) register(w http.ResponseWriter, r *http.Request) {
 
 func (h *oauthHandler) authorizePage(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
-	if err := h.validateAuthorize(values); err != nil {
+	if err := h.validateAuthorize(r.Context(), values); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -86,7 +110,7 @@ func (h *oauthHandler) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authorization denied", http.StatusForbidden)
 		return
 	}
-	if err := h.validateAuthorize(r.Form); err != nil {
+	if err := h.validateAuthorize(r.Context(), r.Form); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -112,14 +136,70 @@ func (h *oauthHandler) authorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirect.String(), http.StatusSeeOther)
 }
 
-func (h *oauthHandler) validateAuthorize(values url.Values) error {
+func (h *oauthHandler) validateAuthorize(ctx context.Context, values url.Values) error {
 	if values.Get("response_type") != "code" {
 		return &oauthRequestError{"response_type must be code"}
 	}
 	if values.Get("code_challenge_method") != "S256" || values.Get("code_challenge") == "" {
 		return &oauthRequestError{"PKCE S256 is required"}
 	}
-	return h.core.ValidateClient(oauth.ClientValidationRequest{ClientID: values.Get("client_id"), RedirectURI: values.Get("redirect_uri")})
+	clientID := values.Get("client_id")
+	if err := h.core.ValidateClient(oauth.ClientValidationRequest{ClientID: clientID}); err != nil {
+		if err := h.resolveClientMetadata(ctx, clientID); err != nil {
+			return err
+		}
+	}
+	return h.core.ValidateClient(oauth.ClientValidationRequest{ClientID: clientID, RedirectURI: values.Get("redirect_uri")})
+}
+
+type clientMetadataDocument struct {
+	ClientName   string   `json:"client_name"`
+	RedirectURIs []string `json:"redirect_uris"`
+	Scope        string   `json:"scope"`
+}
+
+func (h *oauthHandler) resolveClientMetadata(ctx context.Context, clientID string) error {
+	parsed, err := url.Parse(clientID)
+	if err != nil || parsed.Scheme != "https" || !trustedCIMDHost(parsed.Hostname()) {
+		return fmt.Errorf("untrusted client metadata URL")
+	}
+	client := *h.cimdClient
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 || req.URL.Scheme != "https" || !trustedCIMDHost(req.URL.Hostname()) {
+			return fmt.Errorf("untrusted client metadata redirect")
+		}
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch client metadata: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("client metadata returned %s", response.Status)
+	}
+	var document clientMetadataDocument
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("decode client metadata: %w", err)
+	}
+	_, err = h.core.RegisterClientIDURL(oauth.ClientIDURLRegistrationRequest{
+		ClientIDURL:  clientID,
+		ClientName:   document.ClientName,
+		RedirectURIs: document.RedirectURIs,
+		Scopes:       strings.Fields(document.Scope),
+	})
+	return err
+}
+
+func trustedCIMDHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "chatgpt.com" || strings.HasSuffix(host, ".chatgpt.com")
 }
 
 func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
