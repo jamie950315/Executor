@@ -43,3 +43,15 @@ func TestLoadRejectsUnsupportedVersion(t *testing.T) {
 		t.Fatal("Load accepted unsupported version")
 	}
 }
+
+func TestDefaultEndpointsUseNamedPipesOnWindowsAndSocketsOnUnix(t *testing.T) {
+	t.Parallel()
+	broker, desktop := defaultEndpoints("windows", `C:\ProgramData\Executor`)
+	if broker != `\\.\pipe\executor-broker` || desktop != `\\.\pipe\executor-desktop` {
+		t.Fatalf("windows endpoints = %q, %q", broker, desktop)
+	}
+	broker, desktop = defaultEndpoints("darwin", "/var/lib/executor")
+	if broker != "/var/lib/executor/broker.sock" || desktop != "/var/lib/executor/desktop.sock" {
+		t.Fatalf("unix endpoints = %q, %q", broker, desktop)
+	}
+}

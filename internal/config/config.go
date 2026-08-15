@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const CurrentVersion = 1
@@ -19,18 +20,27 @@ type Config struct {
 	BrokerEndpoint   string `json:"broker_endpoint"`
 	DesktopEndpoint  string `json:"desktop_endpoint"`
 	AuditRetentionH  int    `json:"audit_retention_hours"`
+	URLSecretEnabled bool   `json:"url_secret_enabled,omitempty"`
 }
 
 func Default(stateDir string) Config {
+	brokerEndpoint, desktopEndpoint := defaultEndpoints(runtime.GOOS, stateDir)
 	return Config{
 		Version:          CurrentVersion,
 		StateDir:         stateDir,
 		AgentAddress:     "127.0.0.1:8787",
 		DashboardAddress: "127.0.0.1:8788",
-		BrokerEndpoint:   filepath.Join(stateDir, "broker.sock"),
-		DesktopEndpoint:  filepath.Join(stateDir, "desktop.sock"),
+		BrokerEndpoint:   brokerEndpoint,
+		DesktopEndpoint:  desktopEndpoint,
 		AuditRetentionH:  7 * 24,
 	}
+}
+
+func defaultEndpoints(goos, stateDir string) (string, string) {
+	if goos == "windows" {
+		return `\\.\pipe\executor-broker`, `\\.\pipe\executor-desktop`
+	}
+	return filepath.Join(stateDir, "broker.sock"), filepath.Join(stateDir, "desktop.sock")
 }
 
 func Load(path string) (Config, error) {
