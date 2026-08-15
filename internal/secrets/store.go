@@ -27,6 +27,12 @@ type Values struct {
 }
 
 func Create(dir string) (Values, error) {
+	release, err := acquireStoreLock(dir)
+	if err != nil {
+		return Values{}, err
+	}
+	defer release()
+
 	if _, err := os.Stat(filepath.Join(dir, secretsFile)); err == nil {
 		return Values{}, fmt.Errorf("secrets already exist")
 	} else if !os.IsNotExist(err) {
@@ -55,6 +61,12 @@ func Load(dir string) (Values, error) {
 }
 
 func Rotate(dir string) (Values, error) {
+	release, err := acquireStoreLock(dir)
+	if err != nil {
+		return Values{}, err
+	}
+	defer release()
+
 	current, err := Load(dir)
 	if err != nil {
 		return Values{}, err
@@ -119,22 +131,37 @@ func save(dir string, values Values) error {
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return statErr
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(dir, "."+secretsFile+".*.tmp")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	tmp := tmpFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmpFile.Close()
+		}
 		_ = os.Remove(tmp)
+	}()
+	if _, err := tmpFile.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	if err := tmpFile.Chmod(0o600); err != nil {
 		return err
 	}
 	if existing != nil {
-		if err := preserveFileOwnership(tmp, existing); err != nil {
-			_ = os.Remove(tmp)
+		if err := preserveFileOwnership(tmpFile, existing); err != nil {
 			return err
 		}
 	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	closed = true
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
 		return err
 	}
 	return nil

@@ -4,6 +4,6 @@ package secrets
 
 import "os"
 
-func preserveFileOwnership(string, os.FileInfo) error {
+func preserveFileOwnership(*os.File, os.FileInfo) error {
 	return nil
 }

@@ -8,10 +8,18 @@ import (
 	"syscall"
 )
 
-func preserveFileOwnership(path string, existing os.FileInfo) error {
+func preserveFileOwnership(file *os.File, existing os.FileInfo) error {
+	uid, gid, err := fileOwnerIDs(existing)
+	if err != nil {
+		return err
+	}
+	return file.Chown(uid, gid)
+}
+
+func fileOwnerIDs(existing os.FileInfo) (int, int, error) {
 	stat, ok := existing.Sys().(*syscall.Stat_t)
 	if !ok {
-		return fmt.Errorf("read existing secret ownership")
+		return 0, 0, fmt.Errorf("read existing secret ownership")
 	}
-	return os.Chown(path, int(stat.Uid), int(stat.Gid))
+	return int(stat.Uid), int(stat.Gid), nil
 }
