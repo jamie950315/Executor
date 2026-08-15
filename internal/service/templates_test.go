@@ -39,6 +39,13 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"<key>UserName</key>",
 		"<string>root</string>",
 	)
+	assertContainsAll(t, mac.Files["LaunchDaemons/com.executor.dashboard.plist"],
+		"<string>com.executor.dashboard</string>",
+		"<key>UserName</key>",
+		"<string>root</string>",
+		"<string>dashboard</string>",
+		"<string>/etc/executor/config.json</string>",
+	)
 	assertContainsAll(t, mac.Files["LaunchDaemons/com.cloudflare.cloudflared.plist"],
 		"--token-file",
 		"/etc/cloudflared/executor.token",
@@ -58,6 +65,11 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"User=root",
 		"Group=root",
 	)
+	assertContainsAll(t, linux.Files["systemd/executor-dashboard.service"],
+		"ExecStart=/usr/local/bin/executor dashboard --config /etc/executor/config.json",
+		"User=root",
+		"Group=root",
+	)
 	assertContainsAll(t, linux.Files["systemd/cloudflared.service"],
 		"run --token-file /etc/cloudflared/executor.token",
 	)
@@ -69,6 +81,9 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 	assertContainsAll(t, windows.Files["windows/install-services.ps1"],
 		"ExecutorAgentSvc",
 		"New-Service -Name \"ExecutorAgent\"",
+		"New-Service -Name \"ExecutorDashboard\"",
+		"`\"$Binary`\" dashboard --config",
+		"sc.exe config ExecutorDashboard obj= LocalSystem",
 		"`\"$Binary`\" agent --config",
 		"sc.exe config ExecutorAgent obj= $AgentIdentity",
 	)

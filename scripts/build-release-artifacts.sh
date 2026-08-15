@@ -10,14 +10,17 @@ rm -f "${OUT_DIR}"/SHA256SUMS.txt
 
 for target in ${BUILD_TARGETS}; do
   IFS=/ read -r GOOS GOARCH <<<"${target}"
-  BINARY_NAME="executor"
   ARCHIVE_NAME="executor_${GOOS}_${GOARCH}"
   STAGING_DIR="$(mktemp -d)"
+  EXECUTOR_BINARY="executor"
+  KILL_BINARY="executor-kill"
   if [[ "${GOOS}" == "windows" ]]; then
-    BINARY_NAME="${BINARY_NAME}.exe"
+    EXECUTOR_BINARY="${EXECUTOR_BINARY}.exe"
+    KILL_BINARY="${KILL_BINARY}.exe"
   fi
 
-  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${BINARY_NAME}" ./packaging/cmd/executor
+  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${EXECUTOR_BINARY}" ./packaging/cmd/executor
+  GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${KILL_BINARY}" ./cmd/executor-kill
   cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
   mkdir -p "${STAGING_DIR}/docs"
   cp "${ROOT_DIR}/docs/DEPLOYMENT.md" "${STAGING_DIR}/docs/DEPLOYMENT.md"

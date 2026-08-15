@@ -2,10 +2,14 @@ $ErrorActionPreference = "Stop"
 
 $StateDir = if ($env:EXECUTOR_STATE_DIR) { $env:EXECUTOR_STATE_DIR } else { "executor-state" }
 $InstallRoot = if ($env:EXECUTOR_INSTALL_ROOT) { $env:EXECUTOR_INSTALL_ROOT } else { Join-Path $StateDir "installed-services" }
+$BundleRoot = if ($env:EXECUTOR_BUNDLE_ROOT) { $env:EXECUTOR_BUNDLE_ROOT } else { Split-Path $PSScriptRoot -Parent }
 $BackupRoot = Join-Path $StateDir "service-backups"
 $ManifestPath = Join-Path $StateDir "service-manifest.txt"
 $Domain = $env:EXECUTOR_DOMAIN
-$ExecutorBin = if ($env:EXECUTOR_BIN) { $env:EXECUTOR_BIN } else { "executor.exe" }
+$ExecutorInstallPath = if ($env:EXECUTOR_INSTALL_BINARY_PATH) { $env:EXECUTOR_INSTALL_BINARY_PATH } else { Join-Path $InstallRoot "executor.exe" }
+$ExecutorKillInstallPath = if ($env:EXECUTOR_KILL_INSTALL_BINARY_PATH) { $env:EXECUTOR_KILL_INSTALL_BINARY_PATH } else { Join-Path $InstallRoot "executor-kill.exe" }
+$BundledExecutorPath = if ($env:EXECUTOR_BUNDLED_BINARY_PATH) { $env:EXECUTOR_BUNDLED_BINARY_PATH } else { Join-Path $BundleRoot "executor.exe" }
+$BundledExecutorKillPath = if ($env:EXECUTOR_BUNDLED_KILL_BINARY_PATH) { $env:EXECUTOR_BUNDLED_KILL_BINARY_PATH } else { Join-Path $BundleRoot "executor-kill.exe" }
 $ConfigPath = if ($env:EXECUTOR_CONFIG_PATH) { $env:EXECUTOR_CONFIG_PATH } else { Join-Path $StateDir "config.json" }
 $DataDir = if ($env:EXECUTOR_DATA_DIR) { $env:EXECUTOR_DATA_DIR } else { Join-Path $StateDir "data" }
 $LogPath = if ($env:EXECUTOR_LOG_PATH) { $env:EXECUTOR_LOG_PATH } else { Join-Path $StateDir "executor.log" }
@@ -36,53 +40,6 @@ New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
 Set-Content -Path $ManifestPath -Value $null
 
-$SetupArgs = @("setup", "--domain", $Domain)
-if ($CloudflareAPITokenFile) {
-  $SetupArgs += @("--cloudflare-token-file", $CloudflareAPITokenFile)
-}
-if ($CloudflareAccountID) {
-  $SetupArgs += @("--cloudflare-account-id", $CloudflareAccountID)
-}
-if ($CloudflareZoneID) {
-  $SetupArgs += @("--cloudflare-zone-id", $CloudflareZoneID)
-}
-if ($CloudflareTunnelName) {
-  $SetupArgs += @("--cloudflare-tunnel-name", $CloudflareTunnelName)
-}
-& $ExecutorBin @SetupArgs
-
-$ConfigJson = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
-$Cloudflare = $ConfigJson.cloudflare
-if (-not $Cloudflare `
-  -or -not $Cloudflare.account_id `
-  -or -not $Cloudflare.zone_id `
-  -or -not $Cloudflare.tunnel_id `
-  -or -not $Cloudflare.tunnel_name `
-  -or -not $Cloudflare.dns_record_id `
-  -or -not $Cloudflare.token_file_path `
-  -or -not $Cloudflare.hostname `
-  -or $Cloudflare.token_file_path -ne $CloudflaredTokenPath) {
-  throw "Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata before installing services."
-}
-
-$TempBundle = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
-New-Item -ItemType Directory -Path $TempBundle -Force | Out-Null
-& $ExecutorBin render-service-bundle `
-  --target windows `
-  --output $TempBundle `
-  --binary-path $ExecutorBin `
-  --config-path $ConfigPath `
-  --data-dir $DataDir `
-  --log-path $LogPath `
-  --cloudflared-binary-path $CloudflaredBin `
-  --cloudflared-token-path $CloudflaredTokenPath `
-  --cloudflared-log-path $CloudflaredLogPath `
-  --agent-user $AgentUser `
-  --agent-group $AgentGroup `
-  --broker-user $BrokerUser `
-  --broker-group $BrokerGroup `
-  --windows-agent-service $WindowsAgentService
-
 function Add-ManifestRecord {
   param(
     [string]$Kind,
@@ -112,10 +69,63 @@ function Install-ManagedFile {
     [string]$Source,
     [string]$Destination
   )
+  if (-not (Test-Path $Source)) {
+    throw "Missing bundled file: $Source"
+  }
   Backup-ManagedPath -PathValue $Destination -Kind "file"
   New-Item -ItemType Directory -Path (Split-Path $Destination -Parent) -Force | Out-Null
   Copy-Item -Path $Source -Destination $Destination -Force
 }
+
+Install-ManagedFile -Source $BundledExecutorPath -Destination $ExecutorInstallPath
+Install-ManagedFile -Source $BundledExecutorKillPath -Destination $ExecutorKillInstallPath
+
+$SetupArgs = @("setup", "--domain", $Domain)
+if ($CloudflareAPITokenFile) {
+  $SetupArgs += @("--cloudflare-token-file", $CloudflareAPITokenFile)
+}
+if ($CloudflareAccountID) {
+  $SetupArgs += @("--cloudflare-account-id", $CloudflareAccountID)
+}
+if ($CloudflareZoneID) {
+  $SetupArgs += @("--cloudflare-zone-id", $CloudflareZoneID)
+}
+if ($CloudflareTunnelName) {
+  $SetupArgs += @("--cloudflare-tunnel-name", $CloudflareTunnelName)
+}
+& $ExecutorInstallPath @SetupArgs
+
+$ConfigJson = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
+$Cloudflare = $ConfigJson.cloudflare
+if (-not $Cloudflare `
+  -or -not $Cloudflare.account_id `
+  -or -not $Cloudflare.zone_id `
+  -or -not $Cloudflare.tunnel_id `
+  -or -not $Cloudflare.tunnel_name `
+  -or -not $Cloudflare.dns_record_id `
+  -or -not $Cloudflare.token_file_path `
+  -or -not $Cloudflare.hostname `
+  -or $Cloudflare.token_file_path -ne $CloudflaredTokenPath) {
+  throw "Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata before installing services."
+}
+
+$TempBundle = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $TempBundle -Force | Out-Null
+& $ExecutorInstallPath render-service-bundle `
+  --target windows `
+  --output $TempBundle `
+  --binary-path $ExecutorInstallPath `
+  --config-path $ConfigPath `
+  --data-dir $DataDir `
+  --log-path $LogPath `
+  --cloudflared-binary-path $CloudflaredBin `
+  --cloudflared-token-path $CloudflaredTokenPath `
+  --cloudflared-log-path $CloudflaredLogPath `
+  --agent-user $AgentUser `
+  --agent-group $AgentGroup `
+  --broker-user $BrokerUser `
+  --broker-group $BrokerGroup `
+  --windows-agent-service $WindowsAgentService
 
 function Record-ServiceState {
   param([string]$Name)
@@ -147,27 +157,28 @@ Record-ScheduledTaskState -DesktopTaskName $DesktopTaskName
 
 Record-ServiceState -Name "ExecutorAgent"
 Record-ServiceState -Name "ExecutorBroker"
+Record-ServiceState -Name "ExecutorDashboard"
 Record-ServiceState -Name "cloudflared"
 
 if (Test-Path $StateDir) {
-  & icacls $StateDir /grant:r "${WindowsAgentService}:(OI)(CI)(RX)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
+  & icacls $StateDir /grant:r "${WindowsAgentService}:(OI)(CI)(M)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
 }
 if (Test-Path $DataDir) {
-  & icacls $DataDir /grant:r "${WindowsAgentService}:(OI)(CI)(RX)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
+  & icacls $DataDir /grant:r "${WindowsAgentService}:(OI)(CI)(M)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
 }
 $CloudflaredDir = Split-Path $CloudflaredTokenPath -Parent
 if (Test-Path $CloudflaredDir) {
-  & icacls $CloudflaredDir /grant:r "${WindowsAgentService}:(OI)(CI)(RX)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
+  & icacls $CloudflaredDir /grant:r "${WindowsAgentService}:(OI)(CI)(M)" "${DesktopUser}:(OI)(CI)(RX)" "SYSTEM:(OI)(CI)(F)" | Out-Null
 }
 if (Test-Path $ConfigPath) {
-  & icacls $ConfigPath /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
+  & icacls $ConfigPath /inheritance:r /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
 }
 $SecretsPath = Join-Path $StateDir "secrets.json"
 if (Test-Path $SecretsPath) {
-  & icacls $SecretsPath /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
+  & icacls $SecretsPath /inheritance:r /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
 }
 if (Test-Path $CloudflaredTokenPath) {
-  & icacls $CloudflaredTokenPath /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
+  & icacls $CloudflaredTokenPath /inheritance:r /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
 }
 
 & powershell -ExecutionPolicy Bypass -File (Join-Path $InstallRoot 'windows\install-services.ps1')

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLE_ROOT="${EXECUTOR_BUNDLE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 STATE_DIR="${EXECUTOR_STATE_DIR:-executor-state}"
 TARGET="${EXECUTOR_TARGET:-$(uname | tr '[:upper:]' '[:lower:]')}"
 DOMAIN="${EXECUTOR_DOMAIN:?set EXECUTOR_DOMAIN}"
-EXECUTOR_BIN="${EXECUTOR_BIN:-executor}"
+EXECUTOR_INSTALL_BINARY_PATH="${EXECUTOR_INSTALL_BINARY_PATH:-/usr/local/bin/executor}"
+EXECUTOR_KILL_INSTALL_BINARY_PATH="${EXECUTOR_KILL_INSTALL_BINARY_PATH:-/usr/local/bin/executor-kill}"
+BUNDLED_EXECUTOR_PATH="${EXECUTOR_BUNDLED_BINARY_PATH:-${BUNDLE_ROOT}/executor}"
+BUNDLED_EXECUTOR_KILL_PATH="${EXECUTOR_BUNDLED_KILL_BINARY_PATH:-${BUNDLE_ROOT}/executor-kill}"
 CONFIG_PATH="${EXECUTOR_CONFIG_PATH:-${STATE_DIR}/config.json}"
 DATA_DIR="${EXECUTOR_DATA_DIR:-${STATE_DIR}/data}"
 LOG_PATH="${EXECUTOR_LOG_PATH:-${STATE_DIR}/executor.log}"
@@ -73,6 +78,18 @@ install_managed_file() {
   fi
   cp "${src}" "${dst}"
   record_manifest "${label}" "${dst}" "${mode}"
+}
+
+install_managed_executable() {
+  src="$1"
+  dst="$2"
+  label="$3"
+  if [[ ! -f "${src}" ]]; then
+    printf 'missing bundled binary: %s\n' "${src}" >&2
+    exit 1
+  fi
+  install_managed_file "${src}" "${dst}" "${label}"
+  chmod 0755 "${dst}"
 }
 
 desktop_user_linux() {
@@ -214,12 +231,13 @@ bootstrap_linux() {
   root="$1"
   install_managed_file "${TMP_BUNDLE}/systemd/executor-agent.service" "${root}/systemd/executor-agent.service" "systemd:executor-agent.service"
   install_managed_file "${TMP_BUNDLE}/systemd/executor-broker.service" "${root}/systemd/executor-broker.service" "systemd:executor-broker.service"
+  install_managed_file "${TMP_BUNDLE}/systemd/executor-dashboard.service" "${root}/systemd/executor-dashboard.service" "systemd:executor-dashboard.service"
   install_managed_file "${TMP_BUNDLE}/systemd/cloudflared.service" "${root}/systemd/cloudflared.service" "systemd:cloudflared.service"
   install_managed_file "${TMP_BUNDLE}/systemd-user/executor-desktop.service" "${root}/systemd-user/executor-desktop.service" "systemd-user:executor-desktop.service"
 
   "${SYSTEMCTL_BIN}" daemon-reload
-  "${SYSTEMCTL_BIN}" enable executor-agent.service executor-broker.service cloudflared.service
-  "${SYSTEMCTL_BIN}" restart executor-agent.service executor-broker.service cloudflared.service
+  "${SYSTEMCTL_BIN}" enable executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
+  "${SYSTEMCTL_BIN}" restart executor-agent.service executor-broker.service executor-dashboard.service cloudflared.service
   run_desktop_systemctl enable executor-desktop.service
   run_desktop_systemctl restart executor-desktop.service
 }
@@ -228,11 +246,12 @@ bootstrap_macos() {
   root="$1"
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.agent.plist" "${root}/LaunchDaemons/com.executor.agent.plist" "launchd-system:com.executor.agent"
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.broker.plist" "${root}/LaunchDaemons/com.executor.broker.plist" "launchd-system:com.executor.broker"
+  install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.executor.dashboard.plist" "${root}/LaunchDaemons/com.executor.dashboard.plist" "launchd-system:com.executor.dashboard"
   install_managed_file "${TMP_BUNDLE}/LaunchDaemons/com.cloudflare.cloudflared.plist" "${root}/LaunchDaemons/com.cloudflare.cloudflared.plist" "launchd-system:com.cloudflare.cloudflared"
   install_managed_file "${TMP_BUNDLE}/LaunchAgents/com.executor.desktop.plist" "${root}/LaunchAgents/com.executor.desktop.plist" "launchd-gui:com.executor.desktop"
 
   gui_uid="$(desktop_gui_uid_macos)"
-  for label in com.executor.agent com.executor.broker com.cloudflare.cloudflared; do
+  for label in com.executor.agent com.executor.broker com.executor.dashboard com.cloudflare.cloudflared; do
     "${LAUNCHCTL_BIN}" bootstrap system "${root}/LaunchDaemons/${label}.plist"
     "${LAUNCHCTL_BIN}" enable "system/${label}"
     "${LAUNCHCTL_BIN}" kickstart -k "system/${label}"
@@ -256,7 +275,10 @@ case "${TARGET}" in
     ;;
 esac
 
-setup_cmd=("${EXECUTOR_BIN}" setup --domain "${DOMAIN}")
+install_managed_executable "${BUNDLED_EXECUTOR_PATH}" "${EXECUTOR_INSTALL_BINARY_PATH}" "file"
+install_managed_executable "${BUNDLED_EXECUTOR_KILL_PATH}" "${EXECUTOR_KILL_INSTALL_BINARY_PATH}" "file"
+
+setup_cmd=("${EXECUTOR_INSTALL_BINARY_PATH}" setup --domain "${DOMAIN}")
 if [[ -n "${CLOUDFLARE_API_TOKEN_FILE}" ]]; then
   setup_cmd+=(--cloudflare-token-file "${CLOUDFLARE_API_TOKEN_FILE}")
 fi
@@ -281,10 +303,10 @@ case "${TARGET}" in
 esac
 
 TMP_BUNDLE="$("${MKTEMP_BIN}" -d)"
-"${EXECUTOR_BIN}" render-service-bundle \
+"${EXECUTOR_INSTALL_BINARY_PATH}" render-service-bundle \
   --target "${TARGET}" \
   --output "${TMP_BUNDLE}" \
-  --binary-path "${EXECUTOR_BIN}" \
+  --binary-path "${EXECUTOR_INSTALL_BINARY_PATH}" \
   --config-path "${CONFIG_PATH}" \
   --data-dir "${DATA_DIR}" \
   --log-path "${LOG_PATH}" \

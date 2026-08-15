@@ -124,6 +124,21 @@ func TestConfigPathUsesStateDir(t *testing.T) {
 	}
 }
 
+func TestBackendHonorsInstallerManagedPathsFromEnvironment(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "custom", "executor.json")
+	tokenPath := filepath.Join(t.TempDir(), "tunnel", "executor.token")
+	t.Setenv("EXECUTOR_CONFIG_PATH", configPath)
+	t.Setenv("CLOUDFLARED_TOKEN_PATH", tokenPath)
+
+	b := newBackend(t.TempDir())
+	if got := b.configPath(); got != configPath {
+		t.Fatalf("configPath = %q, want installer path %q", got, configPath)
+	}
+	if got := b.cloudflaredTokenPath(); got != tokenPath {
+		t.Fatalf("cloudflaredTokenPath = %q, want installer path %q", got, tokenPath)
+	}
+}
+
 func TestUnavailableErrorWrapsUnderlyingCause(t *testing.T) {
 	t.Parallel()
 

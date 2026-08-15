@@ -75,6 +75,7 @@ func targetTemplates(target Target) map[string]string {
 		return map[string]string{
 			"LaunchDaemons/com.executor.agent.plist":         "templates/macos-agent.plist.tmpl",
 			"LaunchDaemons/com.executor.broker.plist":        "templates/macos-broker.plist.tmpl",
+			"LaunchDaemons/com.executor.dashboard.plist":     "templates/macos-dashboard.plist.tmpl",
 			"LaunchAgents/com.executor.desktop.plist":        "templates/macos-desktop.plist.tmpl",
 			"LaunchDaemons/com.cloudflare.cloudflared.plist": "templates/macos-cloudflared.plist.tmpl",
 		}
@@ -82,6 +83,7 @@ func targetTemplates(target Target) map[string]string {
 		return map[string]string{
 			"systemd/executor-agent.service":        "templates/linux-agent.service.tmpl",
 			"systemd/executor-broker.service":       "templates/linux-broker.service.tmpl",
+			"systemd/executor-dashboard.service":    "templates/linux-dashboard.service.tmpl",
 			"systemd-user/executor-desktop.service": "templates/linux-desktop.service.tmpl",
 			"systemd/cloudflared.service":           "templates/linux-cloudflared.service.tmpl",
 		}

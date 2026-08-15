@@ -26,25 +26,36 @@ The packaging build never stores the Cloudflare API token in config. It persists
 The service bundle renderer produces:
 
 - macOS LaunchDaemons for `executor agent` and `executor broker`
+- macOS LaunchDaemon for `executor dashboard`
 - macOS LaunchAgent for `executor desktop`, loaded into the real console owner's `gui/<uid>` session rather than `gui/0`
 - macOS LaunchDaemon for `cloudflared` using `--token-file`
 - Linux systemd units for `agent` and `broker`
+- Linux systemd unit for `dashboard`
 - Linux user unit for `desktop`, enabled through the invoking desktop user with `XDG_RUNTIME_DIR`
 - Linux systemd unit for `cloudflared` using `--token-file`
-- Windows PowerShell scripts for Executor service install, per-user desktop startup, and `cloudflared` registry configuration with `--token-file`; the agent service uses a virtual service account instead of a persisted plaintext password
+- Windows PowerShell scripts for Executor service install, including `ExecutorDashboard` as a LocalSystem service, per-user desktop startup, and `cloudflared` registry configuration with `--token-file`; the agent service uses a virtual service account instead of a persisted plaintext password
 - WSL guidance that keeps desktop control on the Windows companion
+
+Release artifacts include both `executor` and `executor-kill`. The bootstrap scripts install those bundled binaries into stable locations before creating services or tasks:
+
+- Unix defaults: `/usr/local/bin/executor` and `/usr/local/bin/executor-kill`
+- Windows defaults: `<install-root>/executor.exe` and `<install-root>/executor-kill.exe`
+
+Service templates always point at the stable installed `executor` path, never at the temporary extracted archive location.
 
 ## Rollback
 
 - `scripts/bootstrap.sh` and `scripts/bootstrap.ps1` write a service manifest plus per-file backups under the state directory before replacing managed files or runtime startup entries.
+- The bootstrap scripts also back up and replace the stable `executor` and `executor-kill` binaries through the same manifest workflow, so rollback restores or removes them together with the service files.
 - Both bootstrap scripts require either a secure Cloudflare API token file for setup or a config that already contains completed Cloudflare deployment metadata. If that metadata is incomplete, they stop before installing or starting `cloudflared`.
-- `scripts/rollback.sh` and `scripts/rollback.ps1` stop managed services, restore backed up files when present, and remove files or services that were created by the current install.
-- The shell installer records whether the dedicated Unix service identity was created during the current install and removes it only in that case during rollback.
+- `scripts/bootstrap.sh` and `scripts/bootstrap.ps1` install and start the persistent local dashboard service together with agent, broker, desktop, and `cloudflared`.
+- `scripts/rollback.sh` and `scripts/rollback.ps1` stop managed services, including the persistent local dashboard service, restore backed up files when present, and remove files or services that were created by the current install.
+- The Unix packaging scripts do not create or delete a dedicated service identity; they bind the agent service to the real desktop owner account instead.
 - `scripts/uninstall.sh` and `scripts/uninstall.ps1` run rollback first, then remove the local deployment state directory.
 - The Go Cloudflare client deletes newly created DNS and tunnel resources in reverse order when a deployment step fails after creation, and removes any freshly written token file.
 
 ## GitHub Actions
 
 - `.github/workflows/go.yml` runs `go test ./...` on Linux, macOS, and Windows.
-- `scripts/build-release-artifacts.sh` cross-builds `executor` for `darwin`, `linux`, and `windows` on `amd64` and `arm64`, packages each install bundle, and writes `SHA256SUMS.txt`.
+- `scripts/build-release-artifacts.sh` cross-builds both `executor` and `executor-kill` for `darwin`, `linux`, and `windows` on `amd64` and `arm64`, packages each install bundle, and writes `SHA256SUMS.txt`.
 - `.github/workflows/release.yml` runs the build matrix, uploads per-target artifacts, and publishes consolidated checksums.

@@ -4,6 +4,8 @@ Executor is a self-hosted MCP server that gives an authenticated AI full termina
 
 The project is under active construction. Do not deploy it on a production machine yet.
 
+The packaging bundle currently installs persistent local services for `executor agent`, `executor broker`, `executor dashboard`, the active-user `executor desktop` helper, and `cloudflared`. Release artifacts also include the independent `executor-kill` emergency binary, and bootstrap installs both binaries into stable local paths before creating services.
+
 ## Intended workflow
 
 ```bash

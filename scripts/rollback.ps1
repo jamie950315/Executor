@@ -12,7 +12,7 @@ if (-not (Test-Path $ManifestPath)) {
   exit 0
 }
 
-foreach ($service in @("ExecutorAgent", "ExecutorBroker", "cloudflared")) {
+foreach ($service in @("ExecutorAgent", "ExecutorBroker", "ExecutorDashboard", "cloudflared")) {
   if (Get-Service -Name $service -ErrorAction SilentlyContinue) {
     try {
       Stop-Service -Name $service -Force -ErrorAction Stop

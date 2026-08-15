@@ -33,9 +33,12 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 - Architecture approved in conversation on 2026-08-15.
 - Repository initialized on branch `main`.
-- Config, private fallback secret store, metadata-only audit store, and authenticated localhost dashboard are implemented with tests.
-- MCP/OAuth, broker/terminal/desktop, and deployment/packaging are being implemented in parallel.
-- No service is deployed from this checkout yet.
+- Config, private fallback secret store, metadata-only audit store, OAuth 2.1 with CIMD/DCR, authenticated localhost dashboard, Streamable HTTP MCP, and local stdio MCP are implemented with tests.
+- Agent, privileged Broker, active-user Desktop helper, persistent terminal/filesystem/desktop tools, lifecycle control, independent Kill Switch, and Cloudflare named-Tunnel setup are implemented.
+- Release archives install stable `executor` and `executor-kill` binaries plus persistent Agent, Broker, Dashboard, Desktop, and cloudflared services with manifest-backed rollback.
+- macOS, Linux, and Windows amd64/arm64 builds are verified by cross-compilation. Windows service/Scheduled Task and Linux systemd/X11/Wayland behavior still require real target-machine runtime verification.
+- Live Cloudflare deployment is not verified because no deployment API token file or hostname has been supplied.
+- No system service has been installed from this checkout yet; macOS process-level end-to-end verification is the next local runtime gate.
 
 ## Runtime targets
 

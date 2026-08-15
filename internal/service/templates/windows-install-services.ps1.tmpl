@@ -10,5 +10,10 @@ if (-not (Get-Service -Name "ExecutorBroker" -ErrorAction SilentlyContinue)) {
   New-Service -Name "ExecutorBroker" -BinaryPathName "`"$Binary`" broker --config `"$Config`"" -DisplayName "Executor Broker" -StartupType Automatic
 }
 & sc.exe config ExecutorBroker obj= LocalSystem | Out-Null
+if (-not (Get-Service -Name "ExecutorDashboard" -ErrorAction SilentlyContinue)) {
+  New-Service -Name "ExecutorDashboard" -BinaryPathName "`"$Binary`" dashboard --config `"$Config`"" -DisplayName "Executor Dashboard" -StartupType Automatic
+}
+& sc.exe config ExecutorDashboard obj= LocalSystem | Out-Null
 Start-Service ExecutorAgent
 Start-Service ExecutorBroker
+Start-Service ExecutorDashboard

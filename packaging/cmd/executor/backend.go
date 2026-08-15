@@ -194,7 +194,17 @@ func (b *backend) EnableURLSecret(ctx context.Context) (string, error) {
 }
 
 func (b *backend) configPath() string {
+	if path := strings.TrimSpace(os.Getenv("EXECUTOR_CONFIG_PATH")); path != "" {
+		return path
+	}
 	return filepath.Join(b.stateDir, "config.json")
+}
+
+func (b *backend) cloudflaredTokenPath() string {
+	if path := strings.TrimSpace(os.Getenv("CLOUDFLARED_TOKEN_PATH")); path != "" {
+		return path
+	}
+	return defaultManagedCloudflaredTokenPath(b.stateDir)
 }
 
 func mcpURL(domain string) string {
@@ -239,7 +249,7 @@ func (b *backend) setupCloudflare(ctx context.Context, cfg *config.Config, optio
 	}
 	tokenFilePath := cfg.Cloudflare.TokenFilePath
 	if tokenFilePath == "" {
-		tokenFilePath = defaultManagedCloudflaredTokenPath(b.stateDir)
+		tokenFilePath = b.cloudflaredTokenPath()
 	}
 
 	result, err := client.Apply(ctx, cloudflare.DeploymentRequest{
