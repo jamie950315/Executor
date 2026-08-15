@@ -485,7 +485,8 @@ func (s *Server) negotiateProtocolVersion(params map[string]any) (string, error)
 func terminalToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action": enumProperty("string", "create", "write", "signal", "close"),
+			"action":    enumProperty("string", "create", "write", "signal", "close"),
+			"privilege": enumProperty("string", "owner", "admin"),
 			"sessionId": map[string]any{
 				"type": "string",
 			},
@@ -517,6 +518,7 @@ func terminalOutputToolSchema() map[string]any {
 			"sessionId": map[string]any{"type": "string"},
 			"cursor":    map[string]any{"type": "integer", "minimum": 0},
 			"limit":     map[string]any{"type": "integer", "minimum": 1},
+			"privilege": enumProperty("string", "owner", "admin"),
 		},
 		"sessionId",
 	)
@@ -525,7 +527,8 @@ func terminalOutputToolSchema() map[string]any {
 func terminalSessionsToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action": enumProperty("string", "list", "inspect"),
+			"action":    enumProperty("string", "list", "inspect"),
+			"privilege": enumProperty("string", "owner", "admin"),
 			"sessionId": map[string]any{
 				"type": "string",
 			},
@@ -537,10 +540,11 @@ func terminalSessionsToolSchema() map[string]any {
 func filesystemReadToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action": enumProperty("string", "read_file", "read_directory", "stat"),
-			"path":   map[string]any{"type": "string"},
-			"offset": map[string]any{"type": "integer", "minimum": 0},
-			"limit":  map[string]any{"type": "integer", "minimum": 1},
+			"action":    enumProperty("string", "read_file", "read_directory", "stat"),
+			"privilege": enumProperty("string", "owner", "admin"),
+			"path":      map[string]any{"type": "string"},
+			"offset":    map[string]any{"type": "integer", "minimum": 0},
+			"limit":     map[string]any{"type": "integer", "minimum": 1},
 		},
 		"action",
 		"path",
@@ -551,6 +555,7 @@ func filesystemWriteToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
 			"action":      enumProperty("string", "write_file", "append_file", "mkdir", "move", "delete"),
+			"privilege":   enumProperty("string", "owner", "admin"),
 			"path":        map[string]any{"type": "string"},
 			"destination": map[string]any{"type": "string"},
 			"content":     map[string]any{"type": "string"},

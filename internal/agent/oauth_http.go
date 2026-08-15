@@ -21,6 +21,7 @@ type oauthHandler struct {
 	resource       string
 	verifyRecovery RecoveryVerifier
 	cimdClient     *http.Client
+	statePath      string
 }
 
 type OAuthOption func(*oauthHandler)
@@ -30,6 +31,12 @@ func WithCIMDHTTPClient(client *http.Client) OAuthOption {
 		if client != nil {
 			handler.cimdClient = client
 		}
+	}
+}
+
+func WithOAuthStatePath(path string) OAuthOption {
+	return func(handler *oauthHandler) {
+		handler.statePath = path
 	}
 }
 
@@ -80,6 +87,10 @@ func (h *oauthHandler) register(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
+	if err := h.persist(); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "persist OAuth state")
+		return
+	}
 	writeJSON(w, http.StatusCreated, client)
 }
 
@@ -124,6 +135,10 @@ func (h *oauthHandler) authorize(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+		return
+	}
+	if err := h.persist(); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "persist OAuth state")
 		return
 	}
 	redirect, _ := url.Parse(r.Form.Get("redirect_uri"))
@@ -193,7 +208,10 @@ func (h *oauthHandler) resolveClientMetadata(ctx context.Context, clientID strin
 		RedirectURIs: document.RedirectURIs,
 		Scopes:       strings.Fields(document.Scope),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return h.persist()
 }
 
 func trustedCIMDHost(host string) bool {
@@ -232,7 +250,18 @@ func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 		return
 	}
+	if err := h.persist(); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "persist OAuth state")
+		return
+	}
 	writeJSON(w, http.StatusOK, tokens)
+}
+
+func (h *oauthHandler) persist() error {
+	if h.statePath == "" {
+		return nil
+	}
+	return h.core.SaveState(h.statePath)
 }
 
 type oauthRequestError struct{ message string }

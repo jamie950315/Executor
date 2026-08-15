@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +23,8 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 	core := testOAuthCore(t)
-	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" })
+	statePath := filepath.Join(t.TempDir(), "oauth-state.json")
+	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" }, WithOAuthStatePath(statePath))
 
 	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"} {
 		res := httptest.NewRecorder()
@@ -104,6 +107,19 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 	}
 	if _, err := core.VerifyAccessToken(tokens.AccessToken, oauth.VerifyOptions{Audience: "https://executor.example.com", Scope: "executor.full"}); err != nil {
 		t.Fatalf("VerifyAccessToken: %v", err)
+	}
+	info, err := os.Stat(statePath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("OAuth state mode = %v, err=%v", info, err)
+	}
+	restarted := testOAuthCore(t)
+	if err := restarted.LoadState(statePath); err != nil {
+		t.Fatalf("LoadState after HTTP mutations: %v", err)
+	}
+	if _, err := restarted.Refresh(oauth.TokenRefreshRequest{
+		ClientID: client.ClientID, RefreshToken: tokens.RefreshToken, Scopes: []string{"executor.full"},
+	}); err != nil {
+		t.Fatalf("refresh after restart: %v", err)
 	}
 }
 

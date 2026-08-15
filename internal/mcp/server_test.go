@@ -43,6 +43,24 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 	}
 }
 
+func TestPrivilegedToolsExposeOwnerAndAdminSelection(t *testing.T) {
+	t.Parallel()
+
+	for _, tool := range BuiltinTools() {
+		switch tool.Name {
+		case "terminal", "terminal_output", "terminal_sessions", "filesystem_read", "filesystem_write":
+			properties := tool.InputSchema["properties"].(map[string]any)
+			privilege, ok := properties["privilege"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool %q missing privilege selector", tool.Name)
+			}
+			if got := privilege["enum"]; !reflect.DeepEqual(got, []string{"owner", "admin"}) {
+				t.Fatalf("tool %q privilege enum = %#v", tool.Name, got)
+			}
+		}
+	}
+}
+
 func TestInitializeNegotiatesSupportedProtocolVersion(t *testing.T) {
 	t.Parallel()
 
