@@ -558,11 +558,22 @@ func (c *Core) SaveState(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	existing, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
 
 	tmpPath := path + ".tmp"
 	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
+	}
+	if existing != nil {
+		if err := preserveFileOwnership(file, existing); err != nil {
+			_ = file.Close()
+			_ = os.Remove(tmpPath)
+			return err
+		}
 	}
 
 	writeErr := func() error {
