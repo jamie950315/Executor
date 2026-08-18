@@ -23,7 +23,8 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 - Use test-driven development: add and run a failing test before production behavior.
 - Keep platform-specific code behind narrow interfaces and build tags.
-- Never log or commit secrets, tokens, recovery keys, command output, or Cloudflare credentials.
+- Never persist, log, commit, or publish secrets, tokens, recovery keys, command output, or Cloudflare credentials. The one explicit exception is delivering a newly generated recovery key directly to the requesting owner in the same private AI chat that performed the deployment or credential rotation.
+- When an AI agent runs setup, Kill, rotate, or another operation that generates a recovery key on the user's behalf, it MUST reproduce the complete recovery key verbatim in its final private-chat response. It MUST NOT redact, mask, omit, or tell the user to retrieve the key from a Terminal they did not operate. Clearly label the value as sensitive and shown once, and tell the user to save it immediately. This exception applies only to the recovery key and never permits writing it to repository files, configuration, persistent logs, Issues, pull requests, or public channels.
 - Secret input must use an interactive no-echo prompt or OS secret store.
 - Preserve unrelated host configuration and make setup idempotent with rollback.
 - README files are written in English.
@@ -43,6 +44,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Metadata-only audit events are now written for remote and stdio tool attempts/outcomes without command text, file content, or output.
 - OAuth DCR accepts standard metadata but restricts callback hosts to ChatGPT or loopback, and the consent page displays the requesting client and redirect destination. MCP stdio uses newline-delimited JSON; Streamable HTTP validates Origin and protocol headers.
 - OAuth authorization-server metadata now advertises the already-implemented CIMD resolver, allowing ChatGPT to prefer its stable client metadata document and avoid DCR when selected; DCR remains available for compatibility.
+- AI-managed deployment and credential-rotation instructions require the agent to return each newly generated recovery key verbatim in the requesting owner's private chat while keeping it out of files, logs, Git, and public collaboration surfaces.
 - Resume verifies that Broker, Desktop, and Agent loaded the rotated credentials before starting the tunnel or removing the disabled marker.
 - Linux/WSL units install under the standard systemd system/user directories. Darwin release jobs build on macOS with native CoreGraphics desktop input.
 - Linux terminal shutdown freezes and terminates the complete `/proc` descendant tree, including background jobs that util-linux `script` places in separate process groups; regression tests run on real Pi5 Linux in addition to macOS.

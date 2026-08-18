@@ -19,7 +19,7 @@ cd Executor
 
 Then ask your local coding agent to read `AGENTS.md` and deploy Executor on the current machine.
 
-After setup, Executor prints the domain, Streamable HTTP endpoint, local stdio command, one-time recovery key, and loopback-only Dashboard URL. Record the one-time values in a secure local password manager. The recovery key is retained only as a verifier; service credentials needed at runtime remain in the host's permission-restricted secret store.
+After setup, Executor prints the domain, Streamable HTTP endpoint, local stdio command, one-time recovery key, and loopback-only Dashboard URL. When a coding agent performs the deployment, it must copy the complete recovery key into its private response to the requesting owner instead of directing the owner to an unattended Terminal. The owner should save it immediately in a secure password manager. The key must not be written to repository files, configuration, persistent logs, issues, pull requests, or public channels. Executor retains only a verifier; service credentials needed at runtime remain in the host's permission-restricted secret store.
 
 ## Security model
 
