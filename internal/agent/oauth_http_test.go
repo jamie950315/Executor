@@ -42,8 +42,11 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 			if err := json.Unmarshal(res.Body.Bytes(), &metadata); err != nil {
 				t.Fatalf("decode authorization metadata: %v", err)
 			}
-			if metadata["client_id_metadata_document_supported"] != true {
-				t.Fatalf("CIMD support = %#v, want true", metadata["client_id_metadata_document_supported"])
+			if _, advertised := metadata["client_id_metadata_document_supported"]; advertised {
+				t.Fatalf("CIMD must be omitted while ChatGPT uses the DCR compatibility path: %#v", metadata)
+			}
+			if metadata["registration_endpoint"] == "" {
+				t.Fatalf("DCR registration endpoint missing: %#v", metadata)
 			}
 		}
 	}

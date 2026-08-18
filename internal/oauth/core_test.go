@@ -43,8 +43,11 @@ func TestMetadataAndDynamicClientRegistration(t *testing.T) {
 	if got := authz.ScopesSupported; len(got) != 1 || got[0] != "executor.full" {
 		t.Fatalf("authorization scopes = %#v, want [executor.full]", got)
 	}
-	if !authz.ClientIDMetadataDocumentSupported {
-		t.Fatal("authorization metadata does not advertise implemented CIMD support")
+	if authz.ClientIDMetadataDocumentSupported {
+		t.Fatal("authorization metadata advertises CIMD despite the ChatGPT callback compatibility fallback")
+	}
+	if authz.RegistrationEndpoint == "" {
+		t.Fatal("authorization metadata must advertise DCR registration endpoint")
 	}
 
 	resource := core.ProtectedResourceMetadata()

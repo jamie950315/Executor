@@ -58,7 +58,7 @@ type AuthorizationServerMetadata struct {
 	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
 	TokenEndpoint                     string   `json:"token_endpoint"`
 	RegistrationEndpoint              string   `json:"registration_endpoint"`
-	ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported"`
+	ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported,omitempty"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
 	GrantTypesSupported               []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
@@ -268,7 +268,7 @@ func (c *Core) AuthorizationServerMetadata() AuthorizationServerMetadata {
 		AuthorizationEndpoint:             c.authorizationURL,
 		TokenEndpoint:                     c.tokenURL,
 		RegistrationEndpoint:              c.registrationURL,
-		ClientIDMetadataDocumentSupported: true,
+		ClientIDMetadataDocumentSupported: false,
 		ResponseTypesSupported:            []string{"code"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
