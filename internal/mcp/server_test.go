@@ -13,6 +13,30 @@ import (
 	"testing"
 )
 
+type arrayJSONMarshaler struct{}
+
+func (arrayJSONMarshaler) MarshalJSON() ([]byte, error) {
+	return []byte(`[1,2]`), nil
+}
+
+type scalarJSONMarshaler struct{}
+
+func (scalarJSONMarshaler) MarshalJSON() ([]byte, error) {
+	return []byte(`"custom"`), nil
+}
+
+type statefulJSONMarshaler struct {
+	calls int
+}
+
+func (value *statefulJSONMarshaler) MarshalJSON() ([]byte, error) {
+	value.calls++
+	if value.calls == 1 {
+		return []byte(`[1]`), nil
+	}
+	return []byte(`"changed"`), nil
+}
+
 func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 	t.Parallel()
 
@@ -273,6 +297,119 @@ func TestStreamableHTTPInitializePingToolsAndNotifications(t *testing.T) {
 	}
 	if got := dispatched.Arguments["path"]; got != "/tmp/demo.txt" {
 		t.Fatalf("dispatcher path = %v, want /tmp/demo.txt", got)
+	}
+}
+
+func TestToolCallWrapsArrayResultInObjectStructuredContent(t *testing.T) {
+	t.Parallel()
+
+	server := NewServer(ServerConfig{
+		Dispatcher: func(_ context.Context, _ ToolCall) (any, error) {
+			return []any{
+				map[string]any{"app": "Finder", "title": "Desktop"},
+			}, nil
+		},
+	})
+
+	initialize := performHTTPRequest(t, server, "", rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "1",
+		Method:  "initialize",
+	})
+	sessionID := initialize.Header().Get(SessionHeader)
+	if sessionID == "" {
+		t.Fatal("initialize response missing session id header")
+	}
+
+	response := performHTTPRequest(t, server, sessionID, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "2",
+		Method:  "tools/call",
+		Params: map[string]any{
+			"name":      "desktop_observe",
+			"arguments": map[string]any{"action": "windows"},
+		},
+	})
+
+	var body rpcResponse
+	decodeJSON(t, response.Body.Bytes(), &body)
+	if body.Error != nil {
+		t.Fatalf("tools/call returned error: %#v", body.Error)
+	}
+
+	result := body.Result.(map[string]any)
+	structuredContent, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want object", result["structuredContent"])
+	}
+	want := map[string]any{
+		"items": []any{
+			map[string]any{"app": "Finder", "title": "Desktop"},
+		},
+	}
+	if !reflect.DeepEqual(structuredContent, want) {
+		t.Fatalf("structuredContent = %#v, want %#v", structuredContent, want)
+	}
+}
+
+func TestNormalizeStructuredContentUsesSerializedJSONShape(t *testing.T) {
+	t.Parallel()
+
+	type namedSlice []string
+	var nilMap map[string]any
+	var nilSlice []any
+	nilMapPointer := &nilMap
+	tests := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{name: "object remains unchanged", input: map[string]any{"ok": true}, want: `{"ok":true}`},
+		{name: "array uses items", input: []any{"one"}, want: `{"items":["one"]}`},
+		{name: "named slice uses items", input: namedSlice{"one"}, want: `{"items":["one"]}`},
+		{name: "scalar uses value", input: "one", want: `{"value":"one"}`},
+		{name: "nil uses empty object", input: nil, want: `{}`},
+		{name: "typed nil map uses empty object", input: nilMap, want: `{}`},
+		{name: "typed nil slice uses empty object", input: nilSlice, want: `{}`},
+		{name: "pointer to typed nil map uses empty object", input: nilMapPointer, want: `{}`},
+		{name: "custom array JSON uses items", input: arrayJSONMarshaler{}, want: `{"items":[1,2]}`},
+		{name: "custom scalar JSON uses value", input: scalarJSONMarshaler{}, want: `{"value":"custom"}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized, err := normalizeStructuredContent(test.input)
+			if err != nil {
+				t.Fatalf("normalizeStructuredContent() error = %v", err)
+			}
+			encoded, err := json.Marshal(normalized)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			if got := string(encoded); got != test.want {
+				t.Fatalf("normalizeStructuredContent() JSON = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeStructuredContentReusesValidatedJSON(t *testing.T) {
+	t.Parallel()
+
+	input := &statefulJSONMarshaler{}
+	normalized, err := normalizeStructuredContent(input)
+	if err != nil {
+		t.Fatalf("normalizeStructuredContent() error = %v", err)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if got, want := string(encoded), `{"items":[1]}`; got != want {
+		t.Fatalf("normalized JSON = %s, want %s", got, want)
+	}
+	if input.calls != 1 {
+		t.Fatalf("MarshalJSON() calls = %d, want 1", input.calls)
 	}
 }
 

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -386,19 +387,49 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		if err != nil {
 			return errorResponse(request.ID, errCodeToolFailure, err.Error()), http.StatusInternalServerError, sessionID
 		}
+		structuredContent, err := normalizeStructuredContent(result)
+		if err != nil {
+			return errorResponse(request.ID, errCodeToolFailure, "tool result is not valid JSON"), http.StatusInternalServerError, sessionID
+		}
 
 		return &rpcResponse{
 			JSONRPC: "2.0",
 			ID:      request.ID,
 			Result: map[string]any{
 				"toolName":          name,
-				"structuredContent": result,
+				"structuredContent": structuredContent,
 				"content":           []any{},
 				"isError":           false,
 			},
 		}, http.StatusOK, sessionID
 	default:
 		return errorResponse(request.ID, -32601, "method not found"), http.StatusNotFound, sessionID
+	}
+}
+
+func normalizeStructuredContent(result any) (any, error) {
+	if result == nil {
+		return map[string]any{}, nil
+	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	encoded = bytes.TrimSpace(encoded)
+	if len(encoded) == 0 {
+		return nil, errors.New("empty JSON result")
+	}
+
+	switch encoded[0] {
+	case '{':
+		return json.RawMessage(encoded), nil
+	case '[':
+		return map[string]any{"items": json.RawMessage(encoded)}, nil
+	case 'n':
+		return map[string]any{}, nil
+	default:
+		return map[string]any{"value": json.RawMessage(encoded)}, nil
 	}
 }
 
