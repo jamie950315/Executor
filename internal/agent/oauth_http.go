@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -121,6 +120,7 @@ func (h *oauthHandler) authorizePage(w http.ResponseWriter, r *http.Request) {
 		"State":               values.Get("state"),
 		"CodeChallenge":       values.Get("code_challenge"),
 		"CodeChallengeMethod": values.Get("code_challenge_method"),
+		"Resource":            h.resource,
 	})
 }
 
@@ -186,6 +186,9 @@ func (h *oauthHandler) validateAuthorize(ctx context.Context, values url.Values)
 	if values.Get("code_challenge_method") != "S256" || values.Get("code_challenge") == "" {
 		return &oauthRequestError{"PKCE S256 is required"}
 	}
+	if resource := values.Get("resource"); resource != "" && resource != h.resource {
+		return &oauthRequestError{"resource does not match this Executor"}
+	}
 	clientID := values.Get("client_id")
 	if err := h.core.ValidateClient(oauth.ClientValidationRequest{ClientID: clientID}); err != nil {
 		if err := h.resolveClientMetadata(ctx, clientID); err != nil {
@@ -196,41 +199,25 @@ func (h *oauthHandler) validateAuthorize(ctx context.Context, values url.Values)
 }
 
 type clientMetadataDocument struct {
-	ClientName   string   `json:"client_name"`
-	RedirectURIs []string `json:"redirect_uris"`
-	Scope        string   `json:"scope"`
+	ClientID                    string   `json:"client_id"`
+	ClientName                  string   `json:"client_name"`
+	RedirectURIs                []string `json:"redirect_uris"`
+	Scope                       string   `json:"scope"`
+	TokenEndpointAuthMethod     string   `json:"token_endpoint_auth_method"`
+	TokenEndpointAuthMethods    []string `json:"token_endpoint_auth_methods_supported"`
+	TokenEndpointAuthSigningAlg string   `json:"token_endpoint_auth_signing_alg"`
+	JWKSURI                     string   `json:"jwks_uri"`
 }
 
 func (h *oauthHandler) resolveClientMetadata(ctx context.Context, clientID string) error {
-	parsed, err := url.Parse(clientID)
-	if err != nil || parsed.Scheme != "https" || !trustedCIMDHost(parsed.Hostname()) {
-		return fmt.Errorf("untrusted client metadata URL")
-	}
-	client := *h.cimdClient
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 || req.URL.Scheme != "https" || !trustedCIMDHost(req.URL.Hostname()) {
-			return fmt.Errorf("untrusted client metadata redirect")
-		}
-		return nil
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
-	if err != nil {
-		return err
-	}
-	response, err := client.Do(req)
-	if err != nil {
+	var document clientMetadataDocument
+	if err := h.fetchTrustedChatGPTJSON(ctx, clientID, &document); err != nil {
 		return fmt.Errorf("fetch client metadata: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("client metadata returned %s", response.Status)
+	if document.ClientID != "" && document.ClientID != clientID {
+		return fmt.Errorf("client metadata identifier mismatch")
 	}
-	var document clientMetadataDocument
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
-	if err := decoder.Decode(&document); err != nil {
-		return fmt.Errorf("decode client metadata: %w", err)
-	}
-	_, err = h.core.RegisterClientIDURL(oauth.ClientIDURLRegistrationRequest{
+	_, err := h.core.RegisterClientIDURL(oauth.ClientIDURLRegistrationRequest{
 		ClientIDURL:  clientID,
 		ClientName:   document.ClientName,
 		RedirectURIs: document.RedirectURIs,
@@ -252,21 +239,30 @@ func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	clientID, err := h.authenticateTokenClient(r.Context(), r.Form)
+	if err != nil {
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", err.Error())
+		return
+	}
+	if resource := r.Form.Get("resource"); resource != "" && resource != h.resource {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource does not match this Executor")
+		return
+	}
 	var (
-		tokens oauth.TokenSet
-		err    error
+		tokens   oauth.TokenSet
+		tokenErr error
 	)
 	switch r.Form.Get("grant_type") {
 	case "authorization_code":
-		tokens, err = h.core.ExchangeCode(oauth.TokenRequest{
-			ClientID:     r.Form.Get("client_id"),
+		tokens, tokenErr = h.core.ExchangeCode(oauth.TokenRequest{
+			ClientID:     clientID,
 			Code:         r.Form.Get("code"),
 			RedirectURI:  r.Form.Get("redirect_uri"),
 			CodeVerifier: r.Form.Get("code_verifier"),
 		})
 	case "refresh_token":
-		tokens, err = h.core.Refresh(oauth.TokenRefreshRequest{
-			ClientID:     r.Form.Get("client_id"),
+		tokens, tokenErr = h.core.Refresh(oauth.TokenRefreshRequest{
+			ClientID:     clientID,
 			RefreshToken: r.Form.Get("refresh_token"),
 			Scopes:       strings.Fields(r.Form.Get("scope")),
 		})
@@ -274,8 +270,8 @@ func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "grant type is not supported")
 		return
 	}
-	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+	if tokenErr != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", tokenErr.Error())
 		return
 	}
 	if err := h.persist(); err != nil {
@@ -306,4 +302,4 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-var authorizeTemplate = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Executor</title><style>body{margin:0;background:#11120f;color:#e8e2d5;font-family:ui-monospace,monospace;display:grid;place-items:center;min-height:100vh}.card{width:min(560px,calc(100% - 40px));border:1px solid #d7ff45;padding:32px}.eyebrow{color:#d7ff45;text-transform:uppercase;letter-spacing:.16em;font-size:12px}h1{font:900 52px/1 sans-serif;margin:14px 0}p{color:#b3b0a7;line-height:1.6}code,strong{color:#fff;overflow-wrap:anywhere}input{width:100%;box-sizing:border-box;padding:14px;background:#1d1e19;border:1px solid #55564e;color:#fff;font:inherit}button{margin-top:14px;width:100%;padding:15px;border:0;background:#d7ff45;color:#11120f;font:900 13px ui-monospace,monospace;text-transform:uppercase;cursor:pointer}.warning{border-left:3px solid #ff4d2e;padding-left:14px}</style></head><body><form class="card" method="post" action="/oauth/authorize"><div class="eyebrow">Sovereign machine control</div><h1>Executor</h1><p class="warning">This grants unrestricted terminal, filesystem, administrator, and active-desktop control of this machine. Approve only if you initiated this connection.</p><p>Requesting client: <strong>{{.ClientName}}</strong><br>Redirect destination: <code>{{.RedirectURI}}</code></p><p>Enter the recovery key shown locally during setup to approve this connection.</p><input type="password" name="recovery_key" autocomplete="off" required autofocus><input type="hidden" name="response_type" value="code"><input type="hidden" name="client_id" value="{{.ClientID}}"><input type="hidden" name="redirect_uri" value="{{.RedirectURI}}"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="state" value="{{.State}}"><input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"><input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}"><button type="submit">Authorize full control</button></form></body></html>`))
+var authorizeTemplate = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Executor</title><style>body{margin:0;background:#11120f;color:#e8e2d5;font-family:ui-monospace,monospace;display:grid;place-items:center;min-height:100vh}.card{width:min(560px,calc(100% - 40px));border:1px solid #d7ff45;padding:32px}.eyebrow{color:#d7ff45;text-transform:uppercase;letter-spacing:.16em;font-size:12px}h1{font:900 52px/1 sans-serif;margin:14px 0}p{color:#b3b0a7;line-height:1.6}code,strong{color:#fff;overflow-wrap:anywhere}input{width:100%;box-sizing:border-box;padding:14px;background:#1d1e19;border:1px solid #55564e;color:#fff;font:inherit}.authorize-submit{margin-top:14px;width:100%;padding:15px;border:0;background:#d7ff45;color:#11120f;font:900 13px ui-monospace,monospace;text-transform:uppercase;cursor:pointer;touch-action:manipulation;-webkit-appearance:none}.warning{border-left:3px solid #ff4d2e;padding-left:14px}</style></head><body><form class="card" method="post" action="/oauth/authorize"><div class="eyebrow">Sovereign machine control</div><h1>Executor</h1><p class="warning">This grants unrestricted terminal, filesystem, administrator, and active-desktop control of this machine. Approve only if you initiated this connection.</p><p>Requesting client: <strong>{{.ClientName}}</strong><br>Redirect destination: <code>{{.RedirectURI}}</code></p><p>Enter the recovery key shown locally during setup to approve this connection.</p><input type="password" name="recovery_key" autocomplete="off" required autofocus><input type="hidden" name="response_type" value="code"><input type="hidden" name="client_id" value="{{.ClientID}}"><input type="hidden" name="redirect_uri" value="{{.RedirectURI}}"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="state" value="{{.State}}"><input type="hidden" name="code_challenge" value="{{.CodeChallenge}}"><input type="hidden" name="code_challenge_method" value="{{.CodeChallengeMethod}}"><input type="hidden" name="resource" value="{{.Resource}}"><input class="authorize-submit" type="submit" value="Authorize full control"></form></body></html>`))

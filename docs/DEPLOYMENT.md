@@ -51,7 +51,7 @@ Setup reports the remote Streamable HTTP endpoint and local `executor stdio` com
 
 If an AI agent performs setup, Kill, rotation, or another action that generates a recovery key, the agent must reproduce that recovery key verbatim in its final private response to the requesting owner. It must not redact the key or direct the owner to an unattended Terminal. The response must identify the key as sensitive and shown once, and instruct the owner to save it immediately. This delivery exception does not allow the key to be stored in files, configuration, persistent logs, issues, pull requests, or public channels.
 
-OAuth authorization metadata advertises CIMD support so ChatGPT can use its stable HTTPS client metadata document without creating a new client through DCR. DCR remains available as a compatibility path. The token endpoint accepts the public-client `none` method with PKCE, which intersects with ChatGPT's published CIMD methods.
+OAuth authorization metadata advertises CIMD support so ChatGPT can use its stable HTTPS client metadata document without creating a new client through DCR. DCR remains available as a compatibility path. The token endpoint accepts both public-client `none` with PKCE and ChatGPT's preferred `private_key_jwt` method with RS256 verification against the JWKS published by the trusted ChatGPT CIMD origin.
 
 Service templates always point at the stable installed `executor` path, never at the temporary extracted archive location.
 

@@ -63,6 +63,7 @@ type AuthorizationServerMetadata struct {
 	GrantTypesSupported               []string `json:"grant_types_supported"`
 	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
 	TokenEndpointAuthMethods          []string `json:"token_endpoint_auth_methods_supported"`
+	TokenEndpointAuthSigningAlgs      []string `json:"token_endpoint_auth_signing_alg_values_supported"`
 	ScopesSupported                   []string `json:"scopes_supported"`
 }
 
@@ -271,7 +272,8 @@ func (c *Core) AuthorizationServerMetadata() AuthorizationServerMetadata {
 		ResponseTypesSupported:            []string{"code"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
 		CodeChallengeMethodsSupported:     []string{"S256"},
-		TokenEndpointAuthMethods:          []string{"none"},
+		TokenEndpointAuthMethods:          []string{"none", "private_key_jwt"},
+		TokenEndpointAuthSigningAlgs:      []string{"RS256"},
 		ScopesSupported:                   []string{"executor.full"},
 	}
 }

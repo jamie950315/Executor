@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +135,162 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("refresh after restart: %v", err)
 	}
+}
+
+func TestOAuthAuthorizationMetadataAdvertisesChatGPTPrivateKeyJWT(t *testing.T) {
+	h := NewOAuthHandler(testOAuthCore(t), "https://executor.example.com", func(string) bool { return true })
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+
+	var metadata struct {
+		Methods []string `json:"token_endpoint_auth_methods_supported"`
+		Algs    []string `json:"token_endpoint_auth_signing_alg_values_supported"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &metadata); err != nil {
+		t.Fatalf("decode authorization metadata: %v", err)
+	}
+	if !containsString(metadata.Methods, "private_key_jwt") {
+		t.Fatalf("token endpoint methods = %v, want private_key_jwt", metadata.Methods)
+	}
+	if !containsString(metadata.Algs, "RS256") {
+		t.Fatalf("token endpoint signing algorithms = %v, want RS256", metadata.Algs)
+	}
+}
+
+func TestOAuthAuthorizePageUsesMobileReliableSubmitControl(t *testing.T) {
+	core := testOAuthCore(t)
+	client, err := core.RegisterClient(oauth.DynamicClientRegistrationRequest{
+		ClientName:   "ChatGPT",
+		RedirectURIs: []string{"https://chatgpt.com/connector/oauth/test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := testAuthorizeValues(client.ClientID, client.RedirectURIs[0])
+	response := httptest.NewRecorder()
+	NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true }).ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil),
+	)
+
+	body := response.Body.String()
+	if !strings.Contains(body, `<input class="authorize-submit" type="submit" value="Authorize full control">`) {
+		t.Fatalf("authorize page does not use a native submit input: %s", body)
+	}
+}
+
+func TestOAuthHTTPAcceptsChatGPTPrivateKeyJWTWithoutSeparateClientID(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID := "https://chatgpt.com/oauth/test/client.json"
+	redirectURI := "https://chatgpt.com/connector/oauth/test"
+	jwksURI := "https://chatgpt.com/oauth/jwks.json"
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var body string
+		switch request.URL.String() {
+		case clientID:
+			body = `{"client_id":"` + clientID + `","client_name":"ChatGPT","redirect_uris":["` + redirectURI + `"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"token_endpoint_auth_signing_alg":"RS256","jwks_uri":"` + jwksURI + `"}`
+		case jwksURI:
+			body = testRSAJWKS(&privateKey.PublicKey, "chatgpt-test-key")
+		default:
+			t.Fatalf("unexpected outbound OAuth request: %s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	core := testOAuthCore(t)
+	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" }, WithCIMDHTTPClient(client))
+	values := testAuthorizeValues(clientID, redirectURI)
+
+	page := httptest.NewRecorder()
+	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("authorize page status=%d body=%q", page.Code, page.Body.String())
+	}
+	values.Set("recovery_key", "recovery-key")
+	authorized := httptest.NewRecorder()
+	authorizeRequest := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(values.Encode()))
+	authorizeRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(authorized, authorizeRequest)
+	location, err := url.Parse(authorized.Header().Get("Location"))
+	if err != nil || location.Query().Get("code") == "" {
+		t.Fatalf("authorize location=%q err=%v", authorized.Header().Get("Location"), err)
+	}
+
+	assertion := testPrivateKeyJWT(t, privateKey, "chatgpt-test-key", clientID, "https://executor.example.com/oauth/token", time.Now())
+	tokenForm := url.Values{
+		"grant_type":            {"authorization_code"},
+		"code":                  {location.Query().Get("code")},
+		"redirect_uri":          {redirectURI},
+		"code_verifier":         {strings.Repeat("v", 48)},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		"client_assertion":      {assertion},
+	}
+	tokenRequest := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
+	tokenRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenResponse := httptest.NewRecorder()
+	h.ServeHTTP(tokenResponse, tokenRequest)
+	if tokenResponse.Code != http.StatusOK {
+		t.Fatalf("private_key_jwt token status=%d body=%q", tokenResponse.Code, tokenResponse.Body.String())
+	}
+}
+
+func testAuthorizeValues(clientID, redirectURI string) url.Values {
+	verifier := strings.Repeat("v", 48)
+	sum := sha256.Sum256([]byte(verifier))
+	return url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {redirectURI},
+		"scope":                 {"executor.full"},
+		"state":                 {"chatgpt-state"},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
+		"code_challenge_method": {"S256"},
+		"resource":              {"https://executor.example.com"},
+	}
+}
+
+func testRSAJWKS(publicKey *rsa.PublicKey, keyID string) string {
+	exponent := make([]byte, 4)
+	exponent[0] = byte(publicKey.E >> 24)
+	exponent[1] = byte(publicKey.E >> 16)
+	exponent[2] = byte(publicKey.E >> 8)
+	exponent[3] = byte(publicKey.E)
+	for len(exponent) > 1 && exponent[0] == 0 {
+		exponent = exponent[1:]
+	}
+	payload, _ := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"kty": "RSA", "use": "sig", "alg": "RS256", "kid": keyID,
+		"n": base64.RawURLEncoding.EncodeToString(publicKey.N.Bytes()),
+		"e": base64.RawURLEncoding.EncodeToString(exponent),
+	}}})
+	return string(payload)
+}
+
+func testPrivateKeyJWT(t *testing.T, privateKey *rsa.PrivateKey, keyID, clientID, audience string, now time.Time) string {
+	t.Helper()
+	header, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": keyID, "typ": "JWT"})
+	claims, _ := json.Marshal(map[string]any{
+		"iss": clientID, "sub": clientID, "aud": audience,
+		"iat": now.Unix(), "exp": now.Add(time.Minute).Unix(), "jti": "assertion-" + strconv.FormatInt(now.UnixNano(), 10),
+	})
+	message := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	digest := sha256.Sum256([]byte(message))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return message + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOAuthHTTPRejectsDCRRedirectOutsideChatGPTOrLoopback(t *testing.T) {
