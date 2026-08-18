@@ -31,6 +31,7 @@ func TestPackagingScaffoldExists(t *testing.T) {
 		filepath.Join(root, "packaging", "cmd", "executor", "main.go"),
 		filepath.Join(root, "cmd", "executor-kill", "main.go"),
 		filepath.Join(root, "docs", "DEPLOYMENT.md"),
+		filepath.Join(root, "docs", "TROUBLESHOOTING.md"),
 	}
 	for _, path := range checks {
 		if _, err := os.Stat(path); err != nil {
@@ -76,10 +77,10 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	}
 
 	linuxEntries := readTarEntries(t, filepath.Join(outDir, "executor_linux_amd64.tar.gz"))
-	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md", "THIRD_PARTY_NOTICES.md")
+	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
 
 	windowsEntries := readZipEntries(t, filepath.Join(outDir, "executor_windows_amd64.zip"))
-	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "docs/DEPLOYMENT.md", "THIRD_PARTY_NOTICES.md")
+	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
 
 	sums := string(mustReadFile(t, filepath.Join(outDir, "SHA256SUMS.txt")))
 	if strings.Contains(sums, outDir) {

@@ -53,6 +53,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Linux terminal shutdown freezes and terminates the complete `/proc` descendant tree, including background jobs that util-linux `script` places in separate process groups; regression tests run on real Pi5 Linux in addition to macOS.
 - Windows terminal sessions use the native ConPTY API with persistent input/output, case-insensitive environment overrides, cwd preservation, live resize, and bounded process-tree teardown through a kill-on-close Job Object. Real Windows amd64 tests verify PowerShell state, LF command input, resize, inherited Ctrl+C recovery, no-parent-console startup, child-process termination, Windows Service execution, and the active-user Desktop Scheduled Task.
 - Setup preserves the preferred loopback ports when available and automatically persists free loopback ports when another process owns them. Agent and Dashboard status/doctor probes require the authenticated Executor health marker instead of treating any listener as healthy.
+- `executor doctor --full` verifies that the public hostname reaches Executor's DCR endpoint with a deliberately invalid, non-registering request and reports an actionable Cloudflare Bot Fight Mode/WAF diagnosis for HTTP 403 responses.
 - Installed services are active and healthy on the Pi5, this Mac, Windows `ctps`, and its Debian WSL instance. macOS service rendering uses the native `wheel` administrator group, and Unix credential rotation preserves the installed secret store owner and mode.
 
 ## Runtime targets

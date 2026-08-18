@@ -219,6 +219,89 @@ func TestDoctorReportsOfflineRuntime(t *testing.T) {
 	}
 }
 
+func TestRemoteOAuthRegistrationCheckAcceptsExecutorValidationResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/oauth/register" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error": "invalid_client_metadata"}`))
+	}))
+	defer server.Close()
+
+	check := remoteOAuthRegistrationCheck{baseURL: server.URL, client: server.Client()}
+	detail, err := check.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(detail, "DCR reachable") {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
+func TestRemoteOAuthRegistrationCheckExplainsCloudflareBlock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Forbidden"))
+	}))
+	defer server.Close()
+
+	check := remoteOAuthRegistrationCheck{baseURL: server.URL, client: server.Client()}
+	_, err := check.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Security > Analytics > Events") || !strings.Contains(err.Error(), "Bot Fight Mode") {
+		t.Fatalf("err = %v, want actionable Cloudflare edge-policy diagnosis", err)
+	}
+}
+
+func TestDoctorFullChecksPublicOAuthRegistrationWithInvalidMetadata(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPost || r.URL.Path != "/oauth/register" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_client_metadata"}`))
+	}))
+	defer server.Close()
+
+	b := newBackend(t.TempDir())
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	b.remoteBaseURL = func(string) string { return server.URL }
+	b.remoteHTTPClient = server.Client()
+
+	if _, err := b.Doctor(context.Background(), false); err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("normal doctor made %d remote requests, want 0", requests)
+	}
+	result, err := b.Doctor(context.Background(), true)
+	if err != nil {
+		t.Fatalf("Doctor full: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("full doctor made %d remote requests, want 1", requests)
+	}
+	found := false
+	for _, check := range result.Checks {
+		if check.Name == "remote OAuth DCR" {
+			found = true
+			if !check.OK || !strings.Contains(check.Detail, "DCR reachable") {
+				t.Fatalf("remote DCR check = %#v", check)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("full doctor omitted remote OAuth DCR check: %#v", result.Checks)
+	}
+}
+
 func TestStatusRejectsForeignServiceOnAgentPort(t *testing.T) {
 	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

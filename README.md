@@ -10,6 +10,8 @@ Supported MCP transports are remote Streamable HTTP at `https://<domain>/mcp` an
 
 Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Registration (DCR) for current ChatGPT compatibility and retains implemented support for Client ID Metadata Documents (CIMD), public-client `none`, and ChatGPT-signed `private_key_jwt` token exchange.
 
+Before linking ChatGPT, run `executor doctor --full`. The full check sends an invalid, non-registering request through the public hostname to confirm that Cloudflare allows ChatGPT's DCR request to reach Executor. Cloudflare Bot Fight Mode can challenge API traffic and cannot be bypassed with a WAF custom rule; disable Bot Fight Mode for the zone or use Super Bot Fight Mode with an OAuth-path skip rule. See [Troubleshooting](docs/TROUBLESHOOTING.md) for the verified failure signatures and recovery steps.
+
 ## Intended workflow
 
 ```bash
@@ -20,6 +22,8 @@ cd Executor
 Then ask your local coding agent to read `AGENTS.md` and deploy Executor on the current machine.
 
 After setup, Executor prints the domain, Streamable HTTP endpoint, local stdio command, one-time recovery key, and loopback-only Dashboard URL. When a coding agent performs the deployment, it must copy the complete recovery key into its private response to the requesting owner instead of directing the owner to an unattended Terminal. The owner should save it immediately in a secure password manager. The key must not be written to repository files, configuration, persistent logs, issues, pull requests, or public channels. Executor retains only a verifier; service credentials needed at runtime remain in the host's permission-restricted secret store.
+
+Every Kill or credential rotation creates a new one-time recovery key and immediately invalidates the previous key. Keep keys labeled by hostname when managing multiple Executor machines.
 
 ## Security model
 

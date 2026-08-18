@@ -23,6 +23,20 @@ The packaging build never stores the Cloudflare API token in config. It persists
 
 Executor runs its remotely managed tunnel through an isolated service: `com.executor.cloudflared` on macOS, `executor-cloudflared.service` on Linux/WSL, and `ExecutorCloudflared` on Windows. Normal bootstrap, rollback, Resume, and Kill Switch operations manage only that service. A one-time upgrade migration may stop a generic `cloudflared` service only when an earlier Executor manifest, ownership record, or Executor-created ImagePath backup proves that Executor previously created or replaced it; unrelated host services remain untouched, and restored host services return to their prior running state.
 
+### Cloudflare edge protection and OAuth
+
+ChatGPT's DCR and token requests are API traffic. Cloudflare Bot Fight Mode may challenge or reject that traffic before it reaches Executor. Cloudflare documents that Bot Fight Mode applies across the entire zone and cannot be bypassed with WAF Skip, Bypass, Allow, or Page Rules. Use one of these supported configurations:
+
+- Disable Bot Fight Mode for the zone. On a shared zone, this changes protection for every hostname in that zone.
+- Use Super Bot Fight Mode and create a narrowly scoped Skip rule for the Executor hostname and OAuth/MCP paths.
+- Use a dedicated Cloudflare zone for Executor if the shared zone must retain Bot Fight Mode.
+
+Do not treat a browser-visible Cloudflare challenge or a public `POST /oauth/register` HTTP 403 as an Executor recovery-key failure. Run `executor doctor --full` after the tunnel is live. Its `remote OAuth DCR` check posts an intentionally invalid empty registration document. A healthy public route returns Executor's `invalid_client_metadata` response without creating an OAuth client. For HTTP 403, inspect Cloudflare Security > Analytics > Events to identify the matching service. Disable Bot Fight Mode or replace it with Super Bot Fight Mode plus a Skip rule only when the event identifies Bot Fight Mode; otherwise adjust the matching Access or WAF policy.
+
+Relevant paths are `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, and `/mcp`. Keep OAuth, PKCE, recovery-key consent, and bearer-token enforcement enabled even when edge bot protection is skipped.
+
+Cloudflare reference: [Bot Fight Mode limitations](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/). OpenAI reference: [MCP authentication](https://developers.openai.com/plugins/build/auth).
+
 ## Service Templates
 
 The service bundle renderer produces:
@@ -53,6 +67,8 @@ If an AI agent performs setup, Kill, rotation, or another action that generates 
 
 OAuth authorization metadata currently directs ChatGPT through Dynamic Client Registration (DCR), because repeated real ChatGPT web callback attempts stopped before token exchange when CIMD was advertised. The CIMD resolver remains implemented but is not advertised until that callback path is interoperable. The token endpoint accepts both public-client `none` with PKCE and ChatGPT's `private_key_jwt` method with RS256 verification against the JWKS published by the trusted ChatGPT CIMD origin.
 
+The authorization form uses a native HTML submit input for mobile Safari reliability and preserves ChatGPT's `resource` parameter through authorization and token exchange. An `authorization denied` response is generated only when the submitted recovery key does not match the current verifier. Because every Kill or rotation invalidates the previous key immediately, always use the newest key for the exact hostname being linked.
+
 Service templates always point at the stable installed `executor` path, never at the temporary extracted archive location.
 
 ## Rollback
@@ -70,6 +86,7 @@ Service templates always point at the stable installed `executor` path, never at
 
 - `.github/workflows/go.yml` runs `go test ./...` on Linux, macOS, and Windows.
 - `scripts/build-release-artifacts.sh` cross-builds both `executor` and `executor-kill` for `darwin`, `linux`, and `windows` on `amd64` and `arm64`, packages each install bundle, and writes `SHA256SUMS.txt`.
+- OAuth, recovery-key, and remote DCR diagnostics live in OS-neutral Go packages. The test suite exercises the same implementation used by every target, while the release build verifies that it compiles into all six platform/architecture archives.
 - Darwin release jobs run on macOS with CGO enabled so desktop input uses native CoreGraphics rather than the no-CGO Swift fallback.
 - `.github/workflows/release.yml` runs the build matrix, uploads per-target artifacts, and publishes consolidated checksums.
 

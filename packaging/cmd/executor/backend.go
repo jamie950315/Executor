@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -25,9 +27,11 @@ import (
 )
 
 type backend struct {
-	stateDir      string
-	loadControl   func(string) (controlRuntime, error)
-	defaultConfig func(string) config.Config
+	stateDir         string
+	loadControl      func(string) (controlRuntime, error)
+	defaultConfig    func(string) config.Config
+	remoteBaseURL    func(string) string
+	remoteHTTPClient *http.Client
 }
 
 type controlRuntime interface {
@@ -42,6 +46,7 @@ func newBackend(stateDir string) *backend {
 		stateDir:      stateDir,
 		loadControl:   func(path string) (controlRuntime, error) { return control.Load(path) },
 		defaultConfig: config.Default,
+		remoteBaseURL: func(domain string) string { return "https://" + domain },
 	}
 }
 
@@ -172,7 +177,7 @@ func (b *backend) Rotate(ctx context.Context) (cli.RotateResult, error) {
 	return rotated, nil
 }
 
-func (b *backend) Doctor(ctx context.Context, _ bool) (cli.DoctorResult, error) {
+func (b *backend) Doctor(ctx context.Context, full bool) (cli.DoctorResult, error) {
 	status, statusErr := b.Status(ctx)
 	checkers := []doctor.Checker{
 		fileCheck{name: "config", path: b.configPath()},
@@ -182,6 +187,19 @@ func (b *backend) Doctor(ctx context.Context, _ bool) (cli.DoctorResult, error) 
 		staticFailureCheck{name: "desktop", err: onlineError(status.Desktop, nil)},
 		staticFailureCheck{name: "dashboard", err: onlineError(status.Dashboard, nil)},
 		staticFailureCheck{name: "tunnel", err: configuredError(status.Tunnel)},
+	}
+	if full {
+		cfg, err := config.Load(b.configPath())
+		if err != nil {
+			checkers = append(checkers, staticFailureCheck{name: "remote OAuth DCR", err: err})
+		} else if strings.TrimSpace(cfg.Domain) == "" {
+			checkers = append(checkers, staticFailureCheck{name: "remote OAuth DCR", err: errors.New("domain is not configured")})
+		} else {
+			checkers = append(checkers, remoteOAuthRegistrationCheck{
+				baseURL: b.remoteBaseURL(cfg.Domain),
+				client:  b.remoteHTTPClient,
+			})
+		}
 	}
 	result := doctor.Run(ctx, checkers)
 	out := cli.DoctorResult{Healthy: result.Healthy, Checks: make([]cli.Check, 0, len(result.Checks))}
@@ -408,6 +426,52 @@ func (f fileCheck) Run(context.Context) (string, error) {
 type staticFailureCheck struct {
 	name string
 	err  error
+}
+
+type remoteOAuthRegistrationCheck struct {
+	baseURL string
+	client  *http.Client
+}
+
+func (r remoteOAuthRegistrationCheck) Name() string { return "remote OAuth DCR" }
+
+func (r remoteOAuthRegistrationCheck) Run(ctx context.Context) (string, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(
+		probeCtx,
+		http.MethodPost,
+		strings.TrimRight(r.baseURL, "/")+"/oauth/register",
+		strings.NewReader(`{}`),
+	)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	client := r.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("remote DCR probe failed: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return "", fmt.Errorf("read remote DCR response: %w", err)
+	}
+	var oauthError struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &oauthError)
+	if response.StatusCode == http.StatusBadRequest && oauthError.Error == "invalid_client_metadata" {
+		return "DCR reachable through public hostname", nil
+	}
+	if response.StatusCode == http.StatusForbidden {
+		return "", errors.New("Cloudflare edge policy blocked remote DCR (HTTP 403); inspect Cloudflare Security > Analytics > Events to identify Bot Fight Mode, Access, or WAF. If Bot Fight Mode is the source, disable it (it cannot be skipped by WAF rules) or use Super Bot Fight Mode with an OAuth-path skip rule; otherwise adjust the matching edge policy")
+	}
+	return "", fmt.Errorf("remote DCR returned HTTP %d instead of Executor validation response", response.StatusCode)
 }
 
 func (s staticFailureCheck) Name() string { return s.name }

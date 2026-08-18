@@ -38,7 +38,7 @@ for target in ${BUILD_TARGETS}; do
   CGO_ENABLED="${CGO_VALUE}" GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${KILL_BINARY}" ./cmd/executor-kill
   cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
   mkdir -p "${STAGING_DIR}/docs"
-  cp "${ROOT_DIR}/docs/DEPLOYMENT.md" "${STAGING_DIR}/docs/DEPLOYMENT.md"
+  cp -R "${ROOT_DIR}/docs/." "${STAGING_DIR}/docs/"
   cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${STAGING_DIR}/THIRD_PARTY_NOTICES.md"
 
   if [[ "${GOOS}" == "windows" ]]; then
