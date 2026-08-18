@@ -8,6 +8,8 @@ The packaging bundle currently installs persistent local services for `executor 
 
 Supported MCP transports are remote Streamable HTTP at `https://<domain>/mcp` and local stdio through `executor stdio`. Legacy SSE is not currently exposed.
 
+Remote authentication uses OAuth 2.1 with PKCE. Executor advertises ChatGPT's preferred Client ID Metadata Document (CIMD) registration flow and retains Dynamic Client Registration (DCR) for compatible clients.
+
 ## Intended workflow
 
 ```bash

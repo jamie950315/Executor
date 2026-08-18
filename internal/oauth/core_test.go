@@ -43,6 +43,9 @@ func TestMetadataAndDynamicClientRegistration(t *testing.T) {
 	if got := authz.ScopesSupported; len(got) != 1 || got[0] != "executor.full" {
 		t.Fatalf("authorization scopes = %#v, want [executor.full]", got)
 	}
+	if !authz.ClientIDMetadataDocumentSupported {
+		t.Fatal("authorization metadata does not advertise implemented CIMD support")
+	}
 
 	resource := core.ProtectedResourceMetadata()
 	if resource.Resource != "https://executor.example.com" {

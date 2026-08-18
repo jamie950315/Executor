@@ -42,6 +42,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Lifecycle CLI and installers share stable default state locations (`/var/lib/executor` on Unix and `%ProgramData%\Executor` on Windows), while preserving `EXECUTOR_STATE_DIR` overrides.
 - Metadata-only audit events are now written for remote and stdio tool attempts/outcomes without command text, file content, or output.
 - OAuth DCR accepts standard metadata but restricts callback hosts to ChatGPT or loopback, and the consent page displays the requesting client and redirect destination. MCP stdio uses newline-delimited JSON; Streamable HTTP validates Origin and protocol headers.
+- OAuth authorization-server metadata now advertises the already-implemented CIMD resolver, allowing ChatGPT to prefer its stable client metadata document and avoid DCR when selected; DCR remains available for compatibility.
 - Resume verifies that Broker, Desktop, and Agent loaded the rotated credentials before starting the tunnel or removing the disabled marker.
 - Linux/WSL units install under the standard systemd system/user directories. Darwin release jobs build on macOS with native CoreGraphics desktop input.
 - Linux terminal shutdown freezes and terminates the complete `/proc` descendant tree, including background jobs that util-linux `script` places in separate process groups; regression tests run on real Pi5 Linux in addition to macOS.

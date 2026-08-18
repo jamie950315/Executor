@@ -33,6 +33,15 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		if res.Code != http.StatusOK || res.Header().Get("Content-Type") != "application/json" {
 			t.Fatalf("metadata %s status=%d content-type=%q body=%q", path, res.Code, res.Header().Get("Content-Type"), res.Body.String())
 		}
+		if path == "/.well-known/oauth-authorization-server" {
+			var metadata map[string]any
+			if err := json.Unmarshal(res.Body.Bytes(), &metadata); err != nil {
+				t.Fatalf("decode authorization metadata: %v", err)
+			}
+			if metadata["client_id_metadata_document_supported"] != true {
+				t.Fatalf("CIMD support = %#v, want true", metadata["client_id_metadata_document_supported"])
+			}
+		}
 	}
 
 	registrationBody := `{"client_name":"ChatGPT","redirect_uris":["https://chatgpt.com/connector/oauth/test"],"scopes":["executor.full"]}`

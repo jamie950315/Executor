@@ -49,6 +49,8 @@ New installations prefer `127.0.0.1:8787` for the Agent and `127.0.0.1:8788` for
 
 Setup reports the remote Streamable HTTP endpoint and local `executor stdio` command. Legacy SSE is not part of the current release. Every successful credential rotation also returns a new loopback Dashboard bootstrap URL; Dashboard authentication follows the current on-disk key immediately, so an old cookie stops working after an external `executor-kill` rotation.
 
+OAuth authorization metadata advertises CIMD support so ChatGPT can use its stable HTTPS client metadata document without creating a new client through DCR. DCR remains available as a compatibility path. The token endpoint accepts the public-client `none` method with PKCE, which intersects with ChatGPT's published CIMD methods.
+
 Service templates always point at the stable installed `executor` path, never at the temporary extracted archive location.
 
 ## Rollback

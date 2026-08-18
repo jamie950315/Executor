@@ -54,15 +54,16 @@ type Core struct {
 }
 
 type AuthorizationServerMetadata struct {
-	Issuer                        string   `json:"issuer"`
-	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
-	TokenEndpoint                 string   `json:"token_endpoint"`
-	RegistrationEndpoint          string   `json:"registration_endpoint"`
-	ResponseTypesSupported        []string `json:"response_types_supported"`
-	GrantTypesSupported           []string `json:"grant_types_supported"`
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
-	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`
-	ScopesSupported               []string `json:"scopes_supported"`
+	Issuer                            string   `json:"issuer"`
+	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
+	TokenEndpoint                     string   `json:"token_endpoint"`
+	RegistrationEndpoint              string   `json:"registration_endpoint"`
+	ClientIDMetadataDocumentSupported bool     `json:"client_id_metadata_document_supported"`
+	ResponseTypesSupported            []string `json:"response_types_supported"`
+	GrantTypesSupported               []string `json:"grant_types_supported"`
+	CodeChallengeMethodsSupported     []string `json:"code_challenge_methods_supported"`
+	TokenEndpointAuthMethods          []string `json:"token_endpoint_auth_methods_supported"`
+	ScopesSupported                   []string `json:"scopes_supported"`
 }
 
 type ProtectedResourceMetadata struct {
@@ -262,15 +263,16 @@ func NewCore(config Config) (*Core, error) {
 
 func (c *Core) AuthorizationServerMetadata() AuthorizationServerMetadata {
 	return AuthorizationServerMetadata{
-		Issuer:                        c.issuer,
-		AuthorizationEndpoint:         c.authorizationURL,
-		TokenEndpoint:                 c.tokenURL,
-		RegistrationEndpoint:          c.registrationURL,
-		ResponseTypesSupported:        []string{"code"},
-		GrantTypesSupported:           []string{"authorization_code", "refresh_token"},
-		CodeChallengeMethodsSupported: []string{"S256"},
-		TokenEndpointAuthMethods:      []string{"none"},
-		ScopesSupported:               []string{"executor.full"},
+		Issuer:                            c.issuer,
+		AuthorizationEndpoint:             c.authorizationURL,
+		TokenEndpoint:                     c.tokenURL,
+		RegistrationEndpoint:              c.registrationURL,
+		ClientIDMetadataDocumentSupported: true,
+		ResponseTypesSupported:            []string{"code"},
+		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
+		CodeChallengeMethodsSupported:     []string{"S256"},
+		TokenEndpointAuthMethods:          []string{"none"},
+		ScopesSupported:                   []string{"executor.full"},
 	}
 }
 
