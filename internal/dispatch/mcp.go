@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jamie950315/executor/internal/agent"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/terminal"
@@ -414,7 +415,7 @@ func (d *MCP) captureDesktopLocked(ctx context.Context, sessionID string) (mcp.T
 		return mcp.ToolResult{}, err
 	}
 	d.captureM.Lock()
-	d.captures[sessionKey(sessionID)] = captureState{
+	d.captures[captureScope(ctx, sessionID)] = captureState{
 		ID: captureID, Width: capture.Width, Height: capture.Height, Generation: d.desktopGeneration,
 	}
 	d.captureM.Unlock()
@@ -455,7 +456,8 @@ func (d *MCP) desktopBatch(ctx context.Context, sessionID string, arguments map[
 		return nil, err
 	}
 	d.captureM.Lock()
-	latestCapture := d.captures[sessionKey(sessionID)]
+	scope := captureScope(ctx, sessionID)
+	latestCapture := d.captures[scope]
 	if latestCapture.ID == "" || captureID != latestCapture.ID || latestCapture.Generation != d.desktopGeneration {
 		d.captureM.Unlock()
 		return nil, errors.New("desktop capture is stale; observe the desktop again before controlling it")
@@ -465,7 +467,7 @@ func (d *MCP) desktopBatch(ctx context.Context, sessionID string, arguments map[
 		return nil, err
 	}
 	d.desktopGeneration++
-	delete(d.captures, sessionKey(sessionID))
+	delete(d.captures, scope)
 	d.captureM.Unlock()
 	if _, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopActions, desktop.RPCDesktopActionsParams{Actions: actions}); err != nil {
 		return nil, err
@@ -586,11 +588,14 @@ func randomCaptureID() (string, error) {
 	return hex.EncodeToString(value[:]), nil
 }
 
-func sessionKey(sessionID string) string {
+func captureScope(ctx context.Context, sessionID string) string {
+	if actor, ok := agent.ActorFromContext(ctx); ok {
+		return "actor\x00" + actor.Method + "\x00" + actor.Subject + "\x00" + actor.ClientID
+	}
 	if sessionID == "" {
 		return "local"
 	}
-	return sessionID
+	return "session\x00" + sessionID
 }
 
 func (d *MCP) deviceStatus(ctx context.Context, arguments map[string]any) (any, error) {

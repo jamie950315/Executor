@@ -5,11 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jamie950315/executor/internal/agent"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
 )
@@ -449,6 +452,45 @@ func TestMCPDesktopControlInvalidatesCapturesAcrossSessions(t *testing.T) {
 	}
 	if len(desktopCaller.calls) != 0 {
 		t.Fatalf("stale cross-session batch reached IPC: %#v", desktopCaller.calls)
+	}
+}
+
+func TestMCPDesktopBatchAcceptsCaptureAcrossSessionsForSameAuthenticatedClient(t *testing.T) {
+	t.Parallel()
+
+	desktopCaller := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50},
+		"desktop.actions": map[string]any{"ok": true},
+	}}
+	dispatcher := NewMCP(nil, desktopCaller)
+	var dispatchErr error
+	handler := agent.ProtectMCP(nil, "https://executor.example.com", func(candidate string) bool {
+		return candidate == "owner-secret"
+	}, http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		observed, err := dispatcher.Dispatch(request.Context(), mcp.ToolCall{
+			SessionID: "chatgpt-observe-session", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+		})
+		if err != nil {
+			dispatchErr = err
+			return
+		}
+		captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+		_, dispatchErr = dispatcher.Dispatch(request.Context(), mcp.ToolCall{
+			SessionID: "chatgpt-control-session", Name: "desktop_control",
+			Arguments: map[string]any{
+				"action": "batch", "captureId": captureID,
+				"actions": []any{map[string]any{"type": "screenshot"}},
+			},
+		})
+	}))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/owner-secret/mcp", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated request status = %d", response.Code)
+	}
+	if dispatchErr != nil {
+		t.Fatalf("same authenticated client batch across MCP sessions: %v", dispatchErr)
 	}
 }
 
