@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultRPCWindow              = 30 * time.Second
-	maxRPCMessage                 = 16 << 20
+	maxRPCMessage                 = 80 << 20
 	windowsPipeSecurityDescriptor = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
 )
 
@@ -98,12 +98,23 @@ func (s *RPCServer) handleConnection(ctx context.Context, connection net.Conn) {
 		return
 	}
 
-	value, err := s.handler(ctx, request.Method, request.Params)
+	requestCtx, cancelRequest := context.WithTimeout(ctx, defaultRPCWindow)
+	disconnected := make(chan struct{})
+	go func() {
+		var extra [1]byte
+		_, _ = connection.Read(extra[:])
+		cancelRequest()
+		close(disconnected)
+	}()
+	value, err := s.handler(requestCtx, request.Method, request.Params)
+	cancelRequest()
 	if err != nil {
 		_ = s.writeResponse(connection, request, nil, err.Error())
 		return
 	}
 	_ = s.writeResponse(connection, request, value, "")
+	_ = connection.Close()
+	<-disconnected
 }
 
 func (s *RPCServer) writeResponse(writer io.Writer, request Message, value any, errorMessage string) error {
@@ -149,6 +160,15 @@ func (c *RPCClient) Call(ctx context.Context, method string, params any, result 
 		return err
 	}
 	defer connection.Close()
+	stopCancellationWatch := make(chan struct{})
+	defer close(stopCancellationWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+		case <-stopCancellationWatch:
+		}
+	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = connection.SetDeadline(deadline)
 	} else {

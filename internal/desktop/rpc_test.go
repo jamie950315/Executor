@@ -3,10 +3,15 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -122,6 +127,206 @@ func TestHelperRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 	}
 }
 
+func TestHelperRPCServerCaptureReturnsPNGAndRemovesPrivateTemporaryFile(t *testing.T) {
+	t.Parallel()
+
+	pngBytes := encodeTestPNG(t, 3, 2)
+	gui := &captureHelperDesktop{png: pngBytes}
+	endpoint := helperSocketPath(t)
+	key := []byte("1234567890abcdef1234567890abcdef")
+	server := NewHelperRPCServer(endpoint, key, &helperTerminal{}, &helperFilesystem{}, gui)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForHelperEndpoint(t, endpoint)
+
+	var capture RPCDesktopCapture
+	client := ipc.NewRPCClient(endpoint, key)
+	if err := client.Call(context.Background(), RPCMethodDesktopCapture, struct{}{}, &capture); err != nil {
+		t.Fatalf("desktop.capture: %v", err)
+	}
+	if !bytes.Equal(capture.Data, pngBytes) || capture.MimeType != "image/png" || capture.Width != 3 || capture.Height != 2 {
+		t.Fatalf("unexpected desktop capture: mime=%q size=%dx%d bytes=%d", capture.MimeType, capture.Width, capture.Height, len(capture.Data))
+	}
+	if gui.fileExisted {
+		t.Fatal("capture path existed before backend write; screenshot tools can replace its private mode")
+	}
+	if gui.directoryMode != 0o700 {
+		t.Fatalf("capture temporary directory mode = %o, want 700", gui.directoryMode)
+	}
+	if _, err := os.Stat(gui.directory); !os.IsNotExist(err) {
+		t.Fatalf("capture temporary directory still exists at %q: %v", gui.directory, err)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper RPC server did not stop")
+	}
+}
+
+func TestHelperRPCServerActionsPreservesValidatedBatch(t *testing.T) {
+	t.Parallel()
+
+	gui := &actionHelperDesktop{}
+	endpoint := helperSocketPath(t)
+	key := []byte("abcdef1234567890abcdef1234567890")
+	server := NewHelperRPCServer(endpoint, key, &helperTerminal{}, &helperFilesystem{}, gui)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForHelperEndpoint(t, endpoint)
+
+	want := []Action{
+		{Type: ActionClick, X: 10, Y: 20, Button: MouseButtonLeft, Keys: []string{"CTRL"}},
+		{Type: ActionDrag, Path: []Point{{X: 1, Y: 2}, {X: 3, Y: 4}}},
+		{Type: ActionScreenshot},
+	}
+	client := ipc.NewRPCClient(endpoint, key)
+	if err := client.Call(context.Background(), RPCMethodDesktopActions, RPCDesktopActionsParams{Actions: want}, &struct{}{}); err != nil {
+		t.Fatalf("desktop.actions: %v", err)
+	}
+	if !reflect.DeepEqual(gui.actions, want) {
+		t.Fatalf("desktop actions = %#v, want %#v", gui.actions, want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper RPC server did not stop")
+	}
+}
+
+func TestHelperRPCServerSerializesDesktopMethods(t *testing.T) {
+	t.Parallel()
+
+	gui := &serializingHelperDesktop{
+		actionsStarted:   make(chan struct{}),
+		releaseActions:   make(chan struct{}),
+		screenshotCalled: make(chan struct{}, 1),
+	}
+	endpoint := helperSocketPath(t)
+	key := []byte("ffeeddccbbaa99887766554433221100")
+	server := NewHelperRPCServer(endpoint, key, &helperTerminal{}, &helperFilesystem{}, gui)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = server.Serve(ctx) }()
+	waitForHelperEndpoint(t, endpoint)
+	client := ipc.NewRPCClient(endpoint, key)
+
+	actionsDone := make(chan error, 1)
+	go func() {
+		actionsDone <- client.Call(context.Background(), RPCMethodDesktopActions, RPCDesktopActionsParams{
+			Actions: []Action{{Type: ActionWait}},
+		}, &struct{}{})
+	}()
+	<-gui.actionsStarted
+	screenshotDone := make(chan error, 1)
+	go func() {
+		screenshotDone <- client.Call(context.Background(), RPCMethodDesktopScreenshot, RPCDesktopScreenshotParams{Path: "/tmp/test.png"}, &struct{}{})
+	}()
+	select {
+	case <-gui.screenshotCalled:
+		t.Fatal("desktop screenshot ran concurrently with an in-flight action batch")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(gui.releaseActions)
+	if err := <-actionsDone; err != nil {
+		t.Fatalf("desktop.actions: %v", err)
+	}
+	if err := <-screenshotDone; err != nil {
+		t.Fatalf("desktop.screenshot: %v", err)
+	}
+}
+
+func TestHelperRPCServerDoesNotRunCanceledQueuedDesktopMethod(t *testing.T) {
+	t.Parallel()
+
+	gui := &serializingHelperDesktop{
+		actionsStarted: make(chan struct{}), releaseActions: make(chan struct{}), screenshotCalled: make(chan struct{}, 1),
+	}
+	endpoint := helperSocketPath(t)
+	key := []byte("1029384756abcdef1029384756abcdef")
+	server := NewHelperRPCServer(endpoint, key, &helperTerminal{}, &helperFilesystem{}, gui)
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	t.Cleanup(stopServer)
+	go func() { _ = server.Serve(serverCtx) }()
+	waitForHelperEndpoint(t, endpoint)
+	client := ipc.NewRPCClient(endpoint, key)
+	actionsDone := make(chan error, 1)
+	go func() {
+		actionsDone <- client.Call(context.Background(), RPCMethodDesktopActions, RPCDesktopActionsParams{
+			Actions: []Action{{Type: ActionWait}},
+		}, &struct{}{})
+	}()
+	<-gui.actionsStarted
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	queuedDone := make(chan error, 1)
+	go func() {
+		queuedDone <- client.Call(queuedCtx, RPCMethodDesktopScreenshot, RPCDesktopScreenshotParams{Path: "/tmp/test.png"}, &struct{}{})
+	}()
+	cancelQueued()
+	select {
+	case err := <-queuedDone:
+		if err == nil {
+			t.Fatal("canceled queued desktop method succeeded")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("canceled queued desktop method did not return")
+	}
+	close(gui.releaseActions)
+	if err := <-actionsDone; err != nil {
+		t.Fatalf("desktop.actions: %v", err)
+	}
+	select {
+	case <-gui.screenshotCalled:
+		t.Fatal("canceled queued screenshot executed after desktop lock was released")
+	default:
+	}
+}
+
+func encodeTestPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var encoded bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	img.Set(0, 0, color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff})
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatalf("encode test PNG: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+func TestPrepareDesktopCaptureReencodesOversizedPNGWithoutChangingCoordinates(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
+	for y := 0; y < 256; y++ {
+		for x := 0; x < 256; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x*y + y), G: uint8(x*17 + y*31), B: uint8(x ^ y), A: 0xff})
+		}
+	}
+	var source bytes.Buffer
+	if err := png.Encode(&source, img); err != nil {
+		t.Fatalf("encode source PNG: %v", err)
+	}
+	limit := source.Len() / 2
+	data, mimeType, width, height, err := prepareDesktopCapture(source.Bytes(), limit)
+	if err != nil {
+		t.Fatalf("prepareDesktopCapture: %v", err)
+	}
+	if len(data) > limit || mimeType != "image/jpeg" || width != 256 || height != 256 {
+		t.Fatalf("prepared capture: mime=%q size=%d limit=%d dimensions=%dx%d", mimeType, len(data), limit, width, height)
+	}
+}
+
 type helperTerminal struct{}
 
 func (helperTerminal) Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error) {
@@ -166,7 +371,66 @@ func (helperDesktop) Accessibility(ctx context.Context) (AccessibilityTree, erro
 func (helperDesktop) Mouse(ctx context.Context, action MouseAction) error       { return nil }
 func (helperDesktop) Keyboard(ctx context.Context, action KeyboardAction) error { return nil }
 func (helperDesktop) App(ctx context.Context, action AppAction) error           { return nil }
+func (helperDesktop) Actions(ctx context.Context, actions []Action) error       { return nil }
 func (helperDesktop) Available(ctx context.Context) bool                        { return true }
+
+type captureHelperDesktop struct {
+	png           []byte
+	path          string
+	directory     string
+	directoryMode fs.FileMode
+	fileExisted   bool
+}
+
+func (h *captureHelperDesktop) Screenshot(_ context.Context, path string) error {
+	h.path = path
+	h.directory = filepath.Dir(path)
+	info, err := os.Stat(h.directory)
+	if err != nil {
+		return err
+	}
+	h.directoryMode = info.Mode().Perm()
+	_, err = os.Stat(path)
+	h.fileExisted = err == nil
+	return os.WriteFile(path, h.png, 0o644)
+}
+func (*captureHelperDesktop) Windows(context.Context) ([]Window, error) { return nil, nil }
+func (*captureHelperDesktop) Accessibility(context.Context) (AccessibilityTree, error) {
+	return AccessibilityTree{}, nil
+}
+func (*captureHelperDesktop) Mouse(context.Context, MouseAction) error       { return nil }
+func (*captureHelperDesktop) Keyboard(context.Context, KeyboardAction) error { return nil }
+func (*captureHelperDesktop) App(context.Context, AppAction) error           { return nil }
+func (*captureHelperDesktop) Actions(context.Context, []Action) error        { return nil }
+func (*captureHelperDesktop) Available(context.Context) bool                 { return true }
+
+type actionHelperDesktop struct {
+	helperDesktop
+	actions []Action
+}
+
+type serializingHelperDesktop struct {
+	helperDesktop
+	actionsStarted   chan struct{}
+	releaseActions   chan struct{}
+	screenshotCalled chan struct{}
+}
+
+func (h *serializingHelperDesktop) Actions(context.Context, []Action) error {
+	close(h.actionsStarted)
+	<-h.releaseActions
+	return nil
+}
+
+func (h *serializingHelperDesktop) Screenshot(context.Context, string) error {
+	h.screenshotCalled <- struct{}{}
+	return nil
+}
+
+func (h *actionHelperDesktop) Actions(_ context.Context, actions []Action) error {
+	h.actions = append([]Action(nil), actions...)
+	return nil
+}
 
 type helperStatusTerminal struct {
 	signalSessionID string
@@ -229,6 +493,7 @@ func (helperStatusDesktop) Accessibility(ctx context.Context) (AccessibilityTree
 func (helperStatusDesktop) Mouse(ctx context.Context, action MouseAction) error       { return nil }
 func (helperStatusDesktop) Keyboard(ctx context.Context, action KeyboardAction) error { return nil }
 func (helperStatusDesktop) App(ctx context.Context, action AppAction) error           { return nil }
+func (helperStatusDesktop) Actions(ctx context.Context, actions []Action) error       { return nil }
 func (helperStatusDesktop) Available(ctx context.Context) bool                        { return true }
 
 func waitForHelperEndpoint(t *testing.T, endpoint string) {

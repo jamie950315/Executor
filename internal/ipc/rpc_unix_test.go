@@ -90,6 +90,46 @@ func TestRPCServerRejectsClientWithWrongKey(t *testing.T) {
 	}
 }
 
+func TestRPCServerCancelsHandlerWhenClientDisconnects(t *testing.T) {
+	t.Parallel()
+
+	endpoint := shortSocketPath(t)
+	key := []byte("00112233445566778899aabbccddeeff")
+	handlerStarted := make(chan struct{})
+	handlerCanceled := make(chan struct{})
+	server := NewRPCServer(endpoint, key, func(ctx context.Context, _ string, _ []byte) (any, error) {
+		close(handlerStarted)
+		<-ctx.Done()
+		close(handlerCanceled)
+		return nil, ctx.Err()
+	})
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	t.Cleanup(stopServer)
+	go func() { _ = server.Serve(serverCtx) }()
+	waitForEndpoint(t, endpoint)
+
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	callDone := make(chan error, 1)
+	go func() {
+		callDone <- NewRPCClient(endpoint, key).Call(callCtx, "desktop.actions", struct{}{}, &struct{}{})
+	}()
+	<-handlerStarted
+	cancelCall()
+	select {
+	case err := <-callDone:
+		if err == nil {
+			t.Fatal("canceled IPC call succeeded")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("IPC client did not close its connection after context cancellation")
+	}
+	select {
+	case <-handlerCanceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("server handler continued after client disconnected")
+	}
+}
+
 func waitForEndpoint(t *testing.T, endpoint string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

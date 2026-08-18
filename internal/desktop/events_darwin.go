@@ -39,14 +39,27 @@ static CGEventType executorMouseMoveEvent(CGMouseButton button) {
 	}
 }
 
-static void executorPostMouseMove(int x, int y) {
+static void executorPostMouseMove(int x, int y, CGEventFlags flags) {
 	CGEventRef move = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(x, y), kCGMouseButtonLeft);
+	CGEventSetFlags(move, flags);
 	CGEventPost(kCGHIDEventTap, move);
 	CFRelease(move);
 }
 
-static void executorPostMouseButton(CGEventType eventType, int x, int y, CGMouseButton button) {
+static void executorPostMouseButton(CGEventType eventType, int x, int y, CGMouseButton button, CGEventFlags flags, int clickState) {
 	CGEventRef event = CGEventCreateMouseEvent(NULL, eventType, CGPointMake(x, y), button);
+	CGEventSetFlags(event, flags);
+	if (clickState > 0) {
+		CGEventSetIntegerValueField(event, kCGMouseEventClickState, clickState);
+	}
+	CGEventPost(kCGHIDEventTap, event);
+	CFRelease(event);
+}
+
+static void executorPostScroll(int x, int y, int scrollX, int scrollY, CGEventFlags flags) {
+	CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 2, scrollY, scrollX);
+	CGEventSetLocation(event, CGPointMake(x, y));
+	CGEventSetFlags(event, flags);
 	CGEventPost(kCGHIDEventTap, event);
 	CFRelease(event);
 }
@@ -57,34 +70,56 @@ static void executorPostKey(int keyCode, CGEventFlags flags, int down) {
 	CGEventPost(kCGHIDEventTap, event);
 	CFRelease(event);
 }
+
+static int executorMainDisplayWidth(void) {
+	return (int)CGDisplayBounds(CGMainDisplayID()).size.width;
+}
+
+static int executorMainDisplayHeight(void) {
+	return (int)CGDisplayBounds(CGMainDisplayID()).size.height;
+}
 */
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
 
 type defaultEventPoster struct{}
 
+func mainDisplayDimensions(context.Context) (int, int, error) {
+	return int(C.executorMainDisplayWidth()), int(C.executorMainDisplayHeight()), nil
+}
+
 func (defaultEventPoster) PostMouse(action MouseAction) error {
 	button, err := cgMouseButton(action.Button)
 	if err != nil {
 		return err
 	}
-	switch action.Type {
-	case MouseActionMove:
-		C.executorPostMouseMove(C.int(action.X), C.int(action.Y))
-	case MouseActionDown:
-		C.executorPostMouseButton(C.executorMouseDownEvent(button), C.int(action.X), C.int(action.Y), button)
-	case MouseActionUp:
-		C.executorPostMouseButton(C.executorMouseUpEvent(button), C.int(action.X), C.int(action.Y), button)
-	case MouseActionClick:
-		C.executorPostMouseMove(C.int(action.X), C.int(action.Y))
-		C.executorPostMouseButton(C.executorMouseDownEvent(button), C.int(action.X), C.int(action.Y), button)
-		C.executorPostMouseButton(C.executorMouseUpEvent(button), C.int(action.X), C.int(action.Y), button)
-	default:
-		return fmt.Errorf("unsupported mouse action %q", action.Type)
+	flags, err := cgEventFlags(action.Keys)
+	if err != nil {
+		return err
+	}
+	steps, err := expandMouseAction(action)
+	if err != nil {
+		return err
+	}
+	for _, step := range steps {
+		switch step.Type {
+		case mouseStepMove:
+			C.executorPostMouseMove(C.int(step.X), C.int(step.Y), flags)
+		case mouseStepDrag:
+			C.executorPostMouseButton(C.executorMouseMoveEvent(button), C.int(step.X), C.int(step.Y), button, flags, 0)
+		case mouseStepDown:
+			C.executorPostMouseButton(C.executorMouseDownEvent(button), C.int(step.X), C.int(step.Y), button, flags, C.int(step.Click))
+		case mouseStepUp:
+			C.executorPostMouseButton(C.executorMouseUpEvent(button), C.int(step.X), C.int(step.Y), button, flags, C.int(step.Click))
+		case mouseStepScroll:
+			scrollX, scrollY := nativeWheelDeltas(step.ScrollX, step.ScrollY)
+			C.executorPostScroll(C.int(step.X), C.int(step.Y), C.int(scrollX), C.int(scrollY), flags)
+		}
 	}
 	return nil
 }
@@ -108,7 +143,7 @@ func cgMouseButton(button MouseButton) (C.CGMouseButton, error) {
 		return C.kCGMouseButtonLeft, nil
 	case MouseButtonRight:
 		return C.kCGMouseButtonRight, nil
-	case MouseButtonCenter:
+	case MouseButtonCenter, MouseButtonWheel:
 		return C.kCGMouseButtonCenter, nil
 	default:
 		return C.kCGMouseButtonLeft, fmt.Errorf("unsupported mouse button %q", button)

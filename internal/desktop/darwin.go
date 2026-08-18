@@ -17,17 +17,29 @@ type eventPoster interface {
 }
 
 type darwinBackend struct {
-	runner commandRunner
-	events eventPoster
+	runner   commandRunner
+	events   eventPoster
+	geometry func(context.Context) (int, int, error)
 }
 
 func newDarwinBackend(runner commandRunner, events eventPoster) darwinBackend {
-	return darwinBackend{runner: runner, events: events}
+	return darwinBackend{runner: runner, events: events, geometry: mainDisplayDimensions}
 }
 
 func (b darwinBackend) Screenshot(ctx context.Context, path string) error {
-	if _, err := b.runner.Run(ctx, "screencapture", "-x", path); err != nil {
+	geometry := b.geometry
+	if geometry == nil {
+		geometry = mainDisplayDimensions
+	}
+	width, height, err := geometry(ctx)
+	if err != nil || width < 1 || height < 1 {
+		return wrapDesktopError("main display geometry unavailable", err)
+	}
+	if _, err := b.runner.Run(ctx, "screencapture", "-x", "-D", "1", path); err != nil {
 		return wrapDesktopError("screenshot unavailable", err)
+	}
+	if _, err := b.runner.Run(ctx, "sips", "-z", fmt.Sprintf("%d", height), fmt.Sprintf("%d", width), path); err != nil {
+		return wrapDesktopError("screenshot coordinate normalization unavailable", err)
 	}
 	return nil
 }
@@ -76,6 +88,9 @@ func (b darwinBackend) Accessibility(ctx context.Context) (AccessibilityTree, er
 }
 
 func (b darwinBackend) Mouse(ctx context.Context, action MouseAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := b.events.PostMouse(action); err != nil {
 		return wrapDesktopError("mouse input unavailable", err)
 	}
@@ -83,8 +98,29 @@ func (b darwinBackend) Mouse(ctx context.Context, action MouseAction) error {
 }
 
 func (b darwinBackend) Keyboard(ctx context.Context, action KeyboardAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if action.Text != "" {
 		if _, err := b.runner.Run(ctx, "osascript", "-e", fmt.Sprintf("tell application \"System Events\" to keystroke %q", action.Text)); err != nil {
+			return wrapDesktopError("keyboard input unavailable", err)
+		}
+		return nil
+	}
+	if len(action.Keys) > 0 {
+		primary, modifiers, err := splitKeyChord(action.Keys)
+		if err != nil {
+			return err
+		}
+		keyCode, err := darwinKeyCode(primary)
+		if err != nil {
+			return err
+		}
+		modifierNames := make([]string, 0, len(modifiers))
+		for _, modifier := range modifiers {
+			modifierNames = append(modifierNames, string(modifier))
+		}
+		if err := b.events.PostKeyboard(KeyboardAction{KeyCode: keyCode, Modifiers: modifierNames}); err != nil {
 			return wrapDesktopError("keyboard input unavailable", err)
 		}
 		return nil

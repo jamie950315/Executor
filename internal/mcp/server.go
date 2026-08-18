@@ -128,13 +128,13 @@ func BuiltinTools() []Tool {
 		},
 		{
 			Name:        "desktop_observe",
-			Description: "Observe desktop state, windows, and screenshots.",
+			Description: "Observe desktop state. For Computer Use, call action=screenshot without a path to receive the current screen image and captureId before acting.",
 			InputSchema: desktopObserveToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:        "desktop_control",
-			Description: "Send mouse, keyboard, and window control actions.",
+			Description: "Control the desktop. For Computer Use, send action=batch with the latest captureId and ordered actions; Executor rejects stale captures and automatically returns the updated screen image.",
 			InputSchema: desktopControlToolSchema(),
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
@@ -387,7 +387,18 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		if err != nil {
 			return errorResponse(request.ID, errCodeToolFailure, err.Error()), http.StatusInternalServerError, sessionID
 		}
-		structuredContent, err := normalizeStructuredContent(result)
+		structuredResult := result
+		content := []any{}
+		isError := false
+		if toolResult, ok := result.(ToolResult); ok {
+			structuredResult = toolResult.StructuredContent
+			if toolResult.Content != nil {
+				content = toolResult.Content
+			}
+			isError = toolResult.IsError
+		}
+
+		structuredContent, err := normalizeStructuredContent(structuredResult)
 		if err != nil {
 			return errorResponse(request.ID, errCodeToolFailure, "tool result is not valid JSON"), http.StatusInternalServerError, sessionID
 		}
@@ -398,8 +409,8 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 			Result: map[string]any{
 				"toolName":          name,
 				"structuredContent": structuredContent,
-				"content":           []any{},
-				"isError":           false,
+				"content":           content,
+				"isError":           isError,
 			},
 		}, http.StatusOK, sessionID
 	default:
@@ -626,9 +637,29 @@ func desktopObserveToolSchema() map[string]any {
 }
 
 func desktopControlToolSchema() map[string]any {
+	computerAction := schemaObject(
+		map[string]any{
+			"type":    enumProperty("string", "click", "double_click", "move", "drag", "scroll", "type", "keypress", "wait", "screenshot"),
+			"x":       map[string]any{"type": "integer"},
+			"y":       map[string]any{"type": "integer"},
+			"button":  map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
+			"text":    map[string]any{"type": "string"},
+			"keys":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"scrollX": map[string]any{"type": "integer"},
+			"scrollY": map[string]any{"type": "integer"},
+			"path": map[string]any{
+				"type": "array",
+				"items": schemaObject(map[string]any{
+					"x": map[string]any{"type": "integer"},
+					"y": map[string]any{"type": "integer"},
+				}, "x", "y"),
+			},
+		},
+		"type",
+	)
 	return schemaObject(
 		map[string]any{
-			"action":    enumProperty("string", "mouse_move", "mouse_click", "key_press", "type_text", "window_focus"),
+			"action":    enumProperty("string", "mouse_move", "mouse_click", "key_press", "type_text", "window_focus", "batch"),
 			"x":         map[string]any{"type": "integer"},
 			"y":         map[string]any{"type": "integer"},
 			"button":    map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
@@ -636,6 +667,8 @@ func desktopControlToolSchema() map[string]any {
 			"modifiers": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"name":      map[string]any{"type": "string"},
 			"text":      map[string]any{"type": "string"},
+			"captureId": map[string]any{"type": "string"},
+			"actions":   map[string]any{"type": "array", "minItems": 1, "maxItems": 64, "items": computerAction},
 		},
 		"action",
 	)

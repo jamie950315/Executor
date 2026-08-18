@@ -8,6 +8,18 @@ The packaging bundle currently installs persistent local services for `executor 
 
 Supported MCP transports are remote Streamable HTTP at `https://<domain>/mcp` and local stdio through `executor stdio`. Legacy SSE is not currently exposed.
 
+## Computer Use
+
+Executor exposes an MCP-native observe → act → observe loop for ChatGPT and other MCP clients:
+
+1. Call `desktop_observe` with `action: "screenshot"` and no path. Executor returns the screen as an MCP image content block plus a `captureId`, image dimensions, MIME type, and capture time in structured metadata. PNG is used normally; an oversized high-detail capture is re-encoded as JPEG without changing its coordinate dimensions.
+2. Call `desktop_control` with `action: "batch"`, that `captureId`, and ordered actions. Supported Computer Use actions are `click`, `double_click`, `move`, `drag`, `scroll`, `type`, `keypress`, `wait`, and `screenshot`.
+3. Executor executes the validated batch and automatically returns a fresh screenshot and `captureId`. A capture ID is single-use and only the newest capture for the MCP session is accepted. Any desktop control from any session invalidates every older capture.
+
+Screenshot bytes and typed text are sensitive. They are returned only to the authenticated caller and are not written to Executor's audit log. The audit store records tool metadata and outcomes only.
+
+Desktop control requires an active, unlocked graphical login. macOS and Windows currently capture the primary display so screenshot coordinates match input coordinates; macOS Retina captures are normalized to display points. Linux X11 supports the complete action set. Wayland support depends on the compositor and installed tools; unreliable advanced mouse actions return an explicit unavailable error. WSL terminal and filesystem control work independently, while GUI control requires WSLg or the Windows companion.
+
 Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Registration (DCR) for current ChatGPT compatibility and retains implemented support for Client ID Metadata Documents (CIMD), public-client `none`, and ChatGPT-signed `private_key_jwt` token exchange.
 
 Before linking ChatGPT, run `executor doctor --full`. The full check sends an invalid, non-registering request through the public hostname to confirm that Cloudflare allows ChatGPT's DCR request to reach Executor. Cloudflare Bot Fight Mode can challenge API traffic and cannot be bypassed with a WAF custom rule; disable Bot Fight Mode for the zone or use Super Bot Fight Mode with an OAuth-path skip rule. See [Troubleshooting](docs/TROUBLESHOOTING.md) for the verified failure signatures and recovery steps.

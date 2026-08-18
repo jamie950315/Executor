@@ -18,6 +18,7 @@ func TestDarwinBackend_UsesExpectedCommands(t *testing.T) {
 	}
 	events := &fakeEventPoster{}
 	backend := newDarwinBackend(runner, events)
+	backend.geometry = func(context.Context) (int, int, error) { return 1512, 982, nil }
 
 	if err := backend.Screenshot(context.Background(), "/tmp/executor-shot.png"); err != nil {
 		t.Fatalf("screenshot: %v", err)
@@ -48,7 +49,8 @@ func TestDarwinBackend_UsesExpectedCommands(t *testing.T) {
 	}
 
 	wantCommands := []string{
-		"screencapture|-x|/tmp/executor-shot.png",
+		"screencapture|-x|-D|1|/tmp/executor-shot.png",
+		"sips|-z|982|1512|/tmp/executor-shot.png",
 		"osascript|-l|JavaScript|-e|ObjC.import('Foundation'); var se = Application('System Events'); var apps = se.applicationProcesses.whose({backgroundOnly: false})(); JSON.stringify(apps.map(function(app) { try { var appName = ''; try { appName = app.name(); } catch (error) {} var wins = []; try { wins = app.windows().map(function(win) { var title = ''; var id = 0; try { title = win.name() || ''; } catch (error) {} try { id = win.id() || 0; } catch (error) {} return {title: title, id: id}; }); } catch (error) { wins = []; } return {app: appName, windows: wins}; } catch (error) { return {app: '', windows: []}; } }));",
 		"osascript|-l|JavaScript|-e|ObjC.import('Foundation'); var se = Application('System Events'); var app = se.applicationProcesses.whose({frontmost: true})[0]; JSON.stringify({application: app ? app.name() : '', windows: app ? app.windows().map(function(win) { return {title: win.name() || '', role: 'window'}; }) : []});",
 		"osascript|-e|tell application \"System Events\" to keystroke \"hello\"",
@@ -61,6 +63,18 @@ func TestDarwinBackend_UsesExpectedCommands(t *testing.T) {
 	wantEvents := []mouseEvent{{Type: MouseActionClick, X: 10, Y: 20, Button: MouseButtonLeft}}
 	if !reflect.DeepEqual(events.mouseEvents, wantEvents) {
 		t.Fatalf("unexpected mouse events: %#v", events.mouseEvents)
+	}
+}
+
+func TestDarwinBackendKeypressUsesPrimaryKeyWithHeldModifiers(t *testing.T) {
+	events := &fakeEventPoster{}
+	backend := newDarwinBackend(&fakeRunner{}, events)
+	if err := backend.Keyboard(context.Background(), KeyboardAction{Keys: []string{"CTRL", "SHIFT", "L"}}); err != nil {
+		t.Fatalf("keyboard chord: %v", err)
+	}
+	want := []KeyboardAction{{KeyCode: 37, Modifiers: []string{"CTRL", "SHIFT"}}}
+	if !reflect.DeepEqual(events.keyboardEvents, want) {
+		t.Fatalf("keyboard events = %#v, want %#v", events.keyboardEvents, want)
 	}
 }
 
@@ -79,7 +93,8 @@ func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) ([]by
 }
 
 type fakeEventPoster struct {
-	mouseEvents []mouseEvent
+	mouseEvents    []mouseEvent
+	keyboardEvents []KeyboardAction
 }
 
 func (f *fakeEventPoster) PostMouse(action MouseAction) error {
@@ -93,6 +108,7 @@ func (f *fakeEventPoster) PostMouse(action MouseAction) error {
 }
 
 func (f *fakeEventPoster) PostKeyboard(action KeyboardAction) error {
+	f.keyboardEvents = append(f.keyboardEvents, action)
 	return nil
 }
 

@@ -63,6 +63,20 @@ New installations prefer `127.0.0.1:8787` for the Agent and `127.0.0.1:8788` for
 
 Setup reports the remote Streamable HTTP endpoint and local `executor stdio` command. Legacy SSE is not part of the current release. Every successful credential rotation also returns a new loopback Dashboard bootstrap URL; Dashboard authentication follows the current on-disk key immediately, so an old cookie stops working after an external `executor-kill` rotation.
 
+## Computer Use runtime
+
+The active-user Desktop helper provides the screenshot and input boundary. A Computer Use client first calls `desktop_observe` with `action=screenshot`, then sends the returned `captureId` to `desktop_control` with `action=batch`. Executor validates the complete batch and platform capability before input begins, checks every coordinate against the captured image, consumes the capture ID once, serializes desktop observation and control in both the Agent and Desktop helper, and returns a new screenshot after the batch. Any control from any MCP session invalidates all older captures. IPC disconnects cancel the in-flight helper request, and batch wait limits keep normal execution inside the IPC window.
+
+Screenshot data is carried in MCP image content. Structured content contains metadata only, including the capture ID, dimensions, MIME type, and capture time. PNG is preferred; oversized high-detail PNGs are re-encoded as JPEG at the same dimensions before IPC transfer. Capture files live inside a mode-700 temporary directory, are changed to mode 600 after the platform screenshot tool exits, and are removed immediately after reading. Screenshot bytes, typed text, command text, file contents, and tool output are excluded from the metadata-only audit log.
+
+The Desktop helper must run inside an active, unlocked user session with screen-recording and accessibility/input permissions granted by the operating system. Terminal, filesystem, Broker, Dashboard, and Kill Switch operation do not depend on the desktop being unlocked.
+
+- macOS captures the primary display and normalizes Retina pixels to display-point coordinates before returning the image.
+- Windows captures the primary display so `SetCursorPos` coordinates match the returned image. The active-user Scheduled Task remains required; a Windows Service cannot interact with the logged-in desktop.
+- Linux X11 supports the complete action set when the documented screenshot and `xdotool` dependencies are available.
+- Wayland support is compositor-dependent. Executor reports unsupported modifier-assisted mouse, double-click, drag, and scroll actions instead of silently claiming success when the available `ydotool` path cannot execute them reliably.
+- WSL uses WSLg for Linux GUI control. Use the Windows companion to control the Windows desktop.
+
 If an AI agent performs setup, Kill, rotation, or another action that generates a recovery key, the agent must reproduce that recovery key verbatim in its final private response to the requesting owner. It must not redact the key or direct the owner to an unattended Terminal. The response must identify the key as sensitive and shown once, and instruct the owner to save it immediately. This delivery exception does not allow the key to be stored in files, configuration, persistent logs, issues, pull requests, or public channels.
 
 OAuth authorization metadata currently directs ChatGPT through Dynamic Client Registration (DCR), because repeated real ChatGPT web callback attempts stopped before token exchange when CIMD was advertised. The CIMD resolver remains implemented but is not advertised until that callback path is interoperable. The token endpoint accepts both public-client `none` with PKCE and ChatGPT's `private_key_jwt` method with RS256 verification against the JWKS published by the trusted ChatGPT CIMD origin.

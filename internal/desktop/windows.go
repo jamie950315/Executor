@@ -50,6 +50,15 @@ func (b windowsBackend) Accessibility(ctx context.Context) (AccessibilityTree, e
 }
 
 func (b windowsBackend) Mouse(ctx context.Context, action MouseAction) error {
+	if _, err := expandMouseAction(action); err != nil {
+		return err
+	}
+	if _, err := mouseButtonCode(action.Button); err != nil {
+		return err
+	}
+	if _, err := normalizeModifiers(action.Keys); err != nil {
+		return err
+	}
 	_, err := b.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", buildWindowsMouseScript(action))
 	if err != nil {
 		return wrapDesktopError("windows mouse input unavailable", err)
@@ -58,6 +67,11 @@ func (b windowsBackend) Mouse(ctx context.Context, action MouseAction) error {
 }
 
 func (b windowsBackend) Keyboard(ctx context.Context, action KeyboardAction) error {
+	if len(action.Keys) > 0 {
+		if _, err := normalizeKeys(action.Keys); err != nil {
+			return err
+		}
+	}
 	_, err := b.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", buildWindowsKeyboardScript(action))
 	if err != nil {
 		return wrapDesktopError("windows keyboard input unavailable", err)

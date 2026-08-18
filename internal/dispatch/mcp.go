@@ -1,11 +1,18 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
@@ -17,12 +24,35 @@ type Caller interface {
 }
 
 type MCP struct {
-	broker  Caller
-	desktop Caller
+	broker            Caller
+	desktop           Caller
+	desktopM          sync.Mutex
+	captureM          sync.Mutex
+	captures          map[string]captureState
+	desktopGeneration uint64
+}
+
+type captureState struct {
+	ID         string
+	Width      int
+	Height     int
+	Generation uint64
+}
+
+type externalDesktopAction struct {
+	Type    desktop.ActionKind  `json:"type"`
+	X       *int                `json:"x,omitempty"`
+	Y       *int                `json:"y,omitempty"`
+	Button  desktop.MouseButton `json:"button,omitempty"`
+	Text    *string             `json:"text,omitempty"`
+	Keys    []string            `json:"keys,omitempty"`
+	ScrollX *int                `json:"scrollX,omitempty"`
+	ScrollY *int                `json:"scrollY,omitempty"`
+	Path    []desktop.Point     `json:"path,omitempty"`
 }
 
 func NewMCP(broker, desktop Caller) *MCP {
-	return &MCP{broker: broker, desktop: desktop}
+	return &MCP{broker: broker, desktop: desktop, captures: map[string]captureState{}}
 }
 
 func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
@@ -76,9 +106,9 @@ func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	case "filesystem_write":
 		return d.filesystemWrite(ctx, call.Arguments)
 	case "desktop_observe":
-		return d.desktopObserve(ctx, call.Arguments)
+		return d.desktopObserve(ctx, call.SessionID, call.Arguments)
 	case "desktop_control":
-		return d.desktopControl(ctx, call.Arguments)
+		return d.desktopControl(ctx, call.SessionID, call.Arguments)
 	case "device_status":
 		return d.deviceStatus(ctx, call.Arguments)
 	default:
@@ -243,7 +273,7 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 	}
 }
 
-func (d *MCP) desktopObserve(ctx context.Context, arguments map[string]any) (any, error) {
+func (d *MCP) desktopObserve(ctx context.Context, sessionID string, arguments map[string]any) (any, error) {
 	action, err := requiredString(arguments, "action")
 	if err != nil {
 		return nil, err
@@ -261,11 +291,12 @@ func (d *MCP) desktopObserve(ctx context.Context, arguments map[string]any) (any
 	case "windows", "accessibility_tree":
 		return d.call(ctx, d.desktop, method, struct{}{})
 	case "screenshot":
-		path, err := requiredString(arguments, "path")
-		if err != nil {
-			return nil, err
+		path, _ := arguments["path"].(string)
+		includeImage, _ := arguments["includeImage"].(bool)
+		if path != "" && !includeImage {
+			return d.call(ctx, d.desktop, method, desktop.RPCDesktopScreenshotParams{Path: path})
 		}
-		return d.call(ctx, d.desktop, method, desktop.RPCDesktopScreenshotParams{Path: path})
+		return d.captureDesktop(ctx, sessionID)
 	case "applications":
 		windows, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopWindows, struct{}{})
 		if err != nil {
@@ -288,10 +319,15 @@ func (d *MCP) desktopObserve(ctx context.Context, arguments map[string]any) (any
 	}
 }
 
-func (d *MCP) desktopControl(ctx context.Context, arguments map[string]any) (any, error) {
+func (d *MCP) desktopControl(ctx context.Context, sessionID string, arguments map[string]any) (any, error) {
+	d.desktopM.Lock()
+	defer d.desktopM.Unlock()
 	action, err := requiredString(arguments, "action")
 	if err != nil {
 		return nil, err
+	}
+	if action == "batch" {
+		return d.desktopBatch(ctx, sessionID, arguments)
 	}
 	method, ok := map[string]string{
 		"mouse_move":   "desktop.mouse",
@@ -313,6 +349,7 @@ func (d *MCP) desktopControl(ctx context.Context, arguments map[string]any) (any
 		if action == "mouse_click" {
 			actionType = desktop.MouseActionClick
 		}
+		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopMouseParams{Action: desktop.MouseAction{
 			Type: actionType, X: int(integer(arguments["x"])), Y: int(integer(arguments["y"])), Button: desktop.MouseButton(button),
 		}})
@@ -321,9 +358,11 @@ func (d *MCP) desktopControl(ctx context.Context, arguments map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
+		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopKeyboardParams{Action: desktop.KeyboardAction{Text: text}})
 	case "key_press":
 		modifiers := stringSlice(arguments["modifiers"])
+		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopKeyboardParams{Action: desktop.KeyboardAction{
 			KeyCode: int(integer(arguments["keyCode"])), Modifiers: modifiers,
 		}})
@@ -332,10 +371,217 @@ func (d *MCP) desktopControl(ctx context.Context, arguments map[string]any) (any
 		if err != nil {
 			return nil, err
 		}
+		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopAppParams{Action: desktop.AppAction{Type: desktop.AppActionActivate, Name: name}})
 	default:
 		return nil, fmt.Errorf("unsupported desktop control action %q", action)
 	}
+}
+
+const maxDesktopCaptureBytes = 48 << 20
+const maxDesktopBatchActions = 64
+const maxDesktopBatchWaits = 10
+
+type desktopCapture struct {
+	Data     []byte `json:"data"`
+	MimeType string `json:"mime_type"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
+func (d *MCP) captureDesktop(ctx context.Context, sessionID string) (mcp.ToolResult, error) {
+	d.desktopM.Lock()
+	defer d.desktopM.Unlock()
+	return d.captureDesktopLocked(ctx, sessionID)
+}
+
+func (d *MCP) captureDesktopLocked(ctx context.Context, sessionID string) (mcp.ToolResult, error) {
+	if d.desktop == nil {
+		return mcp.ToolResult{}, errors.New("Executor desktop helper is unavailable")
+	}
+	var capture desktopCapture
+	if err := d.desktop.Call(ctx, "desktop.capture", struct{}{}, &capture); err != nil {
+		return mcp.ToolResult{}, err
+	}
+	if len(capture.Data) == 0 || len(capture.Data) > maxDesktopCaptureBytes {
+		return mcp.ToolResult{}, fmt.Errorf("desktop capture size must be between 1 and %d bytes", maxDesktopCaptureBytes)
+	}
+	if !strings.HasPrefix(capture.MimeType, "image/") || capture.Width < 1 || capture.Height < 1 {
+		return mcp.ToolResult{}, errors.New("desktop capture metadata is invalid")
+	}
+	captureID, err := randomCaptureID()
+	if err != nil {
+		return mcp.ToolResult{}, err
+	}
+	d.captureM.Lock()
+	d.captures[sessionKey(sessionID)] = captureState{
+		ID: captureID, Width: capture.Width, Height: capture.Height, Generation: d.desktopGeneration,
+	}
+	d.captureM.Unlock()
+
+	return mcp.ToolResult{
+		StructuredContent: map[string]any{
+			"captureId":  captureID,
+			"width":      capture.Width,
+			"height":     capture.Height,
+			"mimeType":   capture.MimeType,
+			"capturedAt": time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		Content: []any{map[string]any{
+			"type":     "image",
+			"data":     base64.StdEncoding.EncodeToString(capture.Data),
+			"mimeType": capture.MimeType,
+			"_meta":    map[string]any{"codex/imageDetail": "original"},
+		}},
+	}, nil
+}
+
+func (d *MCP) desktopBatch(ctx context.Context, sessionID string, arguments map[string]any) (any, error) {
+	captureID, err := requiredString(arguments, "captureId")
+	if err != nil {
+		return nil, err
+	}
+	actions, err := parseDesktopActions(arguments["actions"])
+	if err != nil {
+		return nil, err
+	}
+	d.captureM.Lock()
+	latestCapture := d.captures[sessionKey(sessionID)]
+	if latestCapture.ID == "" || captureID != latestCapture.ID || latestCapture.Generation != d.desktopGeneration {
+		d.captureM.Unlock()
+		return nil, errors.New("desktop capture is stale; observe the desktop again before controlling it")
+	}
+	if err := validateDesktopActionBounds(actions, latestCapture.Width, latestCapture.Height); err != nil {
+		d.captureM.Unlock()
+		return nil, err
+	}
+	d.desktopGeneration++
+	delete(d.captures, sessionKey(sessionID))
+	d.captureM.Unlock()
+	if _, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopActions, desktop.RPCDesktopActionsParams{Actions: actions}); err != nil {
+		return nil, err
+	}
+	return d.captureDesktopLocked(ctx, sessionID)
+}
+
+func (d *MCP) invalidateDesktopCaptures() {
+	d.captureM.Lock()
+	d.desktopGeneration++
+	d.captureM.Unlock()
+}
+
+func validateDesktopActionBounds(actions []desktop.Action, width, height int) error {
+	validPoint := func(point desktop.Point) bool {
+		return point.X >= 0 && point.Y >= 0 && point.X < width && point.Y < height
+	}
+	for index, action := range actions {
+		switch action.Type {
+		case desktop.ActionClick, desktop.ActionDoubleClick, desktop.ActionMove, desktop.ActionScroll:
+			if !validPoint(desktop.Point{X: action.X, Y: action.Y}) {
+				return fmt.Errorf("desktop action %d (%s) coordinates are outside capture bounds %dx%d", index, action.Type, width, height)
+			}
+		case desktop.ActionDrag:
+			for _, point := range action.Path {
+				if !validPoint(point) {
+					return fmt.Errorf("desktop action %d (drag) path is outside capture bounds %dx%d", index, width, height)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func parseDesktopActions(value any) ([]desktop.Action, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, errors.New("desktop actions are invalid")
+	}
+	var external []externalDesktopAction
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&external); err != nil {
+		return nil, fmt.Errorf("desktop actions are invalid: %w", err)
+	}
+	if len(external) == 0 {
+		return nil, errors.New("desktop actions require at least one action")
+	}
+	if len(external) > maxDesktopBatchActions {
+		return nil, fmt.Errorf("desktop actions exceed the limit of %d", maxDesktopBatchActions)
+	}
+	actions := make([]desktop.Action, 0, len(external))
+	waits := 0
+	for index, item := range external {
+		action := desktop.Action{
+			Type: item.Type, Button: item.Button, Text: optionalString(item.Text),
+			Keys: append([]string(nil), item.Keys...), Path: append([]desktop.Point(nil), item.Path...),
+		}
+		switch item.Type {
+		case desktop.ActionClick, desktop.ActionDoubleClick, desktop.ActionMove:
+			if item.X == nil || item.Y == nil {
+				return nil, fmt.Errorf("desktop action %d (%s) requires x and y", index, item.Type)
+			}
+			action.X, action.Y = *item.X, *item.Y
+		case desktop.ActionScroll:
+			if item.X == nil || item.Y == nil || item.ScrollX == nil || item.ScrollY == nil {
+				return nil, fmt.Errorf("desktop action %d (scroll) requires x, y, scrollX, and scrollY", index)
+			}
+			action.X, action.Y, action.ScrollX, action.ScrollY = *item.X, *item.Y, *item.ScrollX, *item.ScrollY
+		case desktop.ActionDrag:
+			if len(item.Path) < 2 {
+				return nil, fmt.Errorf("desktop action %d (drag) requires at least two path points", index)
+			}
+		case desktop.ActionType:
+			if item.Text == nil || *item.Text == "" {
+				return nil, fmt.Errorf("desktop action %d (type) requires text", index)
+			}
+		case desktop.ActionKeypress:
+			if len(item.Keys) == 0 {
+				return nil, fmt.Errorf("desktop action %d (keypress) requires keys", index)
+			}
+		case desktop.ActionWait, desktop.ActionScreenshot:
+			if item.Type == desktop.ActionWait {
+				waits++
+				if waits > maxDesktopBatchWaits {
+					return nil, fmt.Errorf("desktop actions exceed the wait limit of %d", maxDesktopBatchWaits)
+				}
+			}
+		default:
+			return nil, fmt.Errorf("unsupported desktop action %d type %q", index, item.Type)
+		}
+		if action.Button == "middle" {
+			action.Button = desktop.MouseButtonCenter
+		}
+		if action.Button != "" && action.Button != desktop.MouseButtonLeft && action.Button != desktop.MouseButtonRight && action.Button != desktop.MouseButtonCenter {
+			return nil, fmt.Errorf("desktop action %d has unsupported mouse button %q", index, action.Button)
+		}
+		actions = append(actions, action)
+	}
+	if err := desktop.ValidateActions(actions); err != nil {
+		return nil, err
+	}
+	return actions, nil
+}
+
+func optionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func randomCaptureID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate desktop capture ID: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func sessionKey(sessionID string) string {
+	if sessionID == "" {
+		return "local"
+	}
+	return sessionID
 }
 
 func (d *MCP) deviceStatus(ctx context.Context, arguments map[string]any) (any, error) {

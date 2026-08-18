@@ -1,9 +1,17 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"image/jpeg"
+	"image/png"
+	"io"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/jamie950315/executor/internal/filesystem"
 	"github.com/jamie950315/executor/internal/ipc"
@@ -11,6 +19,9 @@ import (
 )
 
 var ErrUnknownRPCMethod = errors.New("unknown RPC method")
+
+const maxRPCCaptureBytes = 48 << 20
+const maxRawCaptureBytes = 256 << 20
 
 type HelperTerminal interface {
 	Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error)
@@ -43,11 +54,25 @@ type HelperDesktop interface {
 	Mouse(ctx context.Context, action MouseAction) error
 	Keyboard(ctx context.Context, action KeyboardAction) error
 	App(ctx context.Context, action AppAction) error
+	Actions(ctx context.Context, actions []Action) error
 	Available(ctx context.Context) bool
 }
 
 func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, files HelperFilesystem, desktop HelperDesktop) *ipc.RPCServer {
+	desktopGate := make(chan struct{}, 1)
+	desktopGate <- struct{}{}
 	handler := func(ctx context.Context, method string, params []byte) (any, error) {
+		if strings.HasPrefix(method, "desktop.") {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-desktopGate:
+			}
+			defer func() { desktopGate <- struct{}{} }()
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		switch method {
 		case RPCMethodTerminalStart:
 			var request RPCTerminalStartParams
@@ -228,6 +253,12 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				TerminalSessions: len(terminal.List()),
 				Available:        desktop.Available(ctx),
 			}, nil
+		case RPCMethodDesktopCapture:
+			var request struct{}
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			return captureDesktop(ctx, desktop)
 		case RPCMethodDesktopScreenshot:
 			var request RPCDesktopScreenshotParams
 			if err := decodeStrictParams(method, params, &request); err != nil {
@@ -276,9 +307,89 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return nil, desktop.App(ctx, request.Action)
+		case RPCMethodDesktopActions:
+			var request RPCDesktopActionsParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if len(request.Actions) == 0 {
+				return nil, errors.New("desktop.actions requires at least one action")
+			}
+			if err := ValidateActions(request.Actions); err != nil {
+				return nil, err
+			}
+			return nil, desktop.Actions(ctx, request.Actions)
 		default:
 			return nil, ErrUnknownRPCMethod
 		}
 	}
 	return ipc.NewRPCServer(endpoint, key, handler)
+}
+
+func captureDesktop(ctx context.Context, desktop HelperDesktop) (RPCDesktopCapture, error) {
+	directory, err := os.MkdirTemp("", "executor-desktop-*")
+	if err != nil {
+		return RPCDesktopCapture{}, fmt.Errorf("create desktop capture directory: %w", err)
+	}
+	defer os.RemoveAll(directory)
+	if err := os.Chmod(directory, 0o700); err != nil {
+		return RPCDesktopCapture{}, fmt.Errorf("secure desktop capture directory: %w", err)
+	}
+	path := filepath.Join(directory, "capture.png")
+	if err := desktop.Screenshot(ctx, path); err != nil {
+		return RPCDesktopCapture{}, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return RPCDesktopCapture{}, fmt.Errorf("secure desktop capture file: %w", err)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return RPCDesktopCapture{}, fmt.Errorf("open desktop capture: %w", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxRawCaptureBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return RPCDesktopCapture{}, fmt.Errorf("read desktop capture: %w", readErr)
+	}
+	if closeErr != nil {
+		return RPCDesktopCapture{}, fmt.Errorf("close desktop capture: %w", closeErr)
+	}
+	if len(data) == 0 || len(data) > maxRawCaptureBytes {
+		return RPCDesktopCapture{}, fmt.Errorf("raw desktop capture size must be between 1 and %d bytes", maxRawCaptureBytes)
+	}
+	data, mimeType, width, height, err := prepareDesktopCapture(data, maxRPCCaptureBytes)
+	if err != nil {
+		return RPCDesktopCapture{}, err
+	}
+	return RPCDesktopCapture{
+		Data: data, MimeType: mimeType, Width: width, Height: height,
+	}, nil
+}
+
+func prepareDesktopCapture(data []byte, limit int) ([]byte, string, int, int, error) {
+	configuration, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", 0, 0, fmt.Errorf("decode desktop capture PNG: %w", err)
+	}
+	if configuration.Width < 1 || configuration.Height < 1 {
+		return nil, "", 0, 0, errors.New("desktop capture dimensions are invalid")
+	}
+	if len(data) <= limit {
+		return data, "image/png", configuration.Width, configuration.Height, nil
+	}
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", 0, 0, fmt.Errorf("decode oversized desktop capture PNG: %w", err)
+	}
+	for _, quality := range []int{85, 75, 60, 45, 30, 20} {
+		var encoded bytes.Buffer
+		if err := jpeg.Encode(&encoded, decoded, &jpeg.Options{Quality: quality}); err != nil {
+			return nil, "", 0, 0, fmt.Errorf("encode desktop capture JPEG: %w", err)
+		}
+		if encoded.Len() <= limit {
+			return encoded.Bytes(), "image/jpeg", configuration.Width, configuration.Height, nil
+		}
+	}
+	return nil, "", 0, 0, fmt.Errorf("desktop capture cannot be encoded within %d bytes", limit)
 }

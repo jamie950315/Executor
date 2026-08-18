@@ -124,12 +124,19 @@ func (b linuxBackend) Mouse(ctx context.Context, action MouseAction) error {
 		if !b.tools["xdotool"] {
 			return &UnavailableError{Reason: "x11 mouse input unavailable: install xdotool"}
 		}
-		args := []string{"mousemove", fmt.Sprintf("%d", action.X), fmt.Sprintf("%d", action.Y)}
-		if action.Type == MouseActionClick {
-			args = []string{"mousemove", fmt.Sprintf("%d", action.X), fmt.Sprintf("%d", action.Y), "click", "1"}
+		commands, err := buildX11MouseCommands(action)
+		if err != nil {
+			return err
 		}
-		if _, err := b.runner.Run(ctx, "xdotool", args...); err != nil {
-			return wrapDesktopError("x11 mouse input unavailable", err)
+		for index, command := range commands {
+			if _, err := b.runner.Run(ctx, "xdotool", command...); err != nil {
+				for _, remaining := range commands[index+1:] {
+					if len(remaining) > 0 && remaining[0] == "keyup" {
+						_, _ = b.runner.Run(context.WithoutCancel(ctx), "xdotool", remaining...)
+					}
+				}
+				return wrapDesktopError("x11 mouse input unavailable", err)
+			}
 		}
 		return nil
 	case backendWayland:
@@ -154,6 +161,16 @@ func (b linuxBackend) Keyboard(ctx context.Context, action KeyboardAction) error
 		}
 		if action.Text != "" {
 			if _, err := b.runner.Run(ctx, "xdotool", "type", "--delay", "1", action.Text); err != nil {
+				return wrapDesktopError("x11 keyboard input unavailable", err)
+			}
+			return nil
+		}
+		if len(action.Keys) > 0 {
+			command, err := buildX11KeypressCommand(action.Keys)
+			if err != nil {
+				return err
+			}
+			if _, err := b.runner.Run(ctx, "xdotool", command...); err != nil {
 				return wrapDesktopError("x11 keyboard input unavailable", err)
 			}
 			return nil
@@ -227,6 +244,53 @@ func detectAvailableTools(names ...string) availableTools {
 
 func (b linuxBackend) Available(ctx context.Context) bool {
 	return b.kind != backendUnavailable
+}
+
+func (b linuxBackend) PreflightActions(actions []Action) error {
+	for index, action := range actions {
+		var err error
+		switch action.Type {
+		case ActionClick, ActionDoubleClick, ActionMove, ActionDrag, ActionScroll:
+			mouseAction := MouseAction{
+				Type: map[ActionKind]MouseActionType{
+					ActionClick: MouseActionClick, ActionDoubleClick: MouseActionDoubleClick,
+					ActionMove: MouseActionMove, ActionDrag: MouseActionDrag, ActionScroll: MouseActionScroll,
+				}[action.Type],
+				X: action.X, Y: action.Y, Button: action.Button, Keys: action.Keys,
+				Path: action.Path, ScrollX: action.ScrollX, ScrollY: action.ScrollY,
+			}
+			switch b.kind {
+			case backendX11:
+				if !b.tools["xdotool"] {
+					err = &UnavailableError{Reason: "x11 mouse input unavailable: install xdotool"}
+				} else {
+					_, err = buildX11MouseCommands(mouseAction)
+				}
+			case backendWayland:
+				_, err = chooseWaylandMouseCommand(b.tools, mouseAction)
+			default:
+				err = &UnavailableError{Reason: "no active Linux desktop session detected"}
+			}
+		case ActionType, ActionKeypress:
+			keyboardAction := KeyboardAction{Text: action.Text, Keys: action.Keys}
+			switch b.kind {
+			case backendX11:
+				if !b.tools["xdotool"] {
+					err = &UnavailableError{Reason: "x11 keyboard input unavailable: install xdotool"}
+				} else if len(keyboardAction.Keys) > 0 {
+					_, err = buildX11KeypressCommand(keyboardAction.Keys)
+				}
+			case backendWayland:
+				_, err = chooseWaylandKeyboardCommand(b.tools, keyboardAction)
+			default:
+				err = &UnavailableError{Reason: "no active Linux desktop session detected"}
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("action %d (%s): %w", index, action.Type, err)
+		}
+	}
+	return nil
 }
 
 func (b linuxBackend) parseWindowLine(ctx context.Context, line string) (Window, error) {

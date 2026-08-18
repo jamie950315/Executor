@@ -55,6 +55,8 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 - Setup preserves the preferred loopback ports when available and automatically persists free loopback ports when another process owns them. Agent and Dashboard status/doctor probes require the authenticated Executor health marker instead of treating any listener as healthy.
 - `executor doctor --full` verifies that the public hostname reaches Executor's DCR endpoint with a deliberately invalid, non-registering request and reports an actionable Cloudflare Bot Fight Mode/WAF diagnosis for HTTP 403 responses.
 - Installed services are active and healthy on the Pi5, this Mac, Windows `ctps`, and its Debian WSL instance. macOS service rendering uses the native `wheel` administrator group, and Unix credential rotation preserves the installed secret store owner and mode.
+- MCP Computer Use now returns screenshots as image content with metadata-only structured output, enforces single-use capture IDs with global invalidation after any desktop control, validates coordinates and platform capability before input, executes nine-action batches, serializes observe/control in both Agent and Desktop helper, and automatically returns the updated screenshot. Oversized PNGs are re-encoded as same-dimension JPEGs; screenshot bytes and typed text remain outside audit storage.
+- macOS and Windows Computer Use capture the primary display for coordinate consistency; macOS Retina output is normalized to display points. Linux X11 supports the complete action surface, while unreliable advanced Wayland mouse actions return explicit unavailable errors.
 
 ## Runtime targets
 

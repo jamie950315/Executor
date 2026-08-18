@@ -3,6 +3,7 @@
 package desktop
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -10,36 +11,88 @@ import (
 
 type defaultEventPoster struct{}
 
+func mainDisplayDimensions(ctx context.Context) (int, int, error) {
+	const source = `import CoreGraphics
+let bounds = CGDisplayBounds(CGMainDisplayID())
+print("\(Int(bounds.width)) \(Int(bounds.height))")`
+	output, err := exec.CommandContext(ctx, "/usr/bin/swift", "-e", source).Output()
+	if err != nil {
+		return 0, 0, err
+	}
+	var width, height int
+	if _, err := fmt.Sscanf(string(output), "%d %d", &width, &height); err != nil {
+		return 0, 0, err
+	}
+	return width, height, nil
+}
+
 func (defaultEventPoster) PostMouse(action MouseAction) error {
-	button, down, up, err := swiftMouseTypes(action.Button)
+	button, down, up, drag, err := swiftMouseTypes(action.Button)
 	if err != nil {
 		return err
 	}
-	events := "post(\".mouseMoved\")"
-	switch action.Type {
-	case MouseActionMove:
-	case MouseActionDown:
-		events = fmt.Sprintf("post(\"%s\")", down)
-	case MouseActionUp:
-		events = fmt.Sprintf("post(\"%s\")", up)
-	case MouseActionClick:
-		events = fmt.Sprintf("post(\"%s\"); post(\"%s\")", down, up)
-	default:
-		return fmt.Errorf("unsupported mouse action %q", action.Type)
+	modifiers, err := normalizeModifiers(action.Keys)
+	if err != nil {
+		return err
+	}
+	steps, err := expandMouseAction(action)
+	if err != nil {
+		return err
+	}
+	flagLines := "var flags = CGEventFlags()\n"
+	for _, modifier := range modifiers {
+		switch modifier {
+		case keyShift:
+			flagLines += "flags.insert(.maskShift)\n"
+		case keyControl:
+			flagLines += "flags.insert(.maskControl)\n"
+		case keyAlt:
+			flagLines += "flags.insert(.maskAlternate)\n"
+		case keyMeta:
+			flagLines += "flags.insert(.maskCommand)\n"
+		}
+	}
+	var events strings.Builder
+	for _, step := range steps {
+		eventType := ".mouseMoved"
+		switch step.Type {
+		case mouseStepDown:
+			eventType = down
+		case mouseStepUp:
+			eventType = up
+		case mouseStepDrag:
+			eventType = drag
+		case mouseStepScroll:
+			scrollX, scrollY := nativeWheelDeltas(step.ScrollX, step.ScrollY)
+			fmt.Fprintf(&events, "postScroll(%d, %d, %d, %d)\n", step.X, step.Y, scrollX, scrollY)
+			continue
+		}
+		fmt.Fprintf(&events, "postMouse(\"%s\", %d, %d, %d)\n", eventType, step.X, step.Y, step.Click)
 	}
 	source := fmt.Sprintf(`import CoreGraphics
-let point = CGPoint(x: %d, y: %d)
 let button = CGMouseButton(rawValue: %d)!
-func post(_ name: String) {
+%s
+func postMouse(_ name: String, _ x: Int, _ y: Int, _ clickState: Int64) {
   let types: [String: CGEventType] = [
     ".mouseMoved": .mouseMoved, ".leftMouseDown": .leftMouseDown, ".leftMouseUp": .leftMouseUp,
     ".rightMouseDown": .rightMouseDown, ".rightMouseUp": .rightMouseUp,
-    ".otherMouseDown": .otherMouseDown, ".otherMouseUp": .otherMouseUp]
-  if let event = CGEvent(mouseEventSource: nil, mouseType: types[name]!, mouseCursorPosition: point, mouseButton: button) {
+    ".otherMouseDown": .otherMouseDown, ".otherMouseUp": .otherMouseUp,
+    ".leftMouseDragged": .leftMouseDragged, ".rightMouseDragged": .rightMouseDragged,
+    ".otherMouseDragged": .otherMouseDragged]
+  if let event = CGEvent(mouseEventSource: nil, mouseType: types[name]!, mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: button) {
+    event.flags = flags
+    if clickState > 0 { event.setIntegerValueField(.mouseEventClickState, value: clickState) }
     event.post(tap: .cghidEventTap)
   }
 }
-%s`, action.X, action.Y, button, events)
+func postScroll(_ x: Int, _ y: Int, _ scrollX: Int32, _ scrollY: Int32) {
+  if let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: scrollY, wheel2: scrollX, wheel3: 0) {
+    event.location = CGPoint(x: x, y: y)
+    event.flags = flags
+    event.post(tap: .cghidEventTap)
+  }
+}
+%s`, button, flagLines, events.String())
 	return exec.Command("/usr/bin/swift", "-e", source).Run()
 }
 
@@ -70,15 +123,15 @@ func (defaultEventPoster) PostKeyboard(action KeyboardAction) error {
 	return exec.Command("/usr/bin/osascript", "-e", script).Run()
 }
 
-func swiftMouseTypes(button MouseButton) (code int, down, up string, err error) {
+func swiftMouseTypes(button MouseButton) (code int, down, up, drag string, err error) {
 	switch button {
 	case "", MouseButtonLeft:
-		return 0, ".leftMouseDown", ".leftMouseUp", nil
+		return 0, ".leftMouseDown", ".leftMouseUp", ".leftMouseDragged", nil
 	case MouseButtonRight:
-		return 1, ".rightMouseDown", ".rightMouseUp", nil
-	case MouseButtonCenter:
-		return 2, ".otherMouseDown", ".otherMouseUp", nil
+		return 1, ".rightMouseDown", ".rightMouseUp", ".rightMouseDragged", nil
+	case MouseButtonCenter, MouseButtonWheel:
+		return 2, ".otherMouseDown", ".otherMouseUp", ".otherMouseDragged", nil
 	default:
-		return 0, "", "", fmt.Errorf("unsupported mouse button %q", button)
+		return 0, "", "", "", fmt.Errorf("unsupported mouse button %q", button)
 	}
 }

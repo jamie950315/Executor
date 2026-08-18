@@ -168,3 +168,4 @@ func (unavailableDesktop) Accessibility(context.Context) (desktop.AccessibilityT
 func (unavailableDesktop) Mouse(context.Context, desktop.MouseAction) error       { return nil }
 func (unavailableDesktop) Keyboard(context.Context, desktop.KeyboardAction) error { return nil }
 func (unavailableDesktop) App(context.Context, desktop.AppAction) error           { return nil }
+func (unavailableDesktop) Actions(context.Context, []desktop.Action) error        { return nil }

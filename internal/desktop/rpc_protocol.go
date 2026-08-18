@@ -32,12 +32,14 @@ const (
 	RPCMethodFilesystemDelete = "filesystem.delete"
 
 	RPCMethodDeviceStatus         = "device.status"
+	RPCMethodDesktopCapture       = "desktop.capture"
 	RPCMethodDesktopScreenshot    = "desktop.screenshot"
 	RPCMethodDesktopWindows       = "desktop.windows"
 	RPCMethodDesktopAccessibility = "desktop.accessibility"
 	RPCMethodDesktopMouse         = "desktop.mouse"
 	RPCMethodDesktopKeyboard      = "desktop.keyboard"
 	RPCMethodDesktopApp           = "desktop.app"
+	RPCMethodDesktopActions       = "desktop.actions"
 )
 
 type RPCTerminalStartParams struct {
@@ -102,6 +104,13 @@ type RPCDesktopScreenshotParams struct {
 	Path string `json:"path"`
 }
 
+type RPCDesktopCapture struct {
+	Data     []byte `json:"data"`
+	MimeType string `json:"mime_type"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
 type RPCDesktopMouseParams struct {
 	Action MouseAction `json:"action"`
 }
@@ -112,6 +121,10 @@ type RPCDesktopKeyboardParams struct {
 
 type RPCDesktopAppParams struct {
 	Action AppAction `json:"action"`
+}
+
+type RPCDesktopActionsParams struct {
+	Actions []Action `json:"actions"`
 }
 
 type RPCDeviceStatus struct {

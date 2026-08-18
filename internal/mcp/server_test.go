@@ -37,6 +37,18 @@ func (value *statefulJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return []byte(`"changed"`), nil
 }
 
+type statefulObjectJSONMarshaler struct {
+	calls int
+}
+
+func (value *statefulObjectJSONMarshaler) MarshalJSON() ([]byte, error) {
+	value.calls++
+	if value.calls == 1 {
+		return []byte(`{"width":3024,"height":1964}`), nil
+	}
+	return []byte(`{"unexpected":true}`), nil
+}
+
 func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +115,44 @@ func TestDesktopToolSchemasMatchExecutableArguments(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestDesktopToolSchemasExposeComputerUseLoop(t *testing.T) {
+	t.Parallel()
+
+	for _, tool := range BuiltinTools() {
+		if tool.Name != "desktop_control" {
+			continue
+		}
+		properties := tool.InputSchema["properties"].(map[string]any)
+		actions := properties["action"].(map[string]any)["enum"].([]string)
+		if !slices.Contains(actions, "batch") {
+			t.Fatalf("desktop_control actions = %#v, missing batch", actions)
+		}
+		if _, ok := properties["captureId"].(map[string]any); !ok {
+			t.Fatal("desktop_control captureId schema is missing")
+		}
+		batchActions, ok := properties["actions"].(map[string]any)
+		if !ok {
+			t.Fatal("desktop_control actions schema is missing")
+		}
+		items, ok := batchActions["items"].(map[string]any)
+		if !ok || items["type"] != "object" {
+			t.Fatalf("desktop_control action item schema = %#v", batchActions["items"])
+		}
+		itemProperties := items["properties"].(map[string]any)
+		if _, ok := itemProperties["keyCode"]; ok {
+			t.Fatal("Computer Use keypress schema advertises unsupported keyCode instead of keys")
+		}
+		types := itemProperties["type"].(map[string]any)["enum"].([]string)
+		for _, actionType := range []string{"click", "double_click", "move", "drag", "scroll", "type", "keypress", "wait", "screenshot"} {
+			if !slices.Contains(types, actionType) {
+				t.Fatalf("computer action types = %#v, missing %q", types, actionType)
+			}
+		}
+		return
+	}
+	t.Fatal("desktop_control tool is missing")
 }
 
 func TestTerminalToolSchemaExposesResizeDimensions(t *testing.T) {
@@ -349,6 +399,87 @@ func TestToolCallWrapsArrayResultInObjectStructuredContent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(structuredContent, want) {
 		t.Fatalf("structuredContent = %#v, want %#v", structuredContent, want)
+	}
+}
+
+func TestToolCallReturnsExplicitMultimodalResult(t *testing.T) {
+	t.Parallel()
+
+	structuredContent := &statefulObjectJSONMarshaler{}
+	server := NewServer(ServerConfig{
+		Dispatcher: func(_ context.Context, _ ToolCall) (any, error) {
+			return ToolResult{
+				StructuredContent: structuredContent,
+				Content: []any{
+					map[string]any{
+						"type":     "image",
+						"data":     "iVBORw0KGgo=",
+						"mimeType": "image/png",
+						"_meta": map[string]any{
+							"codex/imageDetail": "original",
+						},
+					},
+				},
+				IsError: true,
+			}, nil
+		},
+	})
+
+	initialize := performHTTPRequest(t, server, "", rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "1",
+		Method:  "initialize",
+	})
+	sessionID := initialize.Header().Get(SessionHeader)
+	if sessionID == "" {
+		t.Fatal("initialize response missing session id header")
+	}
+
+	response := performHTTPRequest(t, server, sessionID, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "2",
+		Method:  "tools/call",
+		Params: map[string]any{
+			"name":      "desktop_observe",
+			"arguments": map[string]any{"action": "screenshot"},
+		},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("tools/call status = %d, want 200", response.Code)
+	}
+
+	var body rpcResponse
+	decodeJSON(t, response.Body.Bytes(), &body)
+	if body.Error != nil {
+		t.Fatalf("tools/call returned error: %#v", body.Error)
+	}
+	result := body.Result.(map[string]any)
+
+	wantStructuredContent := map[string]any{
+		"width":  json.Number("3024"),
+		"height": json.Number("1964"),
+	}
+	if got := result["structuredContent"]; !reflect.DeepEqual(got, wantStructuredContent) {
+		t.Fatalf("structuredContent = %#v, want %#v", got, wantStructuredContent)
+	}
+	wantContent := []any{
+		map[string]any{
+			"type":     "image",
+			"data":     "iVBORw0KGgo=",
+			"mimeType": "image/png",
+			"_meta": map[string]any{
+				"codex/imageDetail": "original",
+			},
+		},
+	}
+	if got := result["content"]; !reflect.DeepEqual(got, wantContent) {
+		t.Fatalf("content = %#v, want %#v", got, wantContent)
+	}
+	if got := result["isError"]; got != true {
+		t.Fatalf("isError = %#v, want true", got)
+	}
+	if structuredContent.calls != 1 {
+		t.Fatalf("structured content MarshalJSON() calls = %d, want 1", structuredContent.calls)
 	}
 }
 

@@ -382,6 +382,9 @@ func (f *rpcTestDesktop) App(ctx context.Context, action desktop.AppAction) erro
 	f.app = action
 	return nil
 }
+func (f *rpcTestDesktop) Actions(ctx context.Context, actions []desktop.Action) error {
+	return nil
+}
 func (f *rpcTestDesktop) Available(ctx context.Context) bool {
 	return true
 }

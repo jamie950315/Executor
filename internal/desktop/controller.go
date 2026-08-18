@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 type MouseActionType string
 
 const (
-	MouseActionMove  MouseActionType = "move"
-	MouseActionDown  MouseActionType = "down"
-	MouseActionUp    MouseActionType = "up"
-	MouseActionClick MouseActionType = "click"
+	MouseActionMove        MouseActionType = "move"
+	MouseActionDown        MouseActionType = "down"
+	MouseActionUp          MouseActionType = "up"
+	MouseActionClick       MouseActionType = "click"
+	MouseActionDoubleClick MouseActionType = "double_click"
+	MouseActionDrag        MouseActionType = "drag"
+	MouseActionScroll      MouseActionType = "scroll"
 )
 
 type MouseButton string
@@ -21,6 +25,7 @@ const (
 	MouseButtonLeft   MouseButton = "left"
 	MouseButtonRight  MouseButton = "right"
 	MouseButtonCenter MouseButton = "center"
+	MouseButtonWheel  MouseButton = "wheel"
 )
 
 type AppActionType string
@@ -32,16 +37,21 @@ const (
 )
 
 type MouseAction struct {
-	Type   MouseActionType
-	X      int
-	Y      int
-	Button MouseButton
+	Type    MouseActionType `json:"type"`
+	X       int             `json:"x,omitempty"`
+	Y       int             `json:"y,omitempty"`
+	Button  MouseButton     `json:"button,omitempty"`
+	Keys    []string        `json:"keys,omitempty"`
+	Path    []Point         `json:"path,omitempty"`
+	ScrollX int             `json:"scroll_x,omitempty"`
+	ScrollY int             `json:"scroll_y,omitempty"`
 }
 
 type KeyboardAction struct {
-	Text      string
-	KeyCode   int
-	Modifiers []string
+	Text      string   `json:"text,omitempty"`
+	KeyCode   int      `json:"key_code,omitempty"`
+	Modifiers []string `json:"modifiers,omitempty"`
+	Keys      []string `json:"keys,omitempty"`
 }
 
 type AppAction struct {
@@ -105,10 +115,11 @@ type backend interface {
 
 type Controller struct {
 	backend backend
+	wait    func(context.Context, time.Duration) error
 }
 
 func NewController() *Controller {
-	return &Controller{backend: defaultBackend()}
+	return &Controller{backend: defaultBackend(), wait: defaultActionWait}
 }
 
 func (c *Controller) Screenshot(ctx context.Context, path string) error {
@@ -137,6 +148,54 @@ func (c *Controller) App(ctx context.Context, action AppAction) error {
 
 func (c *Controller) Available(ctx context.Context) bool {
 	return c.backend.Available(ctx)
+}
+
+func (c *Controller) Actions(ctx context.Context, actions []Action) error {
+	if err := ValidateActions(actions); err != nil {
+		return err
+	}
+	if preflight, ok := c.backend.(interface{ PreflightActions([]Action) error }); ok {
+		if err := preflight.PreflightActions(actions); err != nil {
+			return err
+		}
+	}
+	for index, action := range actions {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var err error
+		switch action.Type {
+		case ActionClick, ActionDoubleClick, ActionMove, ActionDrag, ActionScroll:
+			types := map[ActionKind]MouseActionType{
+				ActionClick:       MouseActionClick,
+				ActionDoubleClick: MouseActionDoubleClick,
+				ActionMove:        MouseActionMove,
+				ActionDrag:        MouseActionDrag,
+				ActionScroll:      MouseActionScroll,
+			}
+			err = c.backend.Mouse(ctx, MouseAction{
+				Type: types[action.Type], X: action.X, Y: action.Y, Button: action.Button,
+				Keys: append([]string(nil), action.Keys...), Path: append([]Point(nil), action.Path...),
+				ScrollX: action.ScrollX, ScrollY: action.ScrollY,
+			})
+		case ActionType:
+			err = c.backend.Keyboard(ctx, KeyboardAction{Text: action.Text})
+		case ActionKeypress:
+			err = c.backend.Keyboard(ctx, KeyboardAction{Keys: append([]string(nil), action.Keys...)})
+		case ActionWait:
+			wait := c.wait
+			if wait == nil {
+				wait = defaultActionWait
+			}
+			err = wait(ctx, 2*time.Second)
+		case ActionScreenshot:
+			// The caller captures and returns the screen at this batch boundary.
+		}
+		if err != nil {
+			return fmt.Errorf("action %d (%s): %w", index, action.Type, err)
+		}
+	}
+	return nil
 }
 
 type staticUnavailableBackend struct {

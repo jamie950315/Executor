@@ -2,10 +2,15 @@ package dispatch
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
 )
 
@@ -63,6 +68,418 @@ func TestMCPRoutesFilesystemAndDesktopActions(t *testing.T) {
 	}
 	if got := desktop.calls[0].method; got != "desktop.windows" {
 		t.Fatalf("desktop method = %q", got)
+	}
+}
+
+func TestMCPDesktopScreenshotReturnsImageAndCaptureMetadata(t *testing.T) {
+	t.Parallel()
+
+	pngBytes := []byte("png-image-bytes")
+	desktop := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{
+			"data":      pngBytes,
+			"mime_type": "image/png",
+			"width":     1440,
+			"height":    900,
+		},
+	}}
+	dispatcher := NewMCP(nil, desktop)
+
+	result, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1",
+		Name:      "desktop_observe",
+		Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+
+	toolResult, ok := result.(mcp.ToolResult)
+	if !ok {
+		t.Fatalf("desktop screenshot result = %T, want mcp.ToolResult", result)
+	}
+	metadata, ok := toolResult.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structured content = %T, want map", toolResult.StructuredContent)
+	}
+	if metadata["captureId"] == "" || metadata["width"] != 1440 || metadata["height"] != 900 || metadata["mimeType"] != "image/png" {
+		t.Fatalf("unexpected capture metadata: %#v", metadata)
+	}
+	wantContent := []any{map[string]any{
+		"type":     "image",
+		"data":     base64.StdEncoding.EncodeToString(pngBytes),
+		"mimeType": "image/png",
+		"_meta":    map[string]any{"codex/imageDetail": "original"},
+	}}
+	if got, _ := json.Marshal(toolResult.Content); string(got) != mustJSON(t, wantContent) {
+		t.Fatalf("image content = %s, want %s", got, mustJSON(t, wantContent))
+	}
+	if len(desktop.calls) != 1 || desktop.calls[0].method != "desktop.capture" {
+		t.Fatalf("desktop calls = %#v, want one desktop.capture", desktop.calls)
+	}
+}
+
+func TestMCPDesktopScreenshotAcceptsDetailedPNGAboveTenMiB(t *testing.T) {
+	pngBytes := make([]byte, (11<<20)+1)
+	desktopCaller := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{
+			"data": pngBytes, "mime_type": "image/png", "width": 3840, "height": 2160,
+		},
+	}}
+	result, err := NewMCP(nil, desktopCaller).Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "large-screen", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("large desktop screenshot: %v", err)
+	}
+	if len(result.(mcp.ToolResult).Content) != 1 {
+		t.Fatal("large desktop screenshot did not return image content")
+	}
+}
+
+func TestMCPDesktopBatchRejectsStaleCaptureBeforeIPC(t *testing.T) {
+	t.Parallel()
+
+	desktop := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{
+			"data":      []byte("png"),
+			"mime_type": "image/png",
+			"width":     100,
+			"height":    50,
+		},
+	}}
+	dispatcher := NewMCP(nil, desktop)
+
+	first, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1",
+		Name:      "desktop_observe",
+		Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("first screenshot: %v", err)
+	}
+	staleCaptureID := first.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	if _, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1",
+		Name:      "desktop_observe",
+		Arguments: map[string]any{"action": "screenshot"},
+	}); err != nil {
+		t.Fatalf("second screenshot: %v", err)
+	}
+	desktop.calls = nil
+
+	_, err = dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1",
+		Name:      "desktop_control",
+		Arguments: map[string]any{
+			"action":    "batch",
+			"captureId": staleCaptureID,
+			"actions": []any{
+				map[string]any{"type": "click", "x": 10, "y": 20, "button": "left"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("stale capture batch succeeded")
+	}
+	if len(desktop.calls) != 0 {
+		t.Fatalf("stale capture reached desktop IPC: %#v", desktop.calls)
+	}
+}
+
+func TestMCPDesktopBatchExecutesActionsThenReturnsFreshCapture(t *testing.T) {
+	t.Parallel()
+
+	desktop := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{
+			"data":      []byte("png"),
+			"mime_type": "image/png",
+			"width":     1440,
+			"height":    900,
+		},
+		"desktop.actions": map[string]any{"ok": true},
+	}}
+	dispatcher := NewMCP(nil, desktop)
+
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1",
+		Name:      "desktop_observe",
+		Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	originalCaptureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	desktop.calls = nil
+
+	result, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1",
+		Name:      "desktop_control",
+		Arguments: map[string]any{
+			"action":    "batch",
+			"captureId": originalCaptureID,
+			"actions": []any{
+				map[string]any{"type": "click", "x": 10, "y": 20, "button": "left", "keys": []any{"CTRL"}},
+				map[string]any{"type": "drag", "path": []any{map[string]any{"x": 1, "y": 2}, map[string]any{"x": 3, "y": 4}}},
+				map[string]any{"type": "scroll", "x": 30, "y": 40, "scrollX": -50, "scrollY": 60},
+				map[string]any{"type": "type", "text": "hello"},
+				map[string]any{"type": "keypress", "keys": []any{"CTRL", "L"}},
+				map[string]any{"type": "wait"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("desktop batch: %v", err)
+	}
+	toolResult, ok := result.(mcp.ToolResult)
+	if !ok {
+		t.Fatalf("desktop batch result = %T, want mcp.ToolResult", result)
+	}
+	freshCaptureID := toolResult.StructuredContent.(map[string]any)["captureId"].(string)
+	if freshCaptureID == "" || freshCaptureID == originalCaptureID {
+		t.Fatalf("fresh capture ID = %q, original = %q", freshCaptureID, originalCaptureID)
+	}
+	if len(toolResult.Content) != 1 {
+		t.Fatalf("desktop batch image blocks = %d, want 1", len(toolResult.Content))
+	}
+	if len(desktop.calls) != 2 || desktop.calls[0].method != "desktop.actions" || desktop.calls[1].method != "desktop.capture" {
+		t.Fatalf("desktop calls = %#v, want actions then capture", desktop.calls)
+	}
+	gotActions, _ := desktop.calls[0].params["actions"].([]any)
+	if len(gotActions) != 6 {
+		t.Fatalf("desktop action count = %d, want 6", len(gotActions))
+	}
+}
+
+func TestMCPDesktopBatchRejectsMalformedActionBeforeIPC(t *testing.T) {
+	t.Parallel()
+
+	desktop := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{
+			"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50,
+		},
+	}}
+	dispatcher := NewMCP(nil, desktop)
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	desktop.calls = nil
+
+	_, err = dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1", Name: "desktop_control",
+		Arguments: map[string]any{
+			"action": "batch", "captureId": captureID,
+			"actions": []any{
+				map[string]any{"type": "move", "x": 10, "y": 20},
+				map[string]any{"type": "drag", "path": []any{map[string]any{"x": 1, "y": 2}}},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("malformed desktop action succeeded")
+	}
+	if !strings.Contains(err.Error(), "drag") {
+		t.Fatalf("malformed desktop action error = %q, want drag validation", err)
+	}
+	if len(desktop.calls) != 0 {
+		t.Fatalf("malformed desktop batch reached IPC: %#v", desktop.calls)
+	}
+}
+
+func TestMCPDesktopBatchRejectsWaitsBeyondIPCWindow(t *testing.T) {
+	t.Parallel()
+
+	desktopCaller := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50},
+	}}
+	dispatcher := NewMCP(nil, desktopCaller)
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-one", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	desktopCaller.calls = nil
+	actions := make([]any, 11)
+	for index := range actions {
+		actions[index] = map[string]any{"type": "wait"}
+	}
+	_, err = dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-one", Name: "desktop_control",
+		Arguments: map[string]any{"action": "batch", "captureId": captureID, "actions": actions},
+	})
+	if err == nil || !strings.Contains(err.Error(), "wait") {
+		t.Fatalf("excessive wait batch error = %v, want wait limit", err)
+	}
+	if len(desktopCaller.calls) != 0 {
+		t.Fatalf("excessive wait batch reached IPC: %#v", desktopCaller.calls)
+	}
+}
+
+func TestMCPDesktopBatchConsumesCaptureBeforeActionFailure(t *testing.T) {
+	t.Parallel()
+
+	actionErr := errors.New("desktop input failed")
+	desktop := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{
+			"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50,
+		},
+	}, errorsByMethod: map[string]error{"desktop.actions": actionErr}}
+	dispatcher := NewMCP(nil, desktop)
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	arguments := map[string]any{
+		"action": "batch", "captureId": captureID,
+		"actions": []any{map[string]any{"type": "click", "x": 10, "y": 20}},
+	}
+
+	if _, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1", Name: "desktop_control", Arguments: arguments,
+	}); !errors.Is(err, actionErr) {
+		t.Fatalf("first desktop batch error = %v, want %v", err, actionErr)
+	}
+	desktop.calls = nil
+	if _, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1", Name: "desktop_control", Arguments: arguments,
+	}); err == nil {
+		t.Fatal("consumed capture ID was reused")
+	}
+	if len(desktop.calls) != 0 {
+		t.Fatalf("reused capture reached desktop IPC: %#v", desktop.calls)
+	}
+}
+
+func TestMCPSerializesObservationWithInFlightDesktopBatch(t *testing.T) {
+	t.Parallel()
+
+	desktop := newBlockingBatchCaller()
+	dispatcher := NewMCP(nil, desktop)
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "mcp-session-1", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	<-desktop.captureCalled
+	captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+
+	batchDone := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+			SessionID: "mcp-session-1", Name: "desktop_control",
+			Arguments: map[string]any{
+				"action": "batch", "captureId": captureID,
+				"actions": []any{map[string]any{"type": "click", "x": 10, "y": 20}},
+			},
+		})
+		batchDone <- err
+	}()
+	<-desktop.actionsStarted
+
+	observeDone := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+			SessionID: "mcp-session-1", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+		})
+		observeDone <- err
+	}()
+	select {
+	case <-desktop.captureCalled:
+		t.Fatal("desktop observation captured while a batch was still executing")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(desktop.releaseActions)
+	if err := <-batchDone; err != nil {
+		t.Fatalf("desktop batch: %v", err)
+	}
+	if err := <-observeDone; err != nil {
+		t.Fatalf("desktop observation: %v", err)
+	}
+}
+
+func TestMCPDesktopControlInvalidatesCapturesAcrossSessions(t *testing.T) {
+	t.Parallel()
+
+	desktopCaller := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50},
+		"desktop.mouse":   map[string]any{"ok": true},
+		"desktop.actions": map[string]any{"ok": true},
+	}}
+	dispatcher := NewMCP(nil, desktopCaller)
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-one", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	if _, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-two", Name: "desktop_control",
+		Arguments: map[string]any{"action": "mouse_move", "x": 1, "y": 2},
+	}); err != nil {
+		t.Fatalf("legacy desktop control: %v", err)
+	}
+	desktopCaller.calls = nil
+	_, err = dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-one", Name: "desktop_control",
+		Arguments: map[string]any{
+			"action": "batch", "captureId": captureID,
+			"actions": []any{map[string]any{"type": "click", "x": 10, "y": 20}},
+		},
+	})
+	if err == nil {
+		t.Fatal("capture remained valid after another session changed the desktop")
+	}
+	if len(desktopCaller.calls) != 0 {
+		t.Fatalf("stale cross-session batch reached IPC: %#v", desktopCaller.calls)
+	}
+}
+
+func TestMCPDesktopBatchRejectsCoordinatesOutsideCapturedImage(t *testing.T) {
+	t.Parallel()
+
+	desktopCaller := &recordingCaller{responses: map[string]any{
+		"desktop.capture": map[string]any{"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50},
+	}}
+	dispatcher := NewMCP(nil, desktopCaller)
+	observed, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-one", Name: "desktop_observe", Arguments: map[string]any{"action": "screenshot"},
+	})
+	if err != nil {
+		t.Fatalf("desktop screenshot: %v", err)
+	}
+	captureID := observed.(mcp.ToolResult).StructuredContent.(map[string]any)["captureId"].(string)
+	desktopCaller.calls = nil
+	_, err = dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		SessionID: "session-one", Name: "desktop_control",
+		Arguments: map[string]any{
+			"action": "batch", "captureId": captureID,
+			"actions": []any{
+				map[string]any{
+					"type": "drag",
+					"path": []any{
+						map[string]any{"x": 10, "y": 20},
+						map[string]any{"x": 100, "y": 49},
+					},
+				},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "bounds") {
+		t.Fatalf("out-of-bounds batch error = %v, want bounds error", err)
+	}
+	if len(desktopCaller.calls) != 0 {
+		t.Fatalf("out-of-bounds batch reached IPC: %#v", desktopCaller.calls)
 	}
 }
 
@@ -162,9 +579,51 @@ func TestMCPTerminalResizeRejectsOverflowingDimensionsBeforeIPC(t *testing.T) {
 }
 
 type recordingCaller struct {
-	calls     []recordedCall
-	responses map[string]any
-	err       error
+	calls          []recordedCall
+	responses      map[string]any
+	err            error
+	errorsByMethod map[string]error
+}
+
+type blockingBatchCaller struct {
+	actionsStarted chan struct{}
+	releaseActions chan struct{}
+	captureCalled  chan struct{}
+	once           sync.Once
+}
+
+func newBlockingBatchCaller() *blockingBatchCaller {
+	return &blockingBatchCaller{
+		actionsStarted: make(chan struct{}),
+		releaseActions: make(chan struct{}),
+		captureCalled:  make(chan struct{}, 3),
+	}
+}
+
+func (c *blockingBatchCaller) Call(_ context.Context, method string, _ any, result any) error {
+	var response any
+	switch method {
+	case desktop.RPCMethodDesktopCapture:
+		c.captureCalled <- struct{}{}
+		response = map[string]any{"data": []byte("png"), "mime_type": "image/png", "width": 100, "height": 50}
+	case desktop.RPCMethodDesktopActions:
+		c.once.Do(func() { close(c.actionsStarted) })
+		<-c.releaseActions
+		response = map[string]any{"ok": true}
+	default:
+		return errors.New("unexpected desktop method")
+	}
+	encoded, _ := json.Marshal(response)
+	return json.Unmarshal(encoded, result)
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return string(encoded)
 }
 
 type recordedCall struct {
@@ -177,6 +636,9 @@ func (c *recordingCaller) Call(_ context.Context, method string, params any, res
 	decoded := map[string]any{}
 	_ = json.Unmarshal(encoded, &decoded)
 	c.calls = append(c.calls, recordedCall{method: method, params: decoded})
+	if err := c.errorsByMethod[method]; err != nil {
+		return err
+	}
 	if c.err != nil {
 		return c.err
 	}
