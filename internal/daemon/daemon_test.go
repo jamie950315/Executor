@@ -108,6 +108,61 @@ func TestRunAgentExposesOAuthAndRequiresOAuthWhenURLSecretDisabled(t *testing.T)
 	assertDaemonStopped(t, errCh)
 }
 
+func TestRunAgentAuditsOAuthTokenFailureWithoutCredentialMaterial(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error { return RunAgent(ctx, configPath) })
+	baseURL := "http://" + cfg.AgentAddress
+	waitForHTTP(t, http.MethodGet, baseURL+"/.well-known/oauth-authorization-server", nil, nil).Body.Close()
+
+	form := url.Values{
+		"grant_type":            {"authorization_code"},
+		"client_id":             {"sensitive-client-id"},
+		"code":                  {"sensitive-authorization-code"},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		"client_assertion":      {"sensitive-client-assertion"},
+	}
+	response, err := http.PostForm(baseURL+"/oauth/token", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid client assertion status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+
+	store, err := audit.Open(filepath.Join(cfg.StateDir, "audit.jsonl"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.List(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("OAuth token audit events = %#v, want attempted and failed", events)
+	}
+	attempted, failed := events[len(events)-2], events[len(events)-1]
+	if attempted.Tool != "oauth_token" || attempted.Actor != "remote-oauth" || attempted.Identity != "private_key_jwt" || attempted.Outcome != "attempted" || attempted.Detail != "grant_type=authorization_code" {
+		t.Fatalf("unexpected OAuth token attempt event: %#v", attempted)
+	}
+	if failed.Tool != "oauth_token" || failed.Actor != "remote-oauth" || failed.Identity != "private_key_jwt" || failed.Outcome != "failed" || failed.Detail != "invalid_client: invalid client assertion format" {
+		t.Fatalf("unexpected OAuth token failure event: %#v", failed)
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"sensitive-client-id", "sensitive-authorization-code", "sensitive-client-assertion"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("OAuth audit contains credential material %q: %s", secret, encoded)
+		}
+	}
+
+	cancel()
+	assertDaemonStopped(t, errCh)
+}
+
 func TestRunAgentRejectsNonLoopbackOriginBinding(t *testing.T) {
 	t.Parallel()
 	configPath, cfg, _ := daemonFixture(t)

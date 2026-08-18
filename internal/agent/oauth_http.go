@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -22,7 +23,19 @@ type oauthHandler struct {
 	verifyRecovery RecoveryVerifier
 	cimdClient     *http.Client
 	statePath      string
+	recordOAuth    OAuthEventRecorder
 }
+
+type OAuthEvent struct {
+	Stage      string
+	AuthMethod string
+	GrantType  string
+	Outcome    string
+	Code       string
+	Reason     string
+}
+
+type OAuthEventRecorder func(OAuthEvent)
 
 type OAuthOption func(*oauthHandler)
 
@@ -37,6 +50,12 @@ func WithCIMDHTTPClient(client *http.Client) OAuthOption {
 func WithOAuthStatePath(path string) OAuthOption {
 	return func(handler *oauthHandler) {
 		handler.statePath = path
+	}
+}
+
+func WithOAuthEventRecorder(recorder OAuthEventRecorder) OAuthOption {
+	return func(handler *oauthHandler) {
+		handler.recordOAuth = recorder
 	}
 }
 
@@ -236,15 +255,25 @@ func trustedCIMDHost(host string) bool {
 
 func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
+		h.recordOAuthEvent(OAuthEvent{Stage: "token", AuthMethod: "unknown", GrantType: "unknown", Outcome: "failed", Code: "invalid_request", Reason: "invalid form"})
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	event := OAuthEvent{
+		Stage:      "token",
+		AuthMethod: tokenAuthMethod(r.Form),
+		GrantType:  tokenGrantType(r.Form.Get("grant_type")),
+		Outcome:    "attempted",
+	}
+	h.recordOAuthEvent(event)
 	clientID, err := h.authenticateTokenClient(r.Context(), r.Form)
 	if err != nil {
+		h.recordOAuthFailure(event, "invalid_client", err)
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", err.Error())
 		return
 	}
 	if resource := r.Form.Get("resource"); resource != "" && resource != h.resource {
+		h.recordOAuthFailure(event, "invalid_target", errors.New("resource mismatch"))
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource does not match this Executor")
 		return
 	}
@@ -267,18 +296,57 @@ func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
 			Scopes:       strings.Fields(r.Form.Get("scope")),
 		})
 	default:
+		h.recordOAuthFailure(event, "unsupported_grant_type", errors.New("unsupported grant type"))
 		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "grant type is not supported")
 		return
 	}
 	if tokenErr != nil {
+		h.recordOAuthFailure(event, "invalid_grant", tokenErr)
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", tokenErr.Error())
 		return
 	}
 	if err := h.persist(); err != nil {
+		h.recordOAuthFailure(event, "server_error", errors.New("persist OAuth state"))
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "persist OAuth state")
 		return
 	}
+	event.Outcome = "succeeded"
+	event.Code = "ok"
+	h.recordOAuthEvent(event)
 	writeJSON(w, http.StatusOK, tokens)
+}
+
+func (h *oauthHandler) recordOAuthFailure(event OAuthEvent, code string, err error) {
+	event.Outcome = "failed"
+	event.Code = code
+	if err != nil {
+		event.Reason = err.Error()
+	}
+	h.recordOAuthEvent(event)
+}
+
+func (h *oauthHandler) recordOAuthEvent(event OAuthEvent) {
+	if h.recordOAuth != nil {
+		h.recordOAuth(event)
+	}
+}
+
+func tokenAuthMethod(values url.Values) string {
+	if values.Get("client_assertion") != "" {
+		return "private_key_jwt"
+	}
+	return "none"
+}
+
+func tokenGrantType(value string) string {
+	switch value {
+	case "authorization_code", "refresh_token":
+		return value
+	case "":
+		return "missing"
+	default:
+		return "other"
+	}
 }
 
 func (h *oauthHandler) persist() error {

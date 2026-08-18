@@ -128,6 +128,7 @@ func RunAgent(ctx context.Context, configPath string) error {
 		resource,
 		values.VerifyRecoveryKey,
 		agent.WithOAuthStatePath(statePath),
+		agent.WithOAuthEventRecorder(newOAuthAuditRecorder(cfg)),
 	)
 
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -305,6 +306,29 @@ func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatc
 		_ = store.Append(event)
 		return result, dispatchErr
 	}, nil
+}
+
+func newOAuthAuditRecorder(cfg config.Config) agent.OAuthEventRecorder {
+	store, err := audit.Open(filepath.Join(cfg.StateDir, "audit.jsonl"), time.Duration(cfg.AuditRetentionH)*time.Hour)
+	if err != nil {
+		return nil
+	}
+	return func(event agent.OAuthEvent) {
+		detail := "grant_type=" + event.GrantType
+		if event.Code != "" {
+			detail = event.Code
+			if event.Reason != "" {
+				detail += ": " + event.Reason
+			}
+		}
+		_ = store.Append(audit.Event{
+			Actor:    "remote-oauth",
+			Tool:     "oauth_" + event.Stage,
+			Identity: event.AuthMethod,
+			Outcome:  event.Outcome,
+			Detail:   detail,
+		})
+	}
 }
 
 func stringArgument(arguments map[string]any, name string) string {
