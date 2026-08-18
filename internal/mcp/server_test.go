@@ -121,6 +121,20 @@ func TestDesktopToolSchemasExposeComputerUseLoop(t *testing.T) {
 	t.Parallel()
 
 	for _, tool := range BuiltinTools() {
+		if tool.Name == "desktop_observe" || tool.Name == "desktop_control" {
+			properties, ok := tool.OutputSchema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s output schema is missing", tool.Name)
+			}
+			for _, name := range []string{"captureId", "width", "height", "mimeType", "capturedAt"} {
+				if _, ok := properties[name]; !ok {
+					t.Fatalf("%s output schema is missing %q", tool.Name, name)
+				}
+			}
+			if required, exists := tool.OutputSchema["required"]; exists {
+				t.Fatalf("%s output schema has empty required value %#v; omit it", tool.Name, required)
+			}
+		}
 		if tool.Name != "desktop_control" {
 			continue
 		}

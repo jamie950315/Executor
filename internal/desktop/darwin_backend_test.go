@@ -5,7 +5,9 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +68,24 @@ func TestDarwinBackend_UsesExpectedCommands(t *testing.T) {
 	}
 }
 
+func TestDarwinBackendScreenshotPreservesCaptureDiagnostic(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"screencapture|-x|-D|1|/tmp/executor-shot.png": []byte("screen capture permission denied\n"),
+		},
+		errors: map[string]error{
+			"screencapture|-x|-D|1|/tmp/executor-shot.png": errors.New("exit status 1"),
+		},
+	}
+	backend := newDarwinBackend(runner, &fakeEventPoster{})
+	backend.geometry = func(context.Context) (int, int, error) { return 1512, 982, nil }
+
+	err := backend.Screenshot(context.Background(), "/tmp/executor-shot.png")
+	if err == nil || !strings.Contains(err.Error(), "screen capture permission denied") {
+		t.Fatalf("screenshot error = %v, want command diagnostic", err)
+	}
+}
+
 func TestDarwinBackendKeypressUsesPrimaryKeyWithHeldModifiers(t *testing.T) {
 	events := &fakeEventPoster{}
 	backend := newDarwinBackend(&fakeRunner{}, events)
@@ -81,11 +101,15 @@ func TestDarwinBackendKeypressUsesPrimaryKeyWithHeldModifiers(t *testing.T) {
 type fakeRunner struct {
 	calls   []string
 	outputs map[string][]byte
+	errors  map[string]error
 }
 
 func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	key := commandKey(name, args...)
 	f.calls = append(f.calls, key)
+	if err, ok := f.errors[key]; ok {
+		return f.outputs[key], err
+	}
 	if output, ok := f.outputs[key]; ok {
 		return output, nil
 	}

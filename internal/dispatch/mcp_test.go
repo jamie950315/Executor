@@ -105,12 +105,18 @@ func TestMCPDesktopScreenshotReturnsImageAndCaptureMetadata(t *testing.T) {
 	if metadata["captureId"] == "" || metadata["width"] != 1440 || metadata["height"] != 900 || metadata["mimeType"] != "image/png" {
 		t.Fatalf("unexpected capture metadata: %#v", metadata)
 	}
-	wantContent := []any{map[string]any{
-		"type":     "image",
-		"data":     base64.StdEncoding.EncodeToString(pngBytes),
-		"mimeType": "image/png",
-		"_meta":    map[string]any{"codex/imageDetail": "original"},
-	}}
+	wantContent := []any{
+		map[string]any{
+			"type": "text",
+			"text": "Screenshot captured. Use captureId " + metadata["captureId"].(string) + " for the next desktop_control batch. 1440x900 image/png.",
+		},
+		map[string]any{
+			"type":     "image",
+			"data":     base64.StdEncoding.EncodeToString(pngBytes),
+			"mimeType": "image/png",
+			"_meta":    map[string]any{"codex/imageDetail": "original"},
+		},
+	}
 	if got, _ := json.Marshal(toolResult.Content); string(got) != mustJSON(t, wantContent) {
 		t.Fatalf("image content = %s, want %s", got, mustJSON(t, wantContent))
 	}
@@ -132,8 +138,9 @@ func TestMCPDesktopScreenshotAcceptsDetailedPNGAboveTenMiB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("large desktop screenshot: %v", err)
 	}
-	if len(result.(mcp.ToolResult).Content) != 1 {
-		t.Fatal("large desktop screenshot did not return image content")
+	content := result.(mcp.ToolResult).Content
+	if len(content) != 2 || content[1].(map[string]any)["type"] != "image" {
+		t.Fatalf("large desktop screenshot content = %#v, want text then image", content)
 	}
 }
 
@@ -239,8 +246,8 @@ func TestMCPDesktopBatchExecutesActionsThenReturnsFreshCapture(t *testing.T) {
 	if freshCaptureID == "" || freshCaptureID == originalCaptureID {
 		t.Fatalf("fresh capture ID = %q, original = %q", freshCaptureID, originalCaptureID)
 	}
-	if len(toolResult.Content) != 1 {
-		t.Fatalf("desktop batch image blocks = %d, want 1", len(toolResult.Content))
+	if len(toolResult.Content) != 2 {
+		t.Fatalf("desktop batch content blocks = %d, want text then image", len(toolResult.Content))
 	}
 	if len(desktop.calls) != 2 || desktop.calls[0].method != "desktop.actions" || desktop.calls[1].method != "desktop.capture" {
 		t.Fatalf("desktop calls = %#v, want actions then capture", desktop.calls)

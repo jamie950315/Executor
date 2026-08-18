@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 const darwinWindowsScript = "ObjC.import('Foundation'); var se = Application('System Events'); var apps = se.applicationProcesses.whose({backgroundOnly: false})(); JSON.stringify(apps.map(function(app) { try { var appName = ''; try { appName = app.name(); } catch (error) {} var wins = []; try { wins = app.windows().map(function(win) { var title = ''; var id = 0; try { title = win.name() || ''; } catch (error) {} try { id = win.id() || 0; } catch (error) {} return {title: title, id: id}; }); } catch (error) { wins = []; } return {app: appName, windows: wins}; } catch (error) { return {app: '', windows: []}; } }));"
@@ -35,13 +36,21 @@ func (b darwinBackend) Screenshot(ctx context.Context, path string) error {
 	if err != nil || width < 1 || height < 1 {
 		return wrapDesktopError("main display geometry unavailable", err)
 	}
-	if _, err := b.runner.Run(ctx, "screencapture", "-x", "-D", "1", path); err != nil {
-		return wrapDesktopError("screenshot unavailable", err)
+	if output, err := b.runner.Run(ctx, "screencapture", "-x", "-D", "1", path); err != nil {
+		return wrapDesktopError("screenshot unavailable", withCommandDiagnostic(err, output))
 	}
-	if _, err := b.runner.Run(ctx, "sips", "-z", fmt.Sprintf("%d", height), fmt.Sprintf("%d", width), path); err != nil {
-		return wrapDesktopError("screenshot coordinate normalization unavailable", err)
+	if output, err := b.runner.Run(ctx, "sips", "-z", fmt.Sprintf("%d", height), fmt.Sprintf("%d", width), path); err != nil {
+		return wrapDesktopError("screenshot coordinate normalization unavailable", withCommandDiagnostic(err, output))
 	}
 	return nil
+}
+
+func withCommandDiagnostic(err error, output []byte) error {
+	diagnostic := strings.TrimSpace(string(output))
+	if diagnostic == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, diagnostic)
 }
 
 func (b darwinBackend) Windows(ctx context.Context) ([]Window, error) {

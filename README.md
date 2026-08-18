@@ -12,13 +12,15 @@ Supported MCP transports are remote Streamable HTTP at `https://<domain>/mcp` an
 
 Executor exposes an MCP-native observe → act → observe loop for ChatGPT and other MCP clients:
 
-1. Call `desktop_observe` with `action: "screenshot"` and no path. Executor returns the screen as an MCP image content block plus a `captureId`, image dimensions, MIME type, and capture time in structured metadata. PNG is used normally; an oversized high-detail capture is re-encoded as JPEG without changing its coordinate dimensions.
+1. Call `desktop_observe` with `action: "screenshot"` and no path. Executor returns a short text summary containing the complete `captureId`, the screen as an MCP image content block, and image dimensions, MIME type, and capture time in structured metadata. Both screenshot tools declare an MCP output schema for this metadata. PNG is used normally; an oversized high-detail capture is re-encoded as JPEG without changing its coordinate dimensions.
 2. Call `desktop_control` with `action: "batch"`, that `captureId`, and ordered actions. Supported Computer Use actions are `click`, `double_click`, `move`, `drag`, `scroll`, `type`, `keypress`, `wait`, and `screenshot`.
 3. Executor executes the validated batch and automatically returns a fresh screenshot and `captureId`. A capture ID is single-use and only the newest capture for the MCP session is accepted. Any desktop control from any session invalidates every older capture.
 
 Screenshot bytes and typed text are sensitive. They are returned only to the authenticated caller and are not written to Executor's audit log. The audit store records tool metadata and outcomes only.
 
 Desktop control requires an active, unlocked graphical login. macOS and Windows currently capture the primary display so screenshot coordinates match input coordinates; macOS Retina captures are normalized to display points. Linux X11 supports the complete action set. Wayland support depends on the compositor and installed tools; unreliable advanced mouse actions return an explicit unavailable error. WSL terminal and filesystem control work independently, while GUI control requires WSLg or the Windows companion.
+
+On macOS, grant Screen Recording and Accessibility to the installed `Executor Desktop.app`, not to Terminal or the standalone `executor` binary. Release bundles install this signed helper at `/Library/Application Support/Executor/Executor Desktop.app` so macOS can retain permissions across service restarts. See [Deployment](docs/DEPLOYMENT.md) for release-signing requirements.
 
 Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Registration (DCR) for current ChatGPT compatibility and retains implemented support for Client ID Metadata Documents (CIMD), public-client `none`, and ChatGPT-signed `private_key_jwt` token exchange.
 

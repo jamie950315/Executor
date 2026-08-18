@@ -36,6 +36,20 @@ for target in ${BUILD_TARGETS}; do
   fi
   CGO_ENABLED="${CGO_VALUE}" GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${EXECUTOR_BINARY}" ./packaging/cmd/executor
   CGO_ENABLED="${CGO_VALUE}" GOOS="${GOOS}" GOARCH="${GOARCH}" go build -o "${STAGING_DIR}/${KILL_BINARY}" ./cmd/executor-kill
+  if [[ "${GOOS}" == "darwin" ]]; then
+    DESKTOP_APP="${STAGING_DIR}/Executor Desktop.app"
+    mkdir -p "${DESKTOP_APP}/Contents/MacOS"
+    cp "${ROOT_DIR}/packaging/macos/Executor Desktop.app/Contents/Info.plist" "${DESKTOP_APP}/Contents/Info.plist"
+    cp "${STAGING_DIR}/${EXECUTOR_BINARY}" "${DESKTOP_APP}/Contents/MacOS/executor-desktop"
+    chmod 0755 "${DESKTOP_APP}/Contents/MacOS/executor-desktop"
+    SIGN_IDENTITY="${EXECUTOR_MACOS_SIGN_IDENTITY:--}"
+    if [[ "${SIGN_IDENTITY}" == "-" ]]; then
+      codesign --force --deep --sign - "${DESKTOP_APP}"
+    else
+      codesign --force --deep --options runtime --timestamp --sign "${SIGN_IDENTITY}" "${DESKTOP_APP}"
+    fi
+    codesign --verify --deep --strict "${DESKTOP_APP}"
+  fi
   cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
   mkdir -p "${STAGING_DIR}/docs"
   cp -R "${ROOT_DIR}/docs/." "${STAGING_DIR}/docs/"

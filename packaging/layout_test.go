@@ -26,6 +26,7 @@ func TestPackagingScaffoldExists(t *testing.T) {
 		filepath.Join(root, "scripts", "rollback.sh"),
 		filepath.Join(root, "scripts", "uninstall.sh"),
 		filepath.Join(root, "scripts", "build-release-artifacts.sh"),
+		filepath.Join(root, "packaging", "macos", "Executor Desktop.app", "Contents", "Info.plist"),
 		filepath.Join(root, ".github", "workflows", "go.yml"),
 		filepath.Join(root, ".github", "workflows", "release.yml"),
 		filepath.Join(root, "packaging", "cmd", "executor", "main.go"),
@@ -37,6 +38,46 @@ func TestPackagingScaffoldExists(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("missing artifact %s: %v", path, err)
 		}
+	}
+}
+
+func TestDarwinReleaseIncludesSignedDesktopApp(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("codesign verification requires macOS")
+	}
+
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "release")
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "build-release-artifacts.sh"))
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"OUT_DIR="+outDir,
+		"EXECUTOR_BUILD_TARGETS=darwin/"+runtime.GOARCH,
+		"EXECUTOR_MACOS_SIGN_IDENTITY=-",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build Darwin release: %v\n%s", err, output)
+	}
+
+	archive := filepath.Join(outDir, "executor_darwin_"+runtime.GOARCH+".tar.gz")
+	entries := readTarEntries(t, archive)
+	assertArchiveEntries(t, entries,
+		"Executor Desktop.app/Contents/Info.plist",
+		"Executor Desktop.app/Contents/MacOS/executor-desktop",
+		"Executor Desktop.app/Contents/_CodeSignature/CodeResources",
+	)
+
+	extractDir := t.TempDir()
+	extract := exec.Command("tar", "-xzf", archive, "-C", extractDir)
+	if output, err := extract.CombinedOutput(); err != nil {
+		t.Fatalf("extract Darwin release: %v\n%s", err, output)
+	}
+	verify := exec.Command("codesign", "--verify", "--deep", "--strict", filepath.Join(extractDir, "Executor Desktop.app"))
+	if output, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("verify desktop app signature: %v\n%s", err, output)
 	}
 }
 

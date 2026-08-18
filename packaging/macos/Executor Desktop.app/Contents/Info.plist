@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Executor Desktop</string>
+  <key>CFBundleExecutable</key>
+  <string>executor-desktop</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.0ruka.executor.desktop</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Executor Desktop</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.3</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Executor uses accessibility automation to control the active desktop for its owner.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Executor captures the active display so an authenticated owner can operate this Mac remotely.</string>
+</dict>
+</plist>

@@ -113,6 +113,16 @@ while IFS='|' read -r label path mode; do
     continue
   fi
   backup="${BACKUP_ROOT}${path}"
+  if [[ "${label}" == "directory" ]]; then
+    if [[ "${mode}" == "restore" && -d "${backup}" ]]; then
+      rm -rf "${path}"
+      mkdir -p "$(dirname "${path}")"
+      cp -R "${backup}" "${path}"
+    else
+      rm -rf "${path}"
+    fi
+    continue
+  fi
   if [[ "${mode}" == "restore" && -f "${backup}" ]]; then
     mkdir -p "$(dirname "${path}")"
     replace_file_atomically "${backup}" "${path}"

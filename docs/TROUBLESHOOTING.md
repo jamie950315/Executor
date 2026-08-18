@@ -42,6 +42,22 @@ This page records the verified causes of the OAuth and rotation failures encount
 
 **Applied fix:** Unix OAuth state replacement preserves the existing owner and group before the atomic rename. macOS, Linux, and WSL use this common path. Windows has no Unix uid/gid transition and keeps state under `%ProgramData%\Executor` with the installed service permissions. Resume verifies that the Agent, Broker, and Desktop loaded the rotated credentials before restarting the tunnel.
 
+## macOS screenshot fails only under LaunchAgent
+
+**Observed symptom:** `desktop_observe` reports `screenshot unavailable`, while `screencapture` works from an interactive Terminal. The Desktop helper log may report `could not create image from display`.
+
+**Verified cause:** Screen Recording is granted by macOS TCC to a stable signed application identity. A standalone ad-hoc helper binary launched from changing build paths does not provide the stable bundle identifier and signing requirement needed for persistent LaunchAgent permission.
+
+**Correct fix:** Install the release's signed `/Library/Application Support/Executor/Executor Desktop.app`, then grant Screen Recording and Accessibility to that app in System Settings > Privacy & Security. Restart the `com.executor.desktop` LaunchAgent after permission changes. Production archives should be signed with a stable `Developer ID Application` identity through `EXECUTOR_MACOS_SIGN_IDENTITY`; ad-hoc builds may require permission to be granted again after upgrades. Do not grant these permissions only to Terminal or to `/usr/local/bin/executor`.
+
+## ChatGPT receives the first screenshot but does not call `desktop_control`
+
+**Observed symptom:** ChatGPT shows the first capture ID or image, then stops without executing the requested batch. Executor's metadata-only audit contains a successful `desktop_observe` but no `desktop_control` attempt.
+
+**Boundary:** No request reached Executor, so this is not a Desktop helper, capture validation, or input failure. `desktop_control` is intentionally declared destructive because the same tool can click and type; Executor must not mislabel it to suppress a client-side approval boundary.
+
+**Correct diagnosis:** Give ChatGPT an explicit instruction naming the exact allowed batch and approve the tool call if the client presents a confirmation. Use the audit log to distinguish a missing client call from an Executor rejection. If there is no `desktop_control` attempt and the client gives a truncated response, retry in a new chat or report the ChatGPT client behavior; do not weaken the tool annotation.
+
 ## CIMD flow stops before token exchange
 
 **Observed symptom:** Real ChatGPT web attempts using advertised CIMD completed consent but did not reach a successful token exchange.

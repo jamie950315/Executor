@@ -212,8 +212,11 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	logPath := filepath.Join(tmp, "commands.log")
 	executorStub := filepath.Join(bundleRoot, "executor")
 	executorKillStub := filepath.Join(bundleRoot, "executor-kill")
+	bundledDesktopBinary := filepath.Join(bundleRoot, "Executor Desktop.app", "Contents", "MacOS", "executor-desktop")
+	bundledDesktopInfo := filepath.Join(bundleRoot, "Executor Desktop.app", "Contents", "Info.plist")
 	stableExecutorPath := filepath.Join(tmp, "stable-bin", "executor")
 	stableKillPath := filepath.Join(tmp, "stable-bin", "executor-kill")
+	stableDesktopAppPath := filepath.Join(tmp, "Library", "Application Support", "Executor", "Executor Desktop.app")
 	launchctlStub := filepath.Join(binDir, "launchctl")
 	idStub := filepath.Join(binDir, "id")
 	statStub := filepath.Join(binDir, "stat")
@@ -225,6 +228,13 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 
 	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s %s\\n' \"$0\" \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\" \"$(dirname \"$CLOUDFLARED_TOKEN_PATH\")\"\n  printf '{\"bootstrap_secret\":\"secret\"}\\n' > \"${EXECUTOR_STATE_DIR}/secrets.json\"\n  printf 'cf-token\\n' > \"$CLOUDFLARED_TOKEN_PATH\"\n  if [[ \" $* \" == *\" --cloudflare-token-file \"* ]]; then\n    cloudflare=',\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}'\n  else\n    cloudflare=''\n  fi\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168%s}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" \"$cloudflare\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  output=''\n  binary=''\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      --binary-path) binary=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  mkdir -p \"$output/LaunchDaemons\" \"$output/LaunchAgents\"\n  printf '<plist><dict><key>Label</key><string>com.executor.agent</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchDaemons/com.executor.agent.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.broker</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchDaemons/com.executor.broker.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.dashboard</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchDaemons/com.executor.dashboard.plist\"\n  printf '<plist><dict><key>Label</key><string>com.cloudflare.cloudflared</string></dict></plist>' > \"$output/LaunchDaemons/com.cloudflare.cloudflared.plist\"\n  printf '<plist><dict><key>Label</key><string>com.executor.desktop</string><key>ProgramArguments</key><array><string>%s</string></array></dict></plist>' \"$binary\" > \"$output/LaunchAgents/com.executor.desktop.plist\"\n  exit 0\nfi\nexit 1\n")
 	writeStub(t, executorKillStub, "#!/usr/bin/env bash\necho kill\n")
+	if err := os.MkdirAll(filepath.Dir(bundledDesktopBinary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, bundledDesktopBinary, "#!/usr/bin/env bash\necho desktop\n")
+	if err := os.WriteFile(bundledDesktopInfo, []byte("<plist><dict/></plist>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	replaceInFile(t, executorStub, "com.cloudflare.cloudflared", "com.executor.cloudflared")
 	writeStub(t, launchctlStub, "#!/usr/bin/env bash\nprintf 'launchctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"print\" ]]; then marker=\"${COMMAND_LOG}.print.${2//\\//_}\"; if [[ ! -e \"$marker\" ]]; then : > \"$marker\"; exit 0; fi; exit 1; fi\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-gn\" && \"$2\" == \"jamie\" ]]; then printf 'staff\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nexit 0\n")
@@ -244,6 +254,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
 		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
 		"EXECUTOR_KILL_INSTALL_BINARY_PATH="+stableKillPath,
+		"EXECUTOR_MACOS_DESKTOP_APP_PATH="+stableDesktopAppPath,
 		"EXECUTOR_DOMAIN=executor.example.com",
 		"EXECUTOR_CONFIG_PATH="+filepath.Join(tmp, "state", "config.json"),
 		"CLOUDFLARED_TOKEN_PATH="+filepath.Join(tmp, "state", "cloudflared", "executor.token"),
@@ -262,6 +273,13 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, "api-token.txt"), []byte("api-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	originalDesktopInfo := "<plist><dict><key>OldInstall</key><true/></dict></plist>\n"
+	if err := os.MkdirAll(filepath.Join(stableDesktopAppPath, "Contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stableDesktopAppPath, "Contents", "Info.plist"), []byte(originalDesktopInfo), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.agent.plist"))
@@ -271,6 +289,8 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	assertFileExists(t, filepath.Join(tmp, "Library", "LaunchAgents", "com.executor.desktop.plist"))
 	assertFileExists(t, stableExecutorPath)
 	assertFileExists(t, stableKillPath)
+	assertFileExists(t, filepath.Join(stableDesktopAppPath, "Contents", "Info.plist"))
+	assertFileExists(t, filepath.Join(stableDesktopAppPath, "Contents", "MacOS", "executor-desktop"))
 	if got := readFile(t, filepath.Join(tmp, "Library", "LaunchDaemons", "com.executor.agent.plist")); !strings.Contains(got, stableExecutorPath) {
 		t.Fatalf("com.executor.agent.plist should point to stable binary %q:\n%s", stableExecutorPath, got)
 	}
@@ -280,6 +300,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		stableExecutorPath + " setup --domain executor.example.com --cloudflare-token-file " + filepath.Join(tmp, "api-token.txt"),
 		stableExecutorPath + " render-service-bundle",
 		"--binary-path " + stableExecutorPath,
+		"--desktop-binary-path " + filepath.Join(stableDesktopAppPath, "Contents", "MacOS", "executor-desktop"),
 		"--agent-user jamie --agent-group staff",
 		"--broker-user root --broker-group wheel",
 		"chown -R jamie:staff " + filepath.Join(tmp, "state"),
@@ -304,6 +325,14 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	}
 	if strings.Contains(commandLog, "sysadminctl -addUser executor-agent") {
 		t.Fatalf("bootstrap should not create a dedicated executor-agent identity:\n%s", commandLog)
+	}
+	if got := readFile(t, filepath.Join(stableDesktopAppPath, "Contents", "Info.plist")); got == originalDesktopInfo {
+		t.Fatal("bootstrap did not replace the previous desktop app")
+	}
+
+	runScript(t, filepath.Join(root, "scripts", "rollback.sh"), env)
+	if got := readFile(t, filepath.Join(stableDesktopAppPath, "Contents", "Info.plist")); got != originalDesktopInfo {
+		t.Fatalf("rollback did not restore the previous desktop app:\n%s", got)
 	}
 }
 

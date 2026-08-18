@@ -10,6 +10,8 @@ EXECUTOR_INSTALL_BINARY_PATH="${EXECUTOR_INSTALL_BINARY_PATH:-/usr/local/bin/exe
 EXECUTOR_KILL_INSTALL_BINARY_PATH="${EXECUTOR_KILL_INSTALL_BINARY_PATH:-/usr/local/bin/executor-kill}"
 BUNDLED_EXECUTOR_PATH="${EXECUTOR_BUNDLED_BINARY_PATH:-${BUNDLE_ROOT}/executor}"
 BUNDLED_EXECUTOR_KILL_PATH="${EXECUTOR_BUNDLED_KILL_BINARY_PATH:-${BUNDLE_ROOT}/executor-kill}"
+BUNDLED_MACOS_DESKTOP_APP_PATH="${EXECUTOR_BUNDLED_MACOS_DESKTOP_APP_PATH:-${BUNDLE_ROOT}/Executor Desktop.app}"
+MACOS_DESKTOP_APP_PATH="${EXECUTOR_MACOS_DESKTOP_APP_PATH:-}"
 CONFIG_PATH="${EXECUTOR_CONFIG_PATH:-${STATE_DIR}/config.json}"
 DATA_DIR="${EXECUTOR_DATA_DIR:-${STATE_DIR}/data}"
 LOG_PATH="${EXECUTOR_LOG_PATH:-${STATE_DIR}/executor.log}"
@@ -127,6 +129,32 @@ install_managed_executable() {
   fi
   install_managed_file "${src}" "${dst}" "${label}"
   chmod 0755 "${dst}"
+}
+
+install_managed_directory() {
+  src="$1"
+  dst="$2"
+  label="$3"
+  if [[ ! -d "${src}" ]]; then
+    printf 'missing bundled directory: %s\n' "${src}" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "${dst}")"
+  backup="${BACKUP_ROOT}${dst}"
+  if [[ -e "${dst}" ]]; then
+    rm -rf "${backup}"
+    mkdir -p "$(dirname "${backup}")"
+    cp -R "${dst}" "${backup}"
+    mode="restore"
+  else
+    mode="remove"
+  fi
+  replacement="${dst}.executor-new.$$"
+  rm -rf "${replacement}"
+  cp -R "${src}" "${replacement}"
+  rm -rf "${dst}"
+  mv "${replacement}" "${dst}"
+  record_manifest "${label}" "${dst}" "${mode}"
 }
 
 desktop_user_linux() {
@@ -411,8 +439,20 @@ case "${TARGET}" in
     ;;
 esac
 
+if [[ "${TARGET}" == "macos" ]]; then
+  if [[ -z "${MACOS_DESKTOP_APP_PATH}" ]]; then
+    MACOS_DESKTOP_APP_PATH="$(service_root)/Application Support/Executor/Executor Desktop.app"
+  fi
+  DESKTOP_BINARY_PATH="${MACOS_DESKTOP_APP_PATH}/Contents/MacOS/executor-desktop"
+else
+  DESKTOP_BINARY_PATH="${EXECUTOR_INSTALL_BINARY_PATH}"
+fi
+
 install_managed_executable "${BUNDLED_EXECUTOR_PATH}" "${EXECUTOR_INSTALL_BINARY_PATH}" "file"
 install_managed_executable "${BUNDLED_EXECUTOR_KILL_PATH}" "${EXECUTOR_KILL_INSTALL_BINARY_PATH}" "file"
+if [[ "${TARGET}" == "macos" ]]; then
+  install_managed_directory "${BUNDLED_MACOS_DESKTOP_APP_PATH}" "${MACOS_DESKTOP_APP_PATH}" "directory"
+fi
 
 setup_cmd=("${EXECUTOR_INSTALL_BINARY_PATH}" setup --domain "${DOMAIN}")
 if [[ -n "${CLOUDFLARE_API_TOKEN_FILE}" ]]; then
@@ -443,6 +483,7 @@ TMP_BUNDLE="$("${MKTEMP_BIN}" -d)"
   --target "${TARGET}" \
   --output "${TMP_BUNDLE}" \
   --binary-path "${EXECUTOR_INSTALL_BINARY_PATH}" \
+  --desktop-binary-path "${DESKTOP_BINARY_PATH}" \
   --config-path "${CONFIG_PATH}" \
   --data-dir "${DATA_DIR}" \
   --log-path "${LOG_PATH}" \

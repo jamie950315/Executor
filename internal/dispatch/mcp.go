@@ -427,12 +427,21 @@ func (d *MCP) captureDesktopLocked(ctx context.Context, sessionID string) (mcp.T
 			"mimeType":   capture.MimeType,
 			"capturedAt": time.Now().UTC().Format(time.RFC3339Nano),
 		},
-		Content: []any{map[string]any{
-			"type":     "image",
-			"data":     base64.StdEncoding.EncodeToString(capture.Data),
-			"mimeType": capture.MimeType,
-			"_meta":    map[string]any{"codex/imageDetail": "original"},
-		}},
+		Content: []any{
+			map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf(
+					"Screenshot captured. Use captureId %s for the next desktop_control batch. %dx%d %s.",
+					captureID, capture.Width, capture.Height, capture.MimeType,
+				),
+			},
+			map[string]any{
+				"type":     "image",
+				"data":     base64.StdEncoding.EncodeToString(capture.Data),
+				"mimeType": capture.MimeType,
+				"_meta":    map[string]any{"codex/imageDetail": "original"},
+			},
+		},
 	}, nil
 }
 

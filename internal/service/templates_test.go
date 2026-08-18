@@ -10,6 +10,7 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 
 	cfg := InstallConfig{
 		BinaryPath:            "/usr/local/bin/executor",
+		DesktopBinaryPath:     "/Library/Application Support/Executor/Executor Desktop.app/Contents/MacOS/executor-desktop",
 		ConfigPath:            "/etc/executor/config.json",
 		DataDir:               "/var/lib/executor",
 		LogPath:               "/var/log/executor.log",
@@ -50,6 +51,10 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"<string>com.executor.cloudflared</string>",
 		"--token-file",
 		"/etc/cloudflared/executor.token",
+	)
+	assertContainsAll(t, mac.Files["LaunchAgents/com.executor.desktop.plist"],
+		"/Library/Application Support/Executor/Executor Desktop.app/Contents/MacOS/executor-desktop",
+		"<string>desktop</string>",
 	)
 	if _, exists := mac.Files["LaunchDaemons/com.cloudflare.cloudflared.plist"]; exists {
 		t.Fatal("macOS bundle would replace the host cloudflared LaunchDaemon")

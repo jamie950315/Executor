@@ -31,6 +31,7 @@ func runRenderServiceBundle(args []string) int {
 	target := set.String("target", "", "target platform: macos, linux, windows, wsl")
 	outputDir := set.String("output", "", "directory to write rendered files")
 	binaryPath := set.String("binary-path", "", "executor binary path")
+	desktopBinaryPath := set.String("desktop-binary-path", "", "active-user desktop helper binary path")
 	configPath := set.String("config-path", "", "executor config path")
 	dataDir := set.String("data-dir", "", "executor state data directory")
 	logPath := set.String("log-path", "", "executor log path")
@@ -52,6 +53,7 @@ func runRenderServiceBundle(args []string) int {
 
 	bundle, err := service.RenderBundle(service.Target(*target), service.InstallConfig{
 		BinaryPath:            *binaryPath,
+		DesktopBinaryPath:     *desktopBinaryPath,
 		ConfigPath:            *configPath,
 		DataDir:               *dataDir,
 		LogPath:               *logPath,

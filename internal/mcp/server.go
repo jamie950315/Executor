@@ -29,10 +29,11 @@ type ToolAnnotations struct {
 }
 
 type Tool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema map[string]any  `json:"inputSchema,omitempty"`
-	Annotations ToolAnnotations `json:"annotations,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  map[string]any  `json:"inputSchema,omitempty"`
+	OutputSchema map[string]any  `json:"outputSchema,omitempty"`
+	Annotations  ToolAnnotations `json:"annotations,omitempty"`
 }
 
 type ToolCall struct {
@@ -127,16 +128,18 @@ func BuiltinTools() []Tool {
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
 		{
-			Name:        "desktop_observe",
-			Description: "Observe desktop state. For Computer Use, call action=screenshot without a path to receive the current screen image and captureId before acting.",
-			InputSchema: desktopObserveToolSchema(),
-			Annotations: ToolAnnotations{ReadOnlyHint: true},
+			Name:         "desktop_observe",
+			Description:  "Observe desktop state. For Computer Use, call action=screenshot without a path to receive the current screen image and captureId before acting.",
+			InputSchema:  desktopObserveToolSchema(),
+			OutputSchema: desktopCaptureOutputSchema(),
+			Annotations:  ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
-			Name:        "desktop_control",
-			Description: "Control the desktop. For Computer Use, send action=batch with the latest captureId and ordered actions; Executor rejects stale captures and automatically returns the updated screen image.",
-			InputSchema: desktopControlToolSchema(),
-			Annotations: ToolAnnotations{DestructiveHint: true},
+			Name:         "desktop_control",
+			Description:  "Control the desktop. For Computer Use, send action=batch with the latest captureId and ordered actions; Executor rejects stale captures and automatically returns the updated screen image.",
+			InputSchema:  desktopControlToolSchema(),
+			OutputSchema: desktopCaptureOutputSchema(),
+			Annotations:  ToolAnnotations{DestructiveHint: true},
 		},
 		{
 			Name:        "device_status",
@@ -674,6 +677,16 @@ func desktopControlToolSchema() map[string]any {
 	)
 }
 
+func desktopCaptureOutputSchema() map[string]any {
+	return schemaObject(map[string]any{
+		"captureId":  map[string]any{"type": "string"},
+		"width":      map[string]any{"type": "integer", "minimum": 1},
+		"height":     map[string]any{"type": "integer", "minimum": 1},
+		"mimeType":   map[string]any{"type": "string"},
+		"capturedAt": map[string]any{"type": "string"},
+	})
+}
+
 func deviceStatusToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
@@ -684,11 +697,14 @@ func deviceStatusToolSchema() map[string]any {
 }
 
 func schemaObject(properties map[string]any, required ...string) map[string]any {
-	return map[string]any{
+	schema := map[string]any{
 		"type":       "object",
 		"properties": properties,
-		"required":   required,
 	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
 }
 
 func enumProperty(kind string, values ...string) map[string]any {

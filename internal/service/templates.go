@@ -22,6 +22,7 @@ const (
 
 type InstallConfig struct {
 	BinaryPath            string
+	DesktopBinaryPath     string
 	ConfigPath            string
 	DataDir               string
 	LogPath               string
@@ -54,6 +55,9 @@ func RenderBundle(target Target, cfg InstallConfig) (Bundle, error) {
 	}
 	if cfg.WindowsAgentService == "" {
 		return Bundle{}, errors.New("windows agent service identity is required")
+	}
+	if cfg.DesktopBinaryPath == "" {
+		cfg.DesktopBinaryPath = cfg.BinaryPath
 	}
 	files := map[string]string{}
 	for output, source := range targetTemplates(target) {
