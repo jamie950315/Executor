@@ -49,7 +49,7 @@ The service bundle renderer produces:
 - Linux systemd unit for `dashboard`
 - Linux user unit for `desktop`, enabled through the invoking desktop user with `XDG_RUNTIME_DIR`
 - Linux systemd unit `executor-cloudflared.service` using `--token-file`
-- Windows PowerShell scripts for Executor service install, including `ExecutorDashboard` as a LocalSystem service, per-user desktop startup, and the isolated `ExecutorCloudflared` service with `--token-file`; the agent service uses a virtual service account instead of a persisted plaintext password
+- Windows PowerShell scripts for Executor service install, including `ExecutorDashboard` as a LocalSystem service, per-user desktop startup without Windows' default 72-hour task limit, and the isolated `ExecutorCloudflared` service with `--token-file`; the agent service uses a virtual service account instead of a persisted plaintext password
 - WSL guidance that keeps desktop control on the Windows companion
 
 Release artifacts include both `executor` and `executor-kill`. The bootstrap scripts install those bundled binaries into stable locations before creating services or tasks:
@@ -72,7 +72,7 @@ Screenshot data is carried in MCP image content. Each screenshot result starts w
 The Desktop helper must run inside an active, unlocked user session with screen-recording and accessibility/input permissions granted by the operating system. Terminal, filesystem, Broker, Dashboard, and Kill Switch operation do not depend on the desktop being unlocked.
 
 - macOS captures the primary display and normalizes Retina pixels to display-point coordinates before returning the image.
-- Windows captures the primary display so `SetCursorPos` coordinates match the returned image. The active-user Scheduled Task remains required; a Windows Service cannot interact with the logged-in desktop.
+- Windows captures the primary display so `SetCursorPos` coordinates match the returned image. The active-user Scheduled Task remains required and is configured with no execution-time limit; a Windows Service cannot interact with the logged-in desktop.
 - Linux X11 supports the complete action set when the documented screenshot and `xdotool` dependencies are available.
 - Wayland support is compositor-dependent. Executor reports unsupported modifier-assisted mouse, double-click, drag, and scroll actions instead of silently claiming success when the available `ydotool` path cannot execute them reliably.
 - WSL uses WSLg for Linux GUI control. Use the Windows companion to control the Windows desktop.

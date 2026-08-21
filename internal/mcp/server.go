@@ -391,7 +391,7 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 			return errorResponse(request.ID, errCodeToolFailure, err.Error()), http.StatusInternalServerError, sessionID
 		}
 		structuredResult := result
-		content := []any{}
+		var content []any
 		isError := false
 		if toolResult, ok := result.(ToolResult); ok {
 			structuredResult = toolResult.StructuredContent
@@ -404,6 +404,16 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		structuredContent, err := normalizeStructuredContent(structuredResult)
 		if err != nil {
 			return errorResponse(request.ID, errCodeToolFailure, "tool result is not valid JSON"), http.StatusInternalServerError, sessionID
+		}
+		if content == nil {
+			encoded, err := json.Marshal(structuredContent)
+			if err != nil {
+				return errorResponse(request.ID, errCodeToolFailure, "tool result is not valid JSON"), http.StatusInternalServerError, sessionID
+			}
+			content = []any{map[string]any{
+				"type": "text",
+				"text": string(encoded),
+			}}
 		}
 
 		return &rpcResponse{

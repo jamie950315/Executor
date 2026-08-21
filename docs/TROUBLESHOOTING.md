@@ -70,4 +70,22 @@ This page records the verified causes of the OAuth and rotation failures encount
 
 OAuth, consent, recovery-key validation, state persistence, and remote DCR diagnostics are shared Go code. They are not separate macOS, Windows, Linux, or WSL implementations. Platform-specific service installers only determine how the shared binary is started and where state is stored.
 
+### Windows Desktop helper stops after three days
+
+**Observed symptom:** Owner terminals, `device_status action=summary`, and desktop tools return an internal error while the Agent, Broker, and Cloudflare services remain healthy. `ExecutorDesktop` is `Ready`, its last result is `0x41306`, and no active-user `executor.exe` process is running.
+
+**Cause:** `New-ScheduledTaskSettingsSet` defaults to a 72-hour execution limit. A long-running Desktop helper is terminated when that limit expires.
+
+**Correct fix:** Reinstall the current service bundle. The generated `ExecutorDesktop` task sets `ExecutionTimeLimit` to zero, which Windows represents as an unlimited duration. Start the task inside the active user's logged-in session and confirm that owner terminal and desktop IPC calls succeed.
+
+### ChatGPT initially shows a truncated or empty answer after successful tools
+
+**Observed symptom:** Executor's audit records show successful `device_status`, `terminal`, and `terminal_output` calls, but ChatGPT displays only the first word or an empty final answer.
+
+**Executor compatibility gap:** Older builds supplied `structuredContent` but left `content` empty. MCP recommends a serialized text representation for backwards compatibility, so current builds return one while preserving explicit multimodal content for screenshots.
+
+**Verified ChatGPT Safari behavior:** A completed Work response can remain visually stuck on its first streamed token even for a no-tool prompt. Reloading the same conversation reveals the complete stored response and tool details. This rendering problem is outside Executor; do not treat the initially visible fragment as proof that an MCP call failed.
+
+**Correct verification:** Reload the ChatGPT conversation if streaming stops on a fragment, then verify the complete stored response, the returned MCP payload, and the host-side metadata-only audit record.
+
 Before publishing a change, run the complete Go tests, race tests, vet, shell syntax checks, and `scripts/build-release-artifacts.sh`. The release script must produce `executor` and `executor-kill` archives for Darwin, Linux, and Windows on both amd64 and arm64. Real host validation remains required for launchd, systemd, Windows Services, ConPTY, WSL, and each public Cloudflare hostname.

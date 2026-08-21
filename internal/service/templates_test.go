@@ -137,6 +137,7 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		"New-ScheduledTaskAction",
 		"New-ScheduledTaskTrigger -AtLogOn",
 		"-LogonType Interactive",
+		"-ExecutionTimeLimit ([TimeSpan]::Zero)",
 		"Register-ScheduledTask -TaskName $TaskName",
 		"Start-ScheduledTask -TaskName $TaskName",
 	)

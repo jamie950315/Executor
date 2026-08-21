@@ -414,6 +414,15 @@ func TestToolCallWrapsArrayResultInObjectStructuredContent(t *testing.T) {
 	if !reflect.DeepEqual(structuredContent, want) {
 		t.Fatalf("structuredContent = %#v, want %#v", structuredContent, want)
 	}
+	wantContent := []any{
+		map[string]any{
+			"type": "text",
+			"text": `{"items":[{"app":"Finder","title":"Desktop"}]}`,
+		},
+	}
+	if got := result["content"]; !reflect.DeepEqual(got, wantContent) {
+		t.Fatalf("content = %#v, want serialized structured content %#v", got, wantContent)
+	}
 }
 
 func TestToolCallReturnsExplicitMultimodalResult(t *testing.T) {

@@ -18,6 +18,8 @@ Executor exposes an MCP-native observe → act → observe loop for ChatGPT and 
 
 Screenshot bytes and typed text are sensitive. They are returned only to the authenticated caller and are not written to Executor's audit log. The audit store records tool metadata and outcomes only.
 
+Successful tool calls return both structured MCP data and a serialized text content block for client compatibility. Multimodal Computer Use results keep their explicit text and image blocks.
+
 Desktop control requires an active, unlocked graphical login. macOS and Windows currently capture the primary display so screenshot coordinates match input coordinates; macOS Retina captures are normalized to display points. Linux X11 supports the complete action set. Wayland support depends on the compositor and installed tools; unreliable advanced mouse actions return an explicit unavailable error. WSL terminal and filesystem control work independently, while GUI control requires WSLg or the Windows companion.
 
 On macOS, grant Screen Recording and Accessibility to the installed `Executor Desktop.app`, not to Terminal or the standalone `executor` binary. Release bundles install this signed helper at `/Library/Application Support/Executor/Executor Desktop.app` so macOS can retain permissions across service restarts. See [Deployment](docs/DEPLOYMENT.md) for release-signing requirements.
