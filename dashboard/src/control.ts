@@ -178,10 +178,10 @@ async function handleCall(
   });
   const relayed: RelayStreamResult = await env.DEVICE_RELAY.getByName(deviceID).relayStream(relayEnvelope);
   if (!relayed.ok) {
-    await writeAudit(env.DB, deviceID, access.subject, "device.call", relayed.error, Date.now());
+    await writeAudit(env.DB, deviceID, access.subject, method, relayed.error, Date.now());
     return relayErrorResponse(relayed.error);
   }
-  await writeAudit(env.DB, deviceID, access.subject, "device.call", "forwarded", Date.now());
+  await writeAudit(env.DB, deviceID, access.subject, method, "forwarded", Date.now());
   return new Response(relayed.stream, {
     headers: {
       "cache-control": "no-store",

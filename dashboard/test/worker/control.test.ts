@@ -117,7 +117,7 @@ describe("unlocked device control", () => {
     const audits = await env.DB.prepare("SELECT * FROM audits ORDER BY id").all();
     expect(JSON.stringify(audits.results)).not.toContain(argumentMarker);
     expect(audits.results).toContainEqual(
-      expect.objectContaining({ action: "device.call", outcome: "forwarded" }),
+      expect.objectContaining({ action: "device.status", outcome: "forwarded" }),
     );
     socket.close(1000, "test complete");
   });
