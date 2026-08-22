@@ -10,17 +10,17 @@ import (
 )
 
 type wireVectors struct {
-	ProtocolVersion  uint16        `json:"protocol_version"`
-	DevicePrivateKey PrivateKeyJWK `json:"device_private_key"`
-	DevicePublicKey  PublicKeyJWK  `json:"device_public_key"`
-	Recovery         struct {
-		Context             RecoveryContext  `json:"context"`
-		TestOnlyPlaintext   string           `json:"test_only_plaintext"`
-		EphemeralPrivateKey PrivateKeyJWK    `json:"ephemeral_private_key"`
-		Salt                string           `json:"salt"`
-		Nonce               string           `json:"nonce"`
-		AAD                 string           `json:"aad"`
-		ExpectedEnvelope    RecoveryEnvelope `json:"expected_envelope"`
+	ProtocolVersion          uint16        `json:"protocol_version"`
+	TestOnlyDevicePrivateKey PrivateKeyJWK `json:"test_only_device_private_key"`
+	DevicePublicKey          PublicKeyJWK  `json:"device_public_key"`
+	Recovery                 struct {
+		Context                     RecoveryContext  `json:"context"`
+		TestOnlyPlaintext           string           `json:"test_only_plaintext"`
+		TestOnlyEphemeralPrivateKey PrivateKeyJWK    `json:"test_only_ephemeral_private_key"`
+		Salt                        string           `json:"salt"`
+		Nonce                       string           `json:"nonce"`
+		AAD                         string           `json:"aad"`
+		ExpectedEnvelope            RecoveryEnvelope `json:"expected_envelope"`
 	} `json:"recovery"`
 	Grant struct {
 		Claims     GrantClaims `json:"claims"`
@@ -43,7 +43,7 @@ func TestCrossLanguageWireVectors(t *testing.T) {
 		t.Fatalf("vector protocol version = %d, want %d", vectors.ProtocolVersion, ProtocolVersion)
 	}
 
-	privateJSON, err := json.Marshal(vectors.DevicePrivateKey)
+	privateJSON, err := json.Marshal(vectors.TestOnlyDevicePrivateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestCrossLanguageWireVectors(t *testing.T) {
 		t.Fatalf("vector public key = %#v, derived %#v", vectors.DevicePublicKey, got)
 	}
 
-	ephemeralPrivate, err := base64.RawURLEncoding.Strict().DecodeString(vectors.Recovery.EphemeralPrivateKey.D)
+	ephemeralPrivate, err := base64.RawURLEncoding.Strict().DecodeString(vectors.Recovery.TestOnlyEphemeralPrivateKey.D)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "device_private_key": {
+  "test_only_device_private_key": {
     "kty": "EC",
     "crv": "P-256",
     "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
@@ -21,7 +21,7 @@
       "generation": 7
     },
     "test_only_plaintext": "test-only-recovery-vector",
-    "ephemeral_private_key": {
+    "test_only_ephemeral_private_key": {
       "kty": "EC",
       "crv": "P-256",
       "x": "fPJ7GI0DT36KUjgDBLUaw8CJaeJ38hs1pgtI_EdmmXg",
