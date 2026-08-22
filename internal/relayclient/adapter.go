@@ -156,7 +156,7 @@ func (a *Adapter) HandleRequest(ctx context.Context, requestID, method string, a
 		return HandleResult{Payload: payload}, nil
 	}
 	if _, ok := lifecycleMethods[method]; !ok {
-		a.appendAudit(call.config, actor, method, "rejected")
+		a.appendAudit(call.config, actor, "device.unsupported", "rejected")
 		return HandleResult{}, ErrUnsupportedMethod
 	}
 	return a.handleLifecycle(ctx, requestID, method, call, actor)

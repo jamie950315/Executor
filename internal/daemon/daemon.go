@@ -26,6 +26,7 @@ import (
 	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/oauth"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 	"github.com/jamie950315/executor/internal/terminal"
@@ -181,7 +182,7 @@ type dashboardRelay interface {
 type dashboardRelayFactory func(relayclient.ClientOptions) (dashboardRelay, error)
 
 func runDashboard(ctx context.Context, configPath string, relayFactory dashboardRelayFactory) error {
-	cfg, values, err := loadRuntime(configPath)
+	cfg, _, err := loadRuntime(configPath)
 	if err != nil {
 		return err
 	}
@@ -192,12 +193,8 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 		return errors.New("dashboard address must bind to loopback")
 	}
 
-	lifecycle, err := control.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("load dashboard control: %w", err)
-	}
 	handler := dashboard.NewHandlerWithTokenProvider(
-		dashboard.NewRuntimeController(cfg, values, lifecycle),
+		&reloadingDashboardController{configPath: configPath},
 		func() (string, error) {
 			current, err := secrets.Load(cfg.StateDir)
 			if err != nil {
@@ -211,9 +208,6 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 		return err
 	}
 	server := &http.Server{Handler: handler}
-	if cfg.UnifiedDashboard.URL == "" || !cfg.UnifiedDashboard.Enrolled {
-		return serveHTTP(ctx, server, listener)
-	}
 	if relayFactory == nil {
 		_ = listener.Close()
 		return errors.New("dashboard relay factory is required")
@@ -254,6 +248,62 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 			return httpErr
 		}
 	}
+}
+
+type reloadingDashboardController struct {
+	configPath string
+}
+
+func (c *reloadingDashboardController) current() (*dashboard.RuntimeController, error) {
+	cfg, values, err := loadRuntime(c.configPath)
+	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := control.Load(c.configPath)
+	if err != nil {
+		return nil, err
+	}
+	return dashboard.NewRuntimeController(cfg, values, lifecycle), nil
+}
+
+func (c *reloadingDashboardController) Snapshot(ctx context.Context) (dashboard.Snapshot, error) {
+	current, err := c.current()
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	return current.Snapshot(ctx)
+}
+
+func (c *reloadingDashboardController) Kill(ctx context.Context) (dashboard.KillResult, error) {
+	current, err := c.current()
+	if err != nil {
+		return dashboard.KillResult{}, err
+	}
+	return current.Kill(ctx)
+}
+
+func (c *reloadingDashboardController) Resume(ctx context.Context) error {
+	current, err := c.current()
+	if err != nil {
+		return err
+	}
+	return current.Resume(ctx)
+}
+
+func (c *reloadingDashboardController) Rotate(ctx context.Context) error {
+	current, err := c.current()
+	if err != nil {
+		return err
+	}
+	return current.Rotate(ctx)
+}
+
+func (c *reloadingDashboardController) Permissions(ctx context.Context, request bool) (permissionmodel.Report, error) {
+	current, err := c.current()
+	if err != nil {
+		return permissionmodel.Report{}, err
+	}
+	return current.Permissions(ctx, request)
 }
 
 func disabled(path string) bool {

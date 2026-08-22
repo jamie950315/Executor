@@ -16,6 +16,24 @@ import { decodeEnvelope, makeEnvelope } from "./shared/wire";
 
 const maximumControlBodyBytes = 16 * 1024 * 1024;
 
+const allowedControlMethods = new Set([
+  "terminal",
+  "terminal_output",
+  "terminal_sessions",
+  "filesystem_read",
+  "filesystem_write",
+  "desktop_observe",
+  "desktop_control",
+  "device_status",
+  "device_permissions",
+  "control.status",
+  "control.audit",
+  "control.permissions",
+  "control.rotate",
+  "control.kill",
+  "control.resume",
+]);
+
 interface ControlRoute {
   deviceID: string;
   action: "unlock" | "call" | "delete";
@@ -154,7 +172,7 @@ async function handleCall(
   try {
     const body = await readBoundedJSON(request, maximumControlBodyBytes);
     const record = exactRecord(body, ["method", "arguments"]);
-    if (!validText(record.method, 256)) {
+    if (!validText(record.method, 256) || !allowedControlMethods.has(record.method)) {
       throw new Error("invalid method");
     }
     method = record.method;

@@ -18,6 +18,7 @@ import (
 
 	"github.com/jamie950315/executor/internal/audit"
 	"github.com/jamie950315/executor/internal/config"
+	"github.com/jamie950315/executor/internal/dashboard"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/mcp"
@@ -252,6 +253,95 @@ func TestRunDashboardServesLoopbackStatusWithoutSecretsAndStopsOnCancel(t *testi
 	assertDaemonStopped(t, errCh)
 }
 
+func TestRunDashboardReloadsIPCKeysAfterCredentialRotation(t *testing.T) {
+	configPath, cfg, values := daemonFixture(t)
+	brokerCtx, cancelBroker := context.WithCancel(context.Background())
+	desktopCtx, cancelDesktop := context.WithCancel(context.Background())
+	brokerErr := startDaemon(t, func() error { return RunBroker(brokerCtx, configPath) })
+	desktopErr := startDaemon(t, func() error { return RunDesktop(desktopCtx, configPath) })
+	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
+	dashboardErr := startDaemon(t, func() error { return RunDashboard(dashboardCtx, configPath) })
+	t.Cleanup(func() {
+		cancelBroker()
+		cancelDesktop()
+		cancelDashboard()
+	})
+
+	baseURL := "http://" + cfg.DashboardAddress
+	waitFor(t, func() error {
+		snapshot, err := authenticatedDashboardSnapshot(baseURL, values.DashboardKey)
+		if err != nil {
+			return err
+		}
+		if snapshot.Broker != "reachable" || snapshot.Desktop != "reachable" {
+			return errors.New("initial IPC services are not reachable")
+		}
+		return nil
+	})
+
+	cancelBroker()
+	cancelDesktop()
+	assertDaemonStopped(t, brokerErr)
+	assertDaemonStopped(t, desktopErr)
+	rotated, err := secrets.Rotate(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokerCtx, cancelBroker = context.WithCancel(context.Background())
+	desktopCtx, cancelDesktop = context.WithCancel(context.Background())
+	brokerErr = startDaemon(t, func() error { return RunBroker(brokerCtx, configPath) })
+	desktopErr = startDaemon(t, func() error { return RunDesktop(desktopCtx, configPath) })
+
+	waitFor(t, func() error {
+		snapshot, err := authenticatedDashboardSnapshot(baseURL, rotated.DashboardKey)
+		if err != nil {
+			return err
+		}
+		if snapshot.Broker != "reachable" || snapshot.Desktop != "reachable" {
+			return errors.New("rotated IPC services are not reachable through the existing Dashboard")
+		}
+		return nil
+	})
+
+	cancelBroker()
+	cancelDesktop()
+	cancelDashboard()
+	assertDaemonStopped(t, brokerErr)
+	assertDaemonStopped(t, desktopErr)
+	assertDaemonStopped(t, dashboardErr)
+}
+
+func authenticatedDashboardSnapshot(baseURL, token string) (dashboard.Snapshot, error) {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	bootstrap, err := client.Get(baseURL + "/?token=" + token)
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	cookies := bootstrap.Cookies()
+	_ = bootstrap.Body.Close()
+	if bootstrap.StatusCode != http.StatusSeeOther || len(cookies) != 1 {
+		return dashboard.Snapshot{}, errors.New("dashboard bootstrap failed")
+	}
+	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/status", nil)
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	request.AddCookie(cookies[0])
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return dashboard.Snapshot{}, errors.New("dashboard status failed")
+	}
+	var snapshot dashboard.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
 type fakeDashboardRelay struct {
 	started chan struct{}
 	stopped chan struct{}
@@ -301,6 +391,33 @@ func TestRunDashboardOwnsConfiguredRelayAndStopsItWithHTTPRuntime(t *testing.T) 
 	case <-relayRuntime.stopped:
 	case <-time.After(time.Second):
 		t.Fatal("dashboard relay did not stop with RunDashboard context")
+	}
+}
+
+func TestRunDashboardStartsRelayWatcherBeforeEnrollment(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	relayRuntime := &fakeDashboardRelay{started: make(chan struct{}), stopped: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error {
+		return runDashboard(ctx, configPath, func(relayclient.ClientOptions) (dashboardRelay, error) {
+			return relayRuntime, nil
+		})
+	})
+	select {
+	case <-relayRuntime.started:
+	case <-time.After(200 * time.Millisecond):
+		cancel()
+		assertDaemonStopped(t, errCh)
+		t.Fatal("dashboard did not start the enrollment-aware relay watcher")
+	}
+	response := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/", nil, nil)
+	response.Body.Close()
+	cancel()
+	assertDaemonStopped(t, errCh)
+	select {
+	case <-relayRuntime.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard relay watcher did not stop")
 	}
 }
 

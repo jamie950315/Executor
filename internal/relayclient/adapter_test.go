@@ -142,11 +142,19 @@ func TestAdapterRejectsWrongContextAndUnsupportedMethodBeforeAction(t *testing.T
 		t.Fatalf("wrong context error = %v", err)
 	}
 	valid := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{})
-	if _, err := adapter.HandleRequest(context.Background(), "request-2", "format_disk", valid); !errors.Is(err, ErrUnsupportedMethod) {
+	const sensitiveMethod = "SENSITIVE_METHOD_MARKER"
+	if _, err := adapter.HandleRequest(context.Background(), "request-2", sensitiveMethod, valid); !errors.Is(err, ErrUnsupportedMethod) {
 		t.Fatalf("unsupported method error = %v", err)
 	}
 	if len(dispatcher.calls) != 0 {
 		t.Fatalf("rejected requests reached dispatcher: %#v", dispatcher.calls)
+	}
+	auditBytes, err := os.ReadFile(filepath.Join(cfg.StateDir, "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(auditBytes, []byte(sensitiveMethod)) {
+		t.Fatalf("unsupported method polluted metadata-only audit: %s", auditBytes)
 	}
 }
 

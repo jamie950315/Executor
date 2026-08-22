@@ -70,6 +70,79 @@ func TestReconnectBackoffDoublesToThirtySecondsWithBoundedJitter(t *testing.T) {
 	}
 }
 
+func TestClientResetsReconnectBackoffAfterAuthenticatedConnection(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	connected := make(chan *fakeSocket, 1)
+	thirdDelay := make(chan struct{})
+	var dialCount atomic.Int32
+	var delayMu sync.Mutex
+	var delays []time.Duration
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", HeartbeatInterval: time.Hour,
+		Now: func() time.Time { return now },
+		Dial: func(context.Context, string, *http.Client) (relaySocket, error) {
+			if dialCount.Add(1) < 3 {
+				return nil, errors.New("temporary relay failure")
+			}
+			socket := newFakeSocket()
+			connected <- socket
+			return socket, nil
+		},
+		Sleep: func(ctx context.Context, delay time.Duration) error {
+			delayMu.Lock()
+			delays = append(delays, delay)
+			count := len(delays)
+			delayMu.Unlock()
+			if count == 3 {
+				close(thirdDelay)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	var socket *fakeSocket
+	select {
+	case socket = <-connected:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("client did not reach an authenticated connection")
+	}
+	completeFakeHandshake(t, socket, cfg, values, now)
+	_ = socket.Close(0, "test disconnect")
+	select {
+	case <-thirdDelay:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("client did not schedule reconnect after authenticated disconnect")
+	}
+	delayMu.Lock()
+	got := append([]time.Duration(nil), delays...)
+	delayMu.Unlock()
+	if len(got) != 3 || got[0] < 800*time.Millisecond || got[0] > 1200*time.Millisecond ||
+		got[1] < 1600*time.Millisecond || got[1] > 2400*time.Millisecond ||
+		got[2] < 800*time.Millisecond || got[2] > 1200*time.Millisecond {
+		cancel()
+		t.Fatalf("reconnect delays after authentication = %v, want approximately [1s 2s 1s]", got)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client did not stop")
+	}
+}
+
 func TestResultMessagesUseOneResponseOrOrderedLosslessChunksWithinBounds(t *testing.T) {
 	t.Parallel()
 	small := []byte(`{"ready":true}`)
@@ -253,8 +326,11 @@ func TestClientUsesRealTLSWebSocketTransportForHandshakeRefreshAndHeartbeat(t *t
 			return
 		}
 		_, heartbeat, err := connection.Read(request.Context())
-		if err == nil && decodeEnvelopeForTest(t, heartbeat).Type == relay.MessageTypeHeartbeat {
-			close(heartbeatReceived)
+		if err == nil {
+			envelope, decodeErr := relay.DecodeEnvelope(heartbeat)
+			if decodeErr == nil && envelope.Type == relay.MessageTypeHeartbeat {
+				close(heartbeatReceived)
+			}
 		}
 	}))
 	defer server.Close()
@@ -447,6 +523,77 @@ func TestClientDoesNotReconnectWhileDisabled(t *testing.T) {
 	}
 	if dials.Load() != 0 {
 		t.Fatalf("disabled client dialed %d times", dials.Load())
+	}
+}
+
+func TestClientWaitsForEnrollmentAndConnectsWithoutServiceRestart(t *testing.T) {
+	configPath, cfg, _ := relayFixture(t)
+	waitingForEnrollment := make(chan struct{})
+	releaseEnrollmentWait := make(chan struct{})
+	dialed := make(chan string, 1)
+	var waitCount atomic.Int32
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", HeartbeatInterval: time.Hour,
+		Dial: func(_ context.Context, endpoint string, _ *http.Client) (relaySocket, error) {
+			select {
+			case dialed <- endpoint:
+			default:
+			}
+			return nil, errors.New("test relay unavailable")
+		},
+		Sleep: func(ctx context.Context, _ time.Duration) error {
+			if waitCount.Add(1) == 1 {
+				close(waitingForEnrollment)
+				select {
+				case <-releaseEnrollmentWait:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	select {
+	case <-waitingForEnrollment:
+	case err := <-done:
+		cancel()
+		t.Fatalf("client stopped before enrollment: %v", err)
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("client did not wait for enrollment")
+	}
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	close(releaseEnrollmentWait)
+	select {
+	case endpoint := <-dialed:
+		if endpoint != "wss://dashboard.example.test/api/device/connect/"+cfg.UnifiedDashboard.DeviceID {
+			t.Fatalf("relay endpoint = %q", endpoint)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("client did not connect after enrollment")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client did not stop")
 	}
 }
 

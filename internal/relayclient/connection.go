@@ -101,7 +101,10 @@ func (c *Client) Run(ctx context.Context) error {
 			return errors.New("relay configuration unavailable")
 		}
 		if cfg.UnifiedDashboard.URL == "" || !cfg.UnifiedDashboard.Enrolled {
-			return nil
+			if err := c.sleep(ctx, 100*time.Millisecond); err != nil {
+				return nil
+			}
+			continue
 		}
 		if disabled(filepath.Join(cfg.StateDir, "disabled")) {
 			if err := c.sleep(ctx, 100*time.Millisecond); err != nil {
@@ -117,6 +120,9 @@ func (c *Client) Run(ctx context.Context) error {
 		if err == nil {
 			connection := newConnection(c, socket, cfg)
 			err = connection.run(ctx)
+			if connection.authenticated {
+				attempt = 0
+			}
 			_ = socket.Close(int(websocket.StatusNormalClosure), "relay reconnect")
 		}
 		if ctx.Err() != nil {
@@ -145,6 +151,7 @@ type connection struct {
 	refreshWaitMu     sync.Mutex
 	refreshWait       chan uint64
 	lifecycleInFlight atomic.Int32
+	authenticated     bool
 }
 
 func newConnection(client *Client, socket relaySocket, cfg config.Config) *connection {
@@ -156,6 +163,7 @@ func (c *connection) run(ctx context.Context) error {
 	if err := c.handshake(ctx); err != nil {
 		return err
 	}
+	c.authenticated = true
 	connectionCtx, cancel := context.WithCancel(ctx)
 	defer func() {
 		cancel()

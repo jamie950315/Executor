@@ -82,7 +82,7 @@ describe("unlocked device control", () => {
     const argumentMarker = "SENSITIVE_CALL_ARGUMENT_MARKER";
 
     const callPromise = controlRequest("call", unlocked, {
-      method: "device.status",
+      method: "device_status",
       arguments: { marker: argumentMarker },
     });
     const request = decodeEnvelope(await nextMessage(socket));
@@ -92,7 +92,7 @@ describe("unlocked device control", () => {
     }
     expect(request.payload).toEqual({
       request_id: request.payload.request_id,
-      method: "device.status",
+      method: "device_status",
       arguments: {
         authorization: {
           grant: cookiePair(unlocked.grantCookie).slice(cookiePair(unlocked.grantCookie).indexOf("=") + 1),
@@ -117,8 +117,42 @@ describe("unlocked device control", () => {
     const audits = await env.DB.prepare("SELECT * FROM audits ORDER BY id").all();
     expect(JSON.stringify(audits.results)).not.toContain(argumentMarker);
     expect(audits.results).toContainEqual(
-      expect.objectContaining({ action: "device.status", outcome: "forwarded" }),
+      expect.objectContaining({ action: "device_status", outcome: "forwarded" }),
     );
+    socket.close(1000, "test complete");
+  });
+
+  it("rejects unknown methods without relaying or persisting the untrusted method", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const sensitiveMethod = "SENSITIVE_METHOD_MARKER";
+    const callPromise = controlRequest("call", unlocked, {
+      method: sensitiveMethod,
+      arguments: {},
+    });
+    const outcome = await Promise.race([
+      nextMessage(socket).then((message) => ({ kind: "message" as const, message })),
+      callPromise.then((response) => ({ kind: "response" as const, response })),
+    ]);
+    if (outcome.kind === "message") {
+      const request = decodeEnvelope(outcome.message);
+      if (request.type === "request") {
+        socket.send(
+          JSON.stringify(
+            makeEnvelope("response", "unsupported-response", {
+              request_id: request.payload.request_id,
+              failure: { code: "unsupported_method" },
+            }),
+          ),
+        );
+      }
+    }
+    const response = outcome.kind === "response" ? outcome.response : await callPromise;
+    expect(outcome.kind).toBe("response");
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid request" });
+    const audits = await env.DB.prepare("SELECT action FROM audits ORDER BY id").all();
+    expect(JSON.stringify(audits.results)).not.toContain(sensitiveMethod);
     socket.close(1000, "test complete");
   });
 
@@ -126,7 +160,7 @@ describe("unlocked device control", () => {
     const socket = await enrolledAuthenticatedSocket();
     const unlocked = await unlock(socket);
     const callPromise = controlRequest("call", unlocked, {
-      method: "terminal.output",
+      method: "terminal_output",
       arguments: {},
     });
     const request = decodeEnvelope(await nextMessage(socket));
@@ -167,7 +201,7 @@ describe("unlocked device control", () => {
       .run();
 
     const response = await controlRequest("call", unlocked, {
-      method: "device.status",
+      method: "device_status",
       arguments: {},
     });
     expect(response.status).toBe(401);
@@ -183,7 +217,7 @@ describe("unlocked device control", () => {
     await eventually(async () => (await deviceState()) === "offline");
 
     const response = await controlRequest("call", unlocked, {
-      method: "device.status",
+      method: "device_status",
       arguments: {},
     });
     expect(response.status).toBe(503);
@@ -221,7 +255,7 @@ describe("unlocked device control", () => {
     expect((await enrollDeviceGeneration(9)).status).toBe(201);
 
     const oldGrantCall = await controlRequest("call", unlocked, {
-      method: "device.status",
+      method: "device_status",
       arguments: {},
     });
     expect(oldGrantCall.status).toBe(401);

@@ -8,4 +8,4 @@ require (
 	golang.org/x/sys v0.10.0
 )
 
-require github.com/coder/websocket v1.8.14 // indirect
+require github.com/coder/websocket v1.8.14
