@@ -1,5 +1,5 @@
 import { verifyAccess } from "./access";
-import { enrollDevice, listDevices, writeAudit, type EnrollmentInput } from "./db";
+import { enrollDevice, getDevice, listDevices, writeAudit, type EnrollmentInput } from "./db";
 import { browserIdentity, errorResponse, jsonResponse, readBoundedJSON, rejectCrossOrigin, requireStateChangingRequest } from "./http";
 import type { PublicKeyJWK } from "./shared/wire";
 
@@ -17,6 +17,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/api/device/enroll") {
       return handleEnrollment(request, env);
+    }
+    const connectDeviceID = deviceConnectID(request, url);
+    if (connectDeviceID !== null) {
+      return handleDeviceConnect(request, env, connectDeviceID);
     }
 
     if (url.pathname.startsWith("/api/")) {
@@ -61,6 +65,34 @@ async function handleEnrollment(request: Request, env: Env): Promise<Response> {
   }
   await writeAudit(env.DB, input.device_id, null, "device.enroll", "success", now);
   return jsonResponse({ device: enrolled.device }, enrolled.created ? 201 : 200);
+}
+
+async function handleDeviceConnect(request: Request, env: Env, deviceID: string): Promise<Response> {
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return errorResponse("websocket upgrade required", 426);
+  }
+  if ((await getDevice(env.DB, deviceID)) === null) {
+    return errorResponse("device not found", 404);
+  }
+  const headers = new Headers(request.headers);
+  headers.set("x-executor-device-id", deviceID);
+  return env.DEVICE_RELAY.getByName(deviceID).fetch(new Request(request, { headers }));
+}
+
+function deviceConnectID(request: Request, url: URL): string | null {
+  if (request.method !== "GET") {
+    return null;
+  }
+  const match = url.pathname.match(/^\/api\/device\/connect\/([^/]+)$/u);
+  if (match?.[1] === undefined) {
+    return null;
+  }
+  try {
+    const deviceID = decodeURIComponent(match[1]);
+    return validText(deviceID, 256) ? deviceID : null;
+  } catch {
+    return null;
+  }
 }
 
 async function validEnrollmentBearer(request: Request, expectedHash: string): Promise<boolean> {
