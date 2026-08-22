@@ -10,3 +10,4 @@
 executor-state/
 /executor
 /executor-kill
+/.worktrees/
