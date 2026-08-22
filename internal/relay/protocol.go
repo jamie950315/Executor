@@ -121,7 +121,8 @@ func DecodeEnvelope(data []byte) (Envelope, error) {
 	if err := requireJSONEOF(decoder); err != nil {
 		return Envelope{}, ErrInvalidEnvelope
 	}
-	if envelope.Version != ProtocolVersion || !validMessageType(envelope.Type) || envelope.MessageID == "" || len(envelope.Payload) == 0 {
+	if envelope.Version != ProtocolVersion || !validMessageType(envelope.Type) || envelope.MessageID == "" ||
+		len(envelope.Payload) == 0 || bytes.Equal(envelope.Payload, []byte("null")) {
 		return Envelope{}, ErrInvalidEnvelope
 	}
 	return envelope, nil

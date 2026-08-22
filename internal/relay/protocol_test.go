@@ -107,6 +107,7 @@ func TestDecodeEnvelopeRejectsInvalidMetadataWithoutEchoingInput(t *testing.T) {
 		`{"version":2,"type":"heartbeat","message_id":"` + secretMarker + `","payload":{}}`,
 		`{"version":1,"type":"unknown","message_id":"` + secretMarker + `","payload":{}}`,
 		`{"version":1,"type":"heartbeat","message_id":"","payload":{}}`,
+		`{"version":1,"type":"heartbeat","message_id":"msg-1","payload":null}`,
 		`{"version":1,"type":"heartbeat","message_id":"msg-1","payload":{},"unexpected":"` + secretMarker + `"}`,
 		`{"version":1,"type":"heartbeat","message_id":"msg-1","payload":{}} {"extra":"` + secretMarker + `"}`,
 	}
