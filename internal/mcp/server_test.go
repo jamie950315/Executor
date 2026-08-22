@@ -107,6 +107,21 @@ func TestDevicePermissionsToolSchemaExposesStatusAndRequestAll(t *testing.T) {
 	t.Fatal("device_permissions tool is missing")
 }
 
+func TestFilesystemToolSchemasExposeOptionalStrictEncoding(t *testing.T) {
+	t.Parallel()
+
+	for _, tool := range BuiltinTools() {
+		if tool.Name != "filesystem_read" && tool.Name != "filesystem_write" {
+			continue
+		}
+		properties := tool.InputSchema["properties"].(map[string]any)
+		encoding, ok := properties["encoding"].(map[string]any)
+		if !ok || !reflect.DeepEqual(encoding["enum"], []string{"utf8", "base64"}) {
+			t.Fatalf("%s encoding schema = %#v", tool.Name, properties["encoding"])
+		}
+	}
+}
+
 func TestPrivilegedToolsExposeOwnerAndAdminSelection(t *testing.T) {
 	t.Parallel()
 

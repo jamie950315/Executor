@@ -1,12 +1,14 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,84 @@ import (
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
 )
+
+func TestMCPFilesystemEncodingSupportsStrictBase64WithoutChangingLegacyText(t *testing.T) {
+	t.Parallel()
+
+	bytesValue := []byte{0x00, 0xff, 0x41, 0x42}
+	caller := &recordingCaller{responses: map[string]any{"filesystem.read": bytesValue}}
+	dispatcher := NewMCP(nil, caller)
+
+	legacy, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		Name: "filesystem_read", Arguments: map[string]any{"action": "read_file", "path": "/tmp/blob"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := legacy.(map[string]any)["content"]; got != string(bytesValue) {
+		t.Fatalf("legacy content = %#v", got)
+	}
+
+	encoded, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+		Name: "filesystem_read", Arguments: map[string]any{
+			"action": "read_file", "path": "/tmp/blob", "encoding": "base64",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"content": base64.StdEncoding.EncodeToString(bytesValue), "encoding": "base64", "size": len(bytesValue)}
+	if !reflect.DeepEqual(encoded, want) {
+		t.Fatalf("base64 result = %#v, want %#v", encoded, want)
+	}
+}
+
+func TestMCPFilesystemEncodingRejectsInvalidValuesAndBase64BeforeIPC(t *testing.T) {
+	t.Parallel()
+
+	caller := &recordingCaller{}
+	dispatcher := NewMCP(nil, caller)
+	for _, arguments := range []map[string]any{
+		{"action": "read_file", "path": "/tmp/blob", "encoding": "hex"},
+		{"action": "write_file", "path": "/tmp/blob", "encoding": "base64", "content": "not_base64"},
+		{"action": "append_file", "path": "/tmp/blob", "encoding": "base64", "content": "YQ"},
+	} {
+		name := "filesystem_read"
+		if arguments["action"] != "read_file" {
+			name = "filesystem_write"
+		}
+		if _, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{Name: name, Arguments: arguments}); err == nil {
+			t.Fatalf("invalid encoding succeeded: %#v", arguments)
+		}
+	}
+	if len(caller.calls) != 0 {
+		t.Fatalf("invalid encoding reached IPC: %#v", caller.calls)
+	}
+}
+
+func TestMCPFilesystemEncodingWritesDecodedBytesAndReturnsMetadata(t *testing.T) {
+	t.Parallel()
+
+	caller := &recordingCaller{responses: map[string]any{"filesystem.write": map[string]any{"ok": true}}}
+	result, err := NewMCP(nil, caller).Dispatch(context.Background(), mcp.ToolCall{
+		Name: "filesystem_write", Arguments: map[string]any{
+			"action": "write_file", "path": "/tmp/blob", "encoding": "base64", "content": "AP9BQg==",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, map[string]any{"encoding": "base64", "size": 4}) {
+		t.Fatalf("write metadata = %#v", result)
+	}
+	if len(caller.calls) != 1 {
+		t.Fatalf("write calls = %#v", caller.calls)
+	}
+	data, _ := base64.StdEncoding.DecodeString(caller.calls[0].params["data"].(string))
+	if !bytes.Equal(data, []byte{0x00, 0xff, 0x41, 0x42}) {
+		t.Fatalf("write call = %#v", caller.calls)
+	}
+}
 
 func TestMCPRoutesOwnerAndAdminTerminalToSeparateHelpers(t *testing.T) {
 	t.Parallel()
