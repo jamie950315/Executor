@@ -253,6 +253,29 @@ func buildWindowsScreenshotScript(path string) string {
 	return "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bitmap=New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height; $graphics=[System.Drawing.Graphics]::FromImage($bitmap); $graphics.CopyFromScreen($bounds.X,$bounds.Y,0,0,$bitmap.Size); $bitmap.Save('" + psSingleQuote(path) + "',[System.Drawing.Imaging.ImageFormat]::Png); $graphics.Dispose(); $bitmap.Dispose()"
 }
 
+func buildWindowsDesktopAvailabilityScript() string {
+	return `$ErrorActionPreference='Stop'; Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ExecutorDesktopProbe {
+  public const int WTSConnectState = 8;
+  public const int WTSActive = 0;
+  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+  [DllImport("user32.dll", SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder value, int length, ref int needed);
+  [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool CloseDesktop(IntPtr handle);
+  [DllImport("wtsapi32.dll", SetLastError=true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool WTSQuerySessionInformation(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytes);
+  [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr buffer);
+  public static bool CurrentSessionActive() {
+    IntPtr buffer; int bytes;
+    if (!WTSQuerySessionInformation(IntPtr.Zero, -1, WTSConnectState, out buffer, out bytes) || buffer == IntPtr.Zero) return false;
+    try { return bytes >= 4 && Marshal.ReadInt32(buffer) == WTSActive; }
+    finally { WTSFreeMemory(buffer); }
+  }
+}
+'@; if(-not [ExecutorDesktopProbe]::CurrentSessionActive()){exit 1}; $desktop=[ExecutorDesktopProbe]::OpenInputDesktop(0,$false,1); if($desktop -eq [IntPtr]::Zero){exit 1}; try{$name=New-Object System.Text.StringBuilder 256; $needed=0; if(-not [ExecutorDesktopProbe]::GetUserObjectInformation($desktop,2,$name,$name.Capacity,[ref]$needed)){exit 1}; if($name.ToString() -ne 'Default'){exit 1}} finally{[void][ExecutorDesktopProbe]::CloseDesktop($desktop)}`
+}
+
 func buildWindowsEnumWindowsScript() string {
 	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Text;\nusing System.Runtime.InteropServices;\npublic static class ExecutorWin32 {\n  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);\n  [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);\n  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);\n  [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);\n}\n'@; $items=New-Object System.Collections.Generic.List[object]; $callback=[ExecutorWin32+EnumWindowsProc]{ param($hWnd,$lParam) if(-not [ExecutorWin32]::IsWindowVisible($hWnd)){ return $true } $len=[ExecutorWin32]::GetWindowTextLength($hWnd); if($len -le 0){ return $true } $sb=New-Object System.Text.StringBuilder ($len+1); [void][ExecutorWin32]::GetWindowText($hWnd,$sb,$sb.Capacity); $processId=0; [void][ExecutorWin32]::GetWindowThreadProcessId($hWnd,[ref]$processId); $procName=''; try { $procName=(Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {} $items.Add([pscustomobject]@{ app=$procName; title=$sb.ToString(); id=[int]$hWnd }) | Out-Null; return $true }; [ExecutorWin32]::EnumWindows($callback,[IntPtr]::Zero) | Out-Null; ConvertTo-Json -InputObject @($items) -Compress"
 }

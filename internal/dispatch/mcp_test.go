@@ -74,6 +74,56 @@ func TestMCPRoutesFilesystemAndDesktopActions(t *testing.T) {
 	}
 }
 
+func TestMCPDevicePermissionsRoutesActionsToDesktopHelper(t *testing.T) {
+	t.Parallel()
+
+	report := map[string]any{
+		"platform": "darwin", "requested": false, "ready": false,
+		"permissions": []any{map[string]any{"id": "screen_recording", "label": "Screen Recording", "state": "denied", "required": true}},
+	}
+	desktopCaller := &recordingCaller{responses: map[string]any{
+		desktop.RPCMethodDesktopPermissions: report,
+	}}
+	dispatcher := NewMCP(nil, desktopCaller)
+
+	for _, test := range []struct {
+		action  string
+		request bool
+	}{
+		{action: "status", request: false},
+		{action: "request_all", request: true},
+	} {
+		result, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
+			Name: "device_permissions", Arguments: map[string]any{"action": test.action},
+		})
+		if err != nil {
+			t.Fatalf("device_permissions %s: %v", test.action, err)
+		}
+		if got := result.(map[string]any)["platform"]; got != "darwin" {
+			t.Fatalf("device_permissions %s platform = %#v", test.action, got)
+		}
+		call := desktopCaller.calls[len(desktopCaller.calls)-1]
+		if call.method != desktop.RPCMethodDesktopPermissions || call.params["request"] != test.request {
+			t.Fatalf("device_permissions %s call = %#v", test.action, call)
+		}
+	}
+}
+
+func TestMCPDevicePermissionsRejectsUnknownActionBeforeIPC(t *testing.T) {
+	t.Parallel()
+
+	desktopCaller := &recordingCaller{responses: map[string]any{}}
+	_, err := NewMCP(nil, desktopCaller).Dispatch(context.Background(), mcp.ToolCall{
+		Name: "device_permissions", Arguments: map[string]any{"action": "grant_silently"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported device permissions action") {
+		t.Fatalf("device_permissions invalid action error = %v", err)
+	}
+	if len(desktopCaller.calls) != 0 {
+		t.Fatalf("invalid device_permissions reached IPC: %#v", desktopCaller.calls)
+	}
+}
+
 func TestMCPDesktopScreenshotReturnsImageAndCaptureMetadata(t *testing.T) {
 	t.Parallel()
 

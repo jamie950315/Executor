@@ -13,6 +13,7 @@ import (
 	"github.com/jamie950315/executor/internal/control"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/ipc"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
@@ -74,6 +75,15 @@ func (c *RuntimeController) Resume(ctx context.Context) error {
 		return errors.New("control controller is required")
 	}
 	return c.control.Resume(ctx)
+}
+
+func (c *RuntimeController) Permissions(ctx context.Context, request bool) (permissionmodel.Report, error) {
+	var report permissionmodel.Report
+	err := c.desktop.Call(ctx, desktop.RPCMethodDesktopPermissions, desktop.RPCDesktopPermissionsParams{Request: request}, &report)
+	if err != nil {
+		return permissionmodel.Report{}, err
+	}
+	return permissionmodel.ValidateReport(report)
 }
 
 func (*RuntimeController) Rotate(context.Context) error { return ErrRotateUnsupported }

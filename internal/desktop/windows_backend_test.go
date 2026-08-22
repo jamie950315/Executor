@@ -4,9 +4,22 @@ package desktop
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"testing"
 )
+
+func TestWindowsDesktopAvailabilityProbeRealSession(t *testing.T) {
+	expectation := os.Getenv("EXECUTOR_EXPECT_WINDOWS_DESKTOP_AVAILABLE")
+	if expectation == "" {
+		t.Skip("set EXECUTOR_EXPECT_WINDOWS_DESKTOP_AVAILABLE for a real Windows session probe")
+	}
+	got := (windowsBackend{runner: defaultCommandRunner{}}).Available(context.Background())
+	want := expectation == "1"
+	if got != want {
+		t.Fatalf("desktop availability = %v, want %v for this Windows session", got, want)
+	}
+}
 
 func TestWindowsBackend_UsesExpectedPowerShellCommands(t *testing.T) {
 	runner := &windowsTestRunner{

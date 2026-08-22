@@ -24,6 +24,8 @@ Desktop control requires an active, unlocked graphical login. macOS and Windows 
 
 On macOS, grant Screen Recording and Accessibility to the installed `Executor Desktop.app`, not to Terminal or the standalone `executor` binary. Release bundles install this signed helper at `/Library/Application Support/Executor/Executor Desktop.app` so macOS can retain permissions across service restarts. See [Deployment](docs/DEPLOYMENT.md) for release-signing requirements.
 
+After installing the services, bootstrap waits briefly for the active-user Desktop helper and calls `executor permissions request-all` through it. This is the process that needs the desktop permissions, so macOS prompts are assigned to `Executor Desktop.app` instead of Terminal, the CLI, or the Dashboard daemon. The command reports `pending` until the owner actually approves each operating-system prompt; sending a request never counts as approval. Recheck with `executor permissions status`, the loopback Dashboard's Permission Setup panel, or the MCP tool `device_permissions` with `action: "status"`. An authenticated AI can repeat the request with `action: "request_all"`.
+
 Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Registration (DCR) for current ChatGPT compatibility and retains implemented support for Client ID Metadata Documents (CIMD), public-client `none`, and ChatGPT-signed `private_key_jwt` token exchange.
 
 Before linking ChatGPT, run `executor doctor --full`. The full check sends an invalid, non-registering request through the public hostname to confirm that Cloudflare allows ChatGPT's DCR request to reach Executor. Cloudflare Bot Fight Mode can challenge API traffic and cannot be bypassed with a WAF custom rule; disable Bot Fight Mode for the zone or use Super Bot Fight Mode with an OAuth-path skip rule. See [Troubleshooting](docs/TROUBLESHOOTING.md) for the verified failure signatures and recovery steps.
@@ -42,8 +44,8 @@ Desktop control also needs an active graphical login:
 
 - macOS: grant Screen Recording and Accessibility to the installed `Executor Desktop.app`
 - Windows: keep the target user logged in so the active-user desktop helper can run
-- Linux X11: install a screenshot provider, `gdbus`, and `xdotool`
-- Linux Wayland: install a screenshot provider, `gdbus`, and `wtype` or `ydotool`; advanced mouse actions remain compositor-dependent
+- Linux X11: install ImageMagick `import`, `gdbus` with a live AT-SPI accessibility bus, `xdotool`, and `wmctrl`
+- Linux Wayland: install `grim` or `gnome-screenshot`, `gdbus` with a live AT-SPI accessibility bus, and `wtype` or an authorized `ydotoold`; advanced mouse actions remain compositor-dependent
 - WSL: terminal and filesystem support work through WSL, while Windows desktop control requires the Windows companion and Linux GUI control requires WSLg
 
 ## Intended workflow
@@ -102,8 +104,9 @@ After deployment:
 
 1. Run `executor status` and confirm the host reports `armed`.
 2. Run `executor doctor --full` and confirm every local check plus `remote OAuth DCR` passes.
-3. Confirm the public OAuth metadata endpoints return JSON and unauthenticated `/mcp` returns HTTP 401 instead of a Cloudflare challenge.
-4. Link the exact hostname in ChatGPT and use that host's newest recovery key.
+3. Run `executor permissions status`. Approve every required item that is still `pending`, `denied`, `manual`, or `unavailable`; install the listed Linux dependencies when applicable.
+4. Confirm the public OAuth metadata endpoints return JSON and unauthenticated `/mcp` returns HTTP 401 instead of a Cloudflare challenge.
+5. Link the exact hostname in ChatGPT and use that host's newest recovery key.
 
 If installation fails after service files were touched, run the platform rollback script from the same checkout or release bundle:
 

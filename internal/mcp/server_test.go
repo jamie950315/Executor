@@ -53,14 +53,15 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 	t.Parallel()
 
 	want := map[string]ToolAnnotations{
-		"terminal":          {DestructiveHint: true},
-		"terminal_output":   {ReadOnlyHint: true},
-		"terminal_sessions": {ReadOnlyHint: true},
-		"filesystem_read":   {ReadOnlyHint: true},
-		"filesystem_write":  {DestructiveHint: true},
-		"desktop_observe":   {ReadOnlyHint: true},
-		"desktop_control":   {DestructiveHint: true},
-		"device_status":     {ReadOnlyHint: true},
+		"terminal":           {DestructiveHint: true},
+		"terminal_output":    {ReadOnlyHint: true},
+		"terminal_sessions":  {ReadOnlyHint: true},
+		"filesystem_read":    {ReadOnlyHint: true},
+		"filesystem_write":   {DestructiveHint: true},
+		"desktop_observe":    {ReadOnlyHint: true},
+		"desktop_control":    {DestructiveHint: true},
+		"device_status":      {ReadOnlyHint: true},
+		"device_permissions": {DestructiveHint: true},
 	}
 
 	tools := BuiltinTools()
@@ -78,6 +79,32 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 		}
 		assertConcreteToolSchema(t, tool)
 	}
+}
+
+func TestDevicePermissionsToolSchemaExposesStatusAndRequestAll(t *testing.T) {
+	t.Parallel()
+
+	for _, tool := range BuiltinTools() {
+		if tool.Name != "device_permissions" {
+			continue
+		}
+		properties := tool.InputSchema["properties"].(map[string]any)
+		actions := properties["action"].(map[string]any)["enum"].([]string)
+		if !reflect.DeepEqual(actions, []string{"status", "request_all"}) {
+			t.Fatalf("device_permissions actions = %#v", actions)
+		}
+		if required := tool.InputSchema["required"]; !reflect.DeepEqual(required, []string{"action"}) {
+			t.Fatalf("device_permissions required = %#v", required)
+		}
+		outputProperties := tool.OutputSchema["properties"].(map[string]any)
+		for _, name := range []string{"platform", "requested", "ready", "restart_required", "permissions"} {
+			if _, ok := outputProperties[name]; !ok {
+				t.Fatalf("device_permissions output schema missing %q", name)
+			}
+		}
+		return
+	}
+	t.Fatal("device_permissions tool is missing")
 }
 
 func TestPrivilegedToolsExposeOwnerAndAdminSelection(t *testing.T) {

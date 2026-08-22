@@ -5,6 +5,8 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 type windowsBackend struct {
@@ -88,6 +90,14 @@ func (b windowsBackend) App(ctx context.Context, action AppAction) error {
 }
 
 func (b windowsBackend) Available(ctx context.Context) bool {
-	_, err := b.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
+	_, err := b.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", buildWindowsDesktopAvailabilityScript())
 	return err == nil
+}
+
+func (b windowsBackend) PermissionStatus(ctx context.Context) (permissionmodel.Report, error) {
+	return windowsPermissionReport(b.Available(ctx), false), nil
+}
+
+func (b windowsBackend) RequestPermissions(ctx context.Context) (permissionmodel.Report, error) {
+	return windowsPermissionReport(b.Available(ctx), true), nil
 }

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/jamie950315/executor/internal/control"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/ipc"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
@@ -20,6 +22,69 @@ type fakeLifecycle struct{}
 
 func (fakeLifecycle) Kill(context.Context) (control.Result, error) {
 	return control.Result{}, nil
+}
+
+func TestRuntimeControllerPermissionsCallsActiveUserDesktopHelper(t *testing.T) {
+	stateDir := t.TempDir()
+	endpointDir, err := os.MkdirTemp("", "executor-dashboard-permissions-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(endpointDir) })
+	values, err := secrets.Create(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(stateDir)
+	if runtime.GOOS == "windows" {
+		cfg.DesktopEndpoint = `\\.\pipe\` + filepath.Base(endpointDir) + "-desktop"
+	} else {
+		cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
+	}
+
+	requests := make(chan bool, 2)
+	server := ipc.NewRPCServer(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey), func(_ context.Context, method string, raw []byte) (any, error) {
+		if method != desktop.RPCMethodDesktopPermissions {
+			t.Fatalf("desktop method = %q", method)
+		}
+		var params desktop.RPCDesktopPermissionsParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			t.Fatalf("decode desktop permission params: %v", err)
+		}
+		requests <- params.Request
+		return permissionmodel.NewReport("darwin", params.Request, []permissionmodel.Item{{
+			ID: "screen_recording", Label: "Screen Recording", State: permissionmodel.StatePending, Required: true,
+		}}), nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.Serve(ctx) }()
+	defer func() {
+		cancel()
+		assertControllerServerStopped(t, serverErr)
+	}()
+
+	controller := NewRuntimeController(cfg, values, fakeLifecycle{})
+	for _, requested := range []bool{false, true} {
+		var report permissionmodel.Report
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			report, err = controller.Permissions(context.Background(), requested)
+			if err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("Permissions(%v): %v", requested, err)
+		}
+		if report.Requested != requested || report.Platform != "darwin" || report.Ready {
+			t.Fatalf("Permissions(%v) = %#v", requested, report)
+		}
+		if got := <-requests; got != requested {
+			t.Fatalf("Permissions(%v) IPC request = %v", requested, got)
+		}
+	}
 }
 
 func (fakeLifecycle) Resume(context.Context) error { return nil }

@@ -112,6 +112,8 @@ func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 		return d.desktopControl(ctx, call.SessionID, call.Arguments)
 	case "device_status":
 		return d.deviceStatus(ctx, call.Arguments)
+	case "device_permissions":
+		return d.devicePermissions(ctx, call.Arguments)
 	default:
 		return nil, fmt.Errorf("unsupported Executor tool %q", call.Name)
 	}
@@ -617,6 +619,22 @@ func (d *MCP) deviceStatus(ctx context.Context, arguments map[string]any) (any, 
 	default:
 		return nil, fmt.Errorf("unsupported device status action %q", action)
 	}
+}
+
+func (d *MCP) devicePermissions(ctx context.Context, arguments map[string]any) (any, error) {
+	action, err := requiredString(arguments, "action")
+	if err != nil {
+		return nil, err
+	}
+	request := false
+	switch action {
+	case "status":
+	case "request_all":
+		request = true
+	default:
+		return nil, fmt.Errorf("unsupported device permissions action %q", action)
+	}
+	return d.call(ctx, d.desktop, desktop.RPCMethodDesktopPermissions, desktop.RPCDesktopPermissionsParams{Request: request})
 }
 
 func (d *MCP) privilegedCaller(arguments map[string]any) Caller {

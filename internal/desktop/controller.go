@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
+
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 type MouseActionType string
@@ -118,6 +121,11 @@ type Controller struct {
 	wait    func(context.Context, time.Duration) error
 }
 
+type permissionBackend interface {
+	PermissionStatus(context.Context) (permissionmodel.Report, error)
+	RequestPermissions(context.Context) (permissionmodel.Report, error)
+}
+
 func NewController() *Controller {
 	return &Controller{backend: defaultBackend(), wait: defaultActionWait}
 }
@@ -148,6 +156,31 @@ func (c *Controller) App(ctx context.Context, action AppAction) error {
 
 func (c *Controller) Available(ctx context.Context) bool {
 	return c.backend.Available(ctx)
+}
+
+func (c *Controller) Permissions(ctx context.Context, request bool) (permissionmodel.Report, error) {
+	provider, ok := c.backend.(permissionBackend)
+	if !ok {
+		return permissionmodel.NewReport(runtime.GOOS, request, []permissionmodel.Item{{
+			ID: "permission_setup", Label: "Permission Setup",
+			State: permissionmodel.StateUnavailable, Required: true,
+			Detail: "permission setup is unavailable for this desktop backend",
+		}}), nil
+	}
+	var (
+		report permissionmodel.Report
+		err    error
+	)
+	if request {
+		report, err = provider.RequestPermissions(ctx)
+	} else {
+		report, err = provider.PermissionStatus(ctx)
+	}
+	if err != nil {
+		return permissionmodel.Report{}, err
+	}
+	report.Requested = request
+	return permissionmodel.ValidateReport(report)
 }
 
 func (c *Controller) Actions(ctx context.Context, actions []Action) error {

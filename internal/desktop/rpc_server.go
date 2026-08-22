@@ -15,6 +15,7 @@ import (
 
 	"github.com/jamie950315/executor/internal/filesystem"
 	"github.com/jamie950315/executor/internal/ipc"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/terminal"
 )
 
@@ -56,6 +57,10 @@ type HelperDesktop interface {
 	App(ctx context.Context, action AppAction) error
 	Actions(ctx context.Context, actions []Action) error
 	Available(ctx context.Context) bool
+}
+
+type HelperPermissionDesktop interface {
+	Permissions(ctx context.Context, request bool) (permissionmodel.Report, error)
 }
 
 func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, files HelperFilesystem, desktop HelperDesktop) *ipc.RPCServer {
@@ -319,6 +324,16 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return nil, desktop.Actions(ctx, request.Actions)
+		case RPCMethodDesktopPermissions:
+			var request RPCDesktopPermissionsParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			permissionDesktop, ok := desktop.(HelperPermissionDesktop)
+			if !ok {
+				return nil, &UnavailableError{Reason: "permission setup is unavailable for this desktop helper"}
+			}
+			return permissionDesktop.Permissions(ctx, request.Request)
 		default:
 			return nil, ErrUnknownRPCMethod
 		}

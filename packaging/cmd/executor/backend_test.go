@@ -12,11 +12,94 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/control"
+	"github.com/jamie950315/executor/internal/desktop"
+	"github.com/jamie950315/executor/internal/ipc"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestBackendPermissionsUsesConfiguredActiveUserDesktopIPC(t *testing.T) {
+	stateDir := t.TempDir()
+	b := newBackend(stateDir)
+	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	endpointDir, err := os.MkdirTemp("", "executor-cli-permissions-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(endpointDir) })
+	if runtime.GOOS == "windows" {
+		cfg.DesktopEndpoint = `\\.\pipe\` + filepath.Base(endpointDir) + "-desktop"
+	} else {
+		cfg.DesktopEndpoint = filepath.Join(endpointDir, "desktop.sock")
+	}
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	values, err := secrets.Load(stateDir)
+	if err != nil {
+		t.Fatalf("Load secrets: %v", err)
+	}
+
+	requests := make(chan bool, 2)
+	server := ipc.NewRPCServer(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey), func(_ context.Context, method string, raw []byte) (any, error) {
+		if method != desktop.RPCMethodDesktopPermissions {
+			t.Fatalf("desktop method = %q", method)
+		}
+		var params desktop.RPCDesktopPermissionsParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			t.Fatalf("decode permission params: %v", err)
+		}
+		requests <- params.Request
+		return permissionmodel.NewReport("darwin", params.Request, []permissionmodel.Item{{
+			ID: "screen_recording", Label: "Screen Recording", State: permissionmodel.StatePending, Required: true,
+		}}), nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.Serve(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-serverErr:
+			if err != nil {
+				t.Fatalf("desktop server stop: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("desktop server did not stop")
+		}
+	}()
+
+	for _, request := range []bool{false, true} {
+		var report permissionmodel.Report
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			report, err = b.Permissions(context.Background(), request)
+			if err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("Permissions(%v): %v", request, err)
+		}
+		if report.Requested != request || report.Ready || report.Platform != "darwin" {
+			t.Fatalf("Permissions(%v) = %#v", request, report)
+		}
+		if got := <-requests; got != request {
+			t.Fatalf("Permissions(%v) IPC request = %v", request, got)
+		}
+	}
+}
 
 func TestSetupCreatesConfigAndSecretsWithDashboardKeyBootstrapURL(t *testing.T) {
 	t.Parallel()

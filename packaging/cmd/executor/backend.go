@@ -23,6 +23,7 @@ import (
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/doctor"
 	"github.com/jamie950315/executor/internal/ipc"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
@@ -147,6 +148,23 @@ func (b *backend) Status(ctx context.Context) (cli.Status, error) {
 		status.State = "armed"
 	}
 	return status, nil
+}
+
+func (b *backend) Permissions(ctx context.Context, request bool) (permissionmodel.Report, error) {
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		return permissionmodel.Report{}, err
+	}
+	values, err := secrets.Load(b.stateDir)
+	if err != nil {
+		return permissionmodel.Report{}, err
+	}
+	client := ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey))
+	var report permissionmodel.Report
+	if err := client.Call(ctx, desktop.RPCMethodDesktopPermissions, desktop.RPCDesktopPermissionsParams{Request: request}, &report); err != nil {
+		return permissionmodel.Report{}, err
+	}
+	return permissionmodel.ValidateReport(report)
 }
 
 func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {

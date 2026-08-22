@@ -12,9 +12,18 @@ For clone deployments, the documented source-deployment entrypoints are `scripts
 
 1. Run `executor status` and confirm the host is `armed`.
 2. Run `executor doctor --full`. All local checks and `remote OAuth DCR` should pass.
-3. Confirm `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-authorization-server` return JSON through the public hostname.
-4. Confirm unauthenticated `/mcp` returns HTTP 401 with `WWW-Authenticate` rather than a Cloudflare HTML challenge.
-5. Link the exact hostname in ChatGPT and enter that host's newest recovery key.
+3. Run `executor permissions status` and finish every required operating-system approval or dependency.
+4. Confirm `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-authorization-server` return JSON through the public hostname.
+5. Confirm unauthenticated `/mcp` returns HTTP 401 with `WWW-Authenticate` rather than a Cloudflare HTML challenge.
+6. Link the exact hostname in ChatGPT and enter that host's newest recovery key.
+
+## Permission request completed but status is not ready
+
+**Observed symptom:** `executor permissions request-all`, the Dashboard button, or MCP `device_permissions action=request_all` returns a report with `requested: true`, but one or more required permissions are still `pending`, `denied`, `manual`, or `unavailable`.
+
+**Expected cause:** Operating systems do not allow Executor to silently approve owner consent. On macOS, the native request calls return before the owner finishes System Settings. On Linux and WSL, missing desktop tools must be installed or configured; the AT-SPI bus and `ydotoold` authorization are checked live, and X11 also requires `wmctrl`. On Windows, the active-user helper must run on the unlocked interactive `Default` desktop.
+
+**Correct fix:** Complete the shown prompts or dependency instructions, restart the active-user Desktop helper when the report requests it, and run `executor permissions status` again. Linux tool discovery is captured when the helper starts, so installing a newly missing executable requires that restart. Grant macOS permissions to `/Library/Application Support/Executor/Executor Desktop.app`; permissions granted only to Terminal or `/usr/local/bin/executor` do not authorize the helper.
 
 ## Public DCR returns HTTP 403
 

@@ -30,6 +30,8 @@ $LegacyCloudflaredBackupPath = Join-Path (Split-Path $CloudflaredTokenPath -Pare
 $BrokerUser = if ($env:EXECUTOR_BROKER_USER) { $env:EXECUTOR_BROKER_USER } else { "SYSTEM" }
 $BrokerGroup = if ($env:EXECUTOR_BROKER_GROUP) { $env:EXECUTOR_BROKER_GROUP } else { "SYSTEM" }
 $WindowsAgentService = if ($env:EXECUTOR_WINDOWS_AGENT_SERVICE) { $env:EXECUTOR_WINDOWS_AGENT_SERVICE } else { "NT SERVICE\ExecutorAgent" }
+$PermissionRetryAttempts = if ($env:EXECUTOR_PERMISSION_RETRY_ATTEMPTS) { [int]$env:EXECUTOR_PERMISSION_RETRY_ATTEMPTS } else { 20 }
+$PermissionRetryDelayMilliseconds = if ($env:EXECUTOR_PERMISSION_RETRY_DELAY) { [int]([double]$env:EXECUTOR_PERMISSION_RETRY_DELAY * 1000) } else { 250 }
 
 function Resolve-ActiveConsoleUser {
   try {
@@ -390,6 +392,21 @@ if ((Test-Path $LegacyCloudflaredBackupPath) -and $LegacyCloudflaredService) {
 
 foreach ($ReplacementPath in $PendingReplacementCleanup) {
   Remove-Item -Force -ErrorAction SilentlyContinue $ReplacementPath
+}
+
+$PermissionsInitialized = $false
+for ($PermissionAttempt = 1; $PermissionAttempt -le $PermissionRetryAttempts; $PermissionAttempt++) {
+  & $ExecutorInstallPath permissions request-all
+  if ($LASTEXITCODE -eq 0) {
+    $PermissionsInitialized = $true
+    break
+  }
+  if ($PermissionAttempt -lt $PermissionRetryAttempts) {
+    Start-Sleep -Milliseconds $PermissionRetryDelayMilliseconds
+  }
+}
+if (-not $PermissionsInitialized) {
+  Write-Warning "Permission initialization could not reach the active-user Desktop helper. Run 'executor permissions request-all' after signing in and unlocking the desktop."
 }
 
 Write-Host "service bundle installed to $InstallRoot"

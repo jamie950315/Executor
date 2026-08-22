@@ -40,6 +40,7 @@ const (
 	RPCMethodDesktopKeyboard      = "desktop.keyboard"
 	RPCMethodDesktopApp           = "desktop.app"
 	RPCMethodDesktopActions       = "desktop.actions"
+	RPCMethodDesktopPermissions   = "desktop.permissions"
 )
 
 type RPCTerminalStartParams struct {
@@ -125,6 +126,10 @@ type RPCDesktopAppParams struct {
 
 type RPCDesktopActionsParams struct {
 	Actions []Action `json:"actions"`
+}
+
+type RPCDesktopPermissionsParams struct {
+	Request bool `json:"request"`
 }
 
 type RPCDeviceStatus struct {

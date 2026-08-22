@@ -17,6 +17,7 @@ import (
 
 	"github.com/jamie950315/executor/internal/filesystem"
 	"github.com/jamie950315/executor/internal/ipc"
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/terminal"
 )
 
@@ -111,6 +112,13 @@ func TestHelperRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 	}
 	if status.Component != "desktop" || !status.Available || status.TerminalSessions != 2 {
 		t.Fatalf("unexpected device status: %#v", status)
+	}
+	var permissionReport permissionmodel.Report
+	if err := client.Call(context.Background(), RPCMethodDesktopPermissions, RPCDesktopPermissionsParams{Request: true}, &permissionReport); err != nil {
+		t.Fatalf("desktop.permissions: %v", err)
+	}
+	if !permissionReport.Requested || permissionReport.Platform != "test" || !permissionReport.Ready {
+		t.Fatalf("unexpected permission report: %#v", permissionReport)
 	}
 	if term.resizeSessionID != "owner" || term.resizeColumns != 132 || term.resizeRows != 43 {
 		t.Fatalf("terminal resize = %#v", term)
@@ -495,6 +503,11 @@ func (helperStatusDesktop) Keyboard(ctx context.Context, action KeyboardAction) 
 func (helperStatusDesktop) App(ctx context.Context, action AppAction) error           { return nil }
 func (helperStatusDesktop) Actions(ctx context.Context, actions []Action) error       { return nil }
 func (helperStatusDesktop) Available(ctx context.Context) bool                        { return true }
+func (helperStatusDesktop) Permissions(ctx context.Context, request bool) (permissionmodel.Report, error) {
+	return permissionmodel.NewReport("test", request, []permissionmodel.Item{{
+		ID: "desktop_session", Label: "Desktop Session", State: permissionmodel.StateGranted, Required: true,
+	}}), nil
+}
 
 func waitForHelperEndpoint(t *testing.T, endpoint string) {
 	t.Helper()

@@ -71,13 +71,67 @@ func TestLinuxBackend_ActivateReturnsUnavailableWithoutMatchingWindow(t *testing
 	}
 }
 
+func TestLinuxPermissionStatusChecksLiveBusAndFlagsNewToolsForRestart(t *testing.T) {
+	runner := &linuxTestRunner{outputs: map[string][]byte{
+		commandKey("gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"): []byte("('unix:path=/run/user/1000/at-spi/bus',)"),
+	}}
+	backend := linuxBackend{
+		runner: runner,
+		env:    map[string]string{"DISPLAY": ":0"},
+		kind:   backendX11,
+		tools: availableTools{
+			"gdbus": true, "xdotool": true, "wmctrl": true,
+		},
+		detectTools: func(...string) availableTools {
+			return availableTools{"import": true, "gdbus": true, "xdotool": true, "wmctrl": true}
+		},
+		kernelRelease: func() string { return "6.8.0-generic" },
+	}
+
+	report, err := backend.PermissionStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready || !report.RestartRequired {
+		t.Fatalf("newly installed screenshot tool was usable without helper restart: %#v", report)
+	}
+	if permissionState(report, "accessibility") != "granted" {
+		t.Fatalf("live accessibility bus was not checked: %#v", report)
+	}
+}
+
+func TestLinuxPermissionStatusIsNotReadyUntilChangedInventoryRestarts(t *testing.T) {
+	runner := &linuxTestRunner{outputs: map[string][]byte{
+		commandKey("gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress"): []byte("('unix:path=/run/user/1000/at-spi/bus',)"),
+	}}
+	backend := linuxBackend{
+		runner: runner, env: map[string]string{"DISPLAY": ":0"}, kind: backendX11,
+		tools: availableTools{"import": true, "gdbus": true, "xdotool": true, "wmctrl": true},
+		detectTools: func(...string) availableTools {
+			return availableTools{"import": true, "gdbus": true, "xdotool": true, "wmctrl": true, "ydotool": true}
+		},
+		kernelRelease: func() string { return "6.8.0-generic" },
+	}
+	report, err := backend.PermissionStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready || !report.RestartRequired {
+		t.Fatalf("changed helper inventory reported ready before restart: %#v", report)
+	}
+}
+
 type linuxTestRunner struct {
 	calls   []string
 	outputs map[string][]byte
+	errors  map[string]error
 }
 
 func (f *linuxTestRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	key := commandKey(name, args...)
 	f.calls = append(f.calls, key)
+	if err := f.errors[key]; err != nil {
+		return f.outputs[key], err
+	}
 	return f.outputs[key], nil
 }

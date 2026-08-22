@@ -41,6 +41,8 @@ CLOUDFLARE_API_TOKEN_FILE="${CLOUDFLARE_API_TOKEN_FILE:-${EXECUTOR_CLOUDFLARE_TO
 CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-${EXECUTOR_CLOUDFLARE_ACCOUNT_ID:-}}"
 CLOUDFLARE_ZONE_ID="${CLOUDFLARE_ZONE_ID:-${EXECUTOR_CLOUDFLARE_ZONE_ID:-}}"
 CLOUDFLARE_TUNNEL_NAME="${CLOUDFLARE_TUNNEL_NAME:-${EXECUTOR_CLOUDFLARE_TUNNEL_NAME:-}}"
+PERMISSION_RETRY_ATTEMPTS="${EXECUTOR_PERMISSION_RETRY_ATTEMPTS:-20}"
+PERMISSION_RETRY_DELAY="${EXECUTOR_PERMISSION_RETRY_DELAY:-0.25}"
 
 if ! CLOUDFLARED_BIN_RESOLVED="$(command -v "${CLOUDFLARED_BIN}" 2>/dev/null)"; then
   CLOUDFLARED_BIN_RESOLVED=""
@@ -574,6 +576,20 @@ case "${TARGET}" in
   macos) bootstrap_macos "${ROOT}" ;;
 esac
 migrate_owned_legacy_cloudflared
+
+permission_initialized=0
+for ((permission_attempt = 1; permission_attempt <= PERMISSION_RETRY_ATTEMPTS; permission_attempt++)); do
+  if "${EXECUTOR_INSTALL_BINARY_PATH}" permissions request-all; then
+    permission_initialized=1
+    break
+  fi
+  if ((permission_attempt < PERMISSION_RETRY_ATTEMPTS)); then
+    sleep "${PERMISSION_RETRY_DELAY}"
+  fi
+done
+if [[ "${permission_initialized}" != "1" ]]; then
+  printf 'permission initialization could not reach the active-user Desktop helper; run `executor permissions request-all` after signing in and unlocking the desktop\n' >&2
+fi
 
 printf 'service bundle installed to %s\n' "${ROOT}"
 printf 'manifest path: %s\n' "${MANIFEST_PATH}"

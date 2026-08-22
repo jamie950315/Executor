@@ -51,6 +51,18 @@ Optional inputs are shared by release and source deployments:
 
 Do not treat `executor setup` by itself as a complete installation. `executor setup` prepares config, secrets, and optional Cloudflare metadata, but the packaged services are installed by `scripts/bootstrap.sh` or `scripts/bootstrap.ps1`.
 
+## Permission initialization
+
+Both bootstrap scripts start the active-user Desktop helper, wait for its authenticated local IPC endpoint with a short bounded retry, and then call `executor permissions request-all`. On macOS, the permission owner is therefore the installed `Executor Desktop.app`, not the root bootstrap process, Terminal, the CLI binary, or the Dashboard daemon. If no active unlocked desktop is available before the retry window ends, bootstrap keeps the service installation successful, prints a warning, and the owner or deploying agent must run the same command after sign-in.
+
+Available interfaces use the same report and the same Desktop-helper boundary:
+
+- CLI: `executor permissions status [--json]` and `executor permissions request-all [--json]`
+- MCP: `device_permissions` with `action: "status"` or `action: "request_all"`
+- Local Dashboard: `GET /api/permissions/status`, `POST /api/permissions/request-all`, and the Permission Setup panel
+
+`requested: true` means Executor invoked the available operating-system request mechanisms. It does not mean the owner approved them. A report is `ready: true` only when every required item is `granted` or `not_required`. On macOS, Screen Recording, Accessibility, and Input Control may remain `pending` until the owner approves System Settings prompts; the report may also request a helper restart. Full Disk Access has no supported automatic grant API, remains an optional `manual` item, and opens its System Settings page. Windows verifies that the helper can open the active `Default` input desktop, so a locked, disconnected, or secure desktop is not reported ready; Screen Capture and Input Control require no separate consent grant. Linux and WSL verify the live AT-SPI bus and, on Wayland, `ydotoold` access rather than trusting executable presence alone. X11 also requires `wmctrl`. When newly installed tools differ from the helper's startup inventory, the report remains not ready and requests a helper restart. The current Wayland backend does not create an unused XDG Desktop Portal session.
+
 ## Cloudflare Tunnel
 
 Executor expects a remotely-managed Cloudflare Named Tunnel and a proxied CNAME record that points to `<tunnel-id>.cfargotunnel.com`.
@@ -143,8 +155,8 @@ Setup reports the remote Streamable HTTP endpoint and local `executor stdio` com
 
 - Requires `systemd`, Python 3, Go 1.24+ for source deployment, and `cloudflared`.
 - Run deployment as root or through `sudo` so the system units and user desktop unit can be installed.
-- X11 desktop control needs a screenshot provider, `gdbus`, and `xdotool`.
-- Wayland desktop control needs a screenshot provider, `gdbus`, and `wtype` or `ydotool`; advanced mouse actions remain limited by compositor support.
+- X11 desktop control needs ImageMagick `import`, `gdbus` with a live AT-SPI bus, `xdotool`, and `wmctrl`.
+- Wayland desktop control needs `grim` or `gnome-screenshot`, `gdbus` with a live AT-SPI bus, and `wtype` or an authorized `ydotoold`; advanced mouse actions remain limited by compositor support.
 
 ### WSL
 
@@ -168,8 +180,8 @@ Screenshot data is carried in MCP image content. Each screenshot result starts w
 The Desktop helper must run inside an active, unlocked user session with screen-recording and accessibility/input permissions granted by the operating system. Terminal, filesystem, Broker, Dashboard, and Kill Switch operation do not depend on the desktop being unlocked.
 
 - macOS captures the primary display and normalizes Retina pixels to display-point coordinates before returning the image.
-- Windows captures the primary display so `SetCursorPos` coordinates match the returned image. The active-user Scheduled Task remains required and is configured with no execution-time limit; a Windows Service cannot interact with the logged-in desktop.
-- Linux X11 supports the complete action set when the documented screenshot and `xdotool` dependencies are available.
+- Windows captures the primary display so `SetCursorPos` coordinates match the returned image. Permission status opens and names the current input desktop, and reports ready only for the interactive `Default` desktop. The active-user Scheduled Task remains required and is configured with no execution-time limit; a Windows Service cannot interact with the logged-in desktop.
+- Linux X11 supports the complete action set when the documented screenshot, accessibility, `xdotool`, and `wmctrl` dependencies are available.
 - Wayland support is compositor-dependent. Executor reports unsupported modifier-assisted mouse, double-click, drag, and scroll actions instead of silently claiming success when the available `ydotool` path cannot execute them reliably.
 - WSL uses WSLg for Linux GUI control. Use the Windows companion to control the Windows desktop.
 

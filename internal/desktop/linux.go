@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 type backendKind string
@@ -20,18 +23,27 @@ const (
 )
 
 type linuxBackend struct {
-	runner commandRunner
-	env    map[string]string
-	kind   backendKind
-	tools  availableTools
+	runner        commandRunner
+	env           map[string]string
+	kind          backendKind
+	tools         availableTools
+	detectTools   func(...string) availableTools
+	kernelRelease func() string
 }
+
+var linuxDesktopToolNames = []string{"import", "grim", "gnome-screenshot", "wmctrl", "gdbus", "xdotool", "wtype", "ydotool"}
 
 func newLinuxBackend(runner commandRunner, env map[string]string) linuxBackend {
 	return linuxBackend{
-		runner: runner,
-		env:    env,
-		kind:   detectLinuxBackend(env),
-		tools:  detectAvailableTools("grim", "gnome-screenshot", "wmctrl", "gdbus", "xdotool", "wtype", "ydotool"),
+		runner:      runner,
+		env:         env,
+		kind:        detectLinuxBackend(env),
+		tools:       detectAvailableTools(linuxDesktopToolNames...),
+		detectTools: detectAvailableTools,
+		kernelRelease: func() string {
+			data, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+			return string(data)
+		},
 	}
 }
 
@@ -244,6 +256,44 @@ func detectAvailableTools(names ...string) availableTools {
 
 func (b linuxBackend) Available(ctx context.Context) bool {
 	return b.kind != backendUnavailable
+}
+
+func (b linuxBackend) PermissionStatus(ctx context.Context) (permissionmodel.Report, error) {
+	return b.permissionReport(ctx, false), nil
+}
+
+func (b linuxBackend) RequestPermissions(ctx context.Context) (permissionmodel.Report, error) {
+	return b.permissionReport(ctx, true), nil
+}
+
+func (b linuxBackend) permissionReport(ctx context.Context, requested bool) permissionmodel.Report {
+	restartRequired := false
+	effectiveTools := b.tools
+	if b.detectTools != nil {
+		fresh := b.detectTools(linuxDesktopToolNames...)
+		effectiveTools, restartRequired = reconcileLinuxTools(b.tools, fresh, linuxDesktopToolNames)
+	}
+	accessibilityAvailable := false
+	if b.kind != backendUnavailable && effectiveTools["gdbus"] {
+		_, err := b.runner.Run(ctx, "gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path", "/org/a11y/bus", "--method", "org.a11y.Bus.GetAddress")
+		accessibilityAvailable = err == nil
+	}
+	ydotoolAvailable := false
+	if b.kind == backendWayland && effectiveTools["ydotool"] {
+		// A zero-distance relative move exercises ydotoold authorization without changing the pointer position.
+		_, err := b.runner.Run(ctx, "ydotool", "mousemove", "--", "0", "0")
+		ydotoolAvailable = err == nil
+	}
+	kernelRelease := ""
+	if b.kernelRelease != nil {
+		kernelRelease = b.kernelRelease()
+	}
+	report := linuxPermissionReport(b.kind, effectiveTools, accessibilityAvailable, ydotoolAvailable, requested, detectWSLEnvironment(b.env, kernelRelease))
+	report.RestartRequired = restartRequired
+	if restartRequired {
+		report.Ready = false
+	}
+	return report
 }
 
 func (b linuxBackend) PreflightActions(actions []Action) error {

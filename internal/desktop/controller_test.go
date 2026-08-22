@@ -110,6 +110,16 @@ func TestWaylandCommandSelectionReturnsStructuredUnavailable(t *testing.T) {
 }
 
 func TestWindowsPowerShellBuilders(t *testing.T) {
+	availability := buildWindowsDesktopAvailabilityScript()
+	for _, required := range []string{"OpenInputDesktop", "GetUserObjectInformation", "WTSQuerySessionInformation", "WTSConnectState", "WTSActive", "'Default'"} {
+		if !strings.Contains(availability, required) {
+			t.Fatalf("Windows desktop availability probe missing %q", required)
+		}
+	}
+	if strings.Contains(availability, "$PSVersionTable") {
+		t.Fatal("Windows desktop availability probe only checks whether PowerShell starts")
+	}
+
 	screenshot := buildWindowsScreenshotScript(`C:\Temp\shot.png`)
 	if !strings.Contains(screenshot, "CopyFromScreen") || !strings.Contains(screenshot, "shot.png") {
 		t.Fatalf("unexpected screenshot script: %s", screenshot)

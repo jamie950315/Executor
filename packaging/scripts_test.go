@@ -82,6 +82,8 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 		"CHMOD_BIN="+chmodStub,
 		"INSTALL_BIN="+installStub,
 		"MKTEMP_BIN="+mktempStub,
+		"EXECUTOR_PERMISSION_RETRY_ATTEMPTS=3",
+		"EXECUTOR_PERMISSION_RETRY_DELAY=0",
 		"SUDO_USER=jamie",
 		"CLOUDFLARE_API_TOKEN_FILE="+filepath.Join(tmp, "api-token.txt"),
 	)
@@ -131,9 +133,13 @@ func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	}
 
 	commandLog := readFile(t, logPath)
+	if got := strings.Count(commandLog, stableExecutorPath+" permissions request-all"); got != 3 {
+		t.Fatalf("permission initialization attempts = %d, want 3:\n%s", got, commandLog)
+	}
 	for _, want := range []string{
 		stableExecutorPath + " setup --domain executor.example.com --cloudflare-token-file " + filepath.Join(tmp, "api-token.txt"),
 		stableExecutorPath + " render-service-bundle",
+		stableExecutorPath + " permissions request-all",
 		"--binary-path " + stableExecutorPath,
 		"--agent-user jamie --agent-group jamie",
 		"chown -R jamie:jamie " + filepath.Join(tmp, "state"),
@@ -266,6 +272,8 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 		"CHOWN_BIN="+chownStub,
 		"CHMOD_BIN="+chmodStub,
 		"INSTALL_BIN="+installStub,
+		"EXECUTOR_PERMISSION_RETRY_ATTEMPTS=3",
+		"EXECUTOR_PERMISSION_RETRY_DELAY=0",
 		"SUDO_USER=jamie",
 		"SUDO_UID=501",
 		"CLOUDFLARE_API_TOKEN_FILE="+filepath.Join(tmp, "api-token.txt"),
@@ -296,9 +304,13 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	}
 
 	commandLog := readFile(t, logPath)
+	if got := strings.Count(commandLog, stableExecutorPath+" permissions request-all"); got != 3 {
+		t.Fatalf("permission initialization attempts = %d, want 3:\n%s", got, commandLog)
+	}
 	for _, want := range []string{
 		stableExecutorPath + " setup --domain executor.example.com --cloudflare-token-file " + filepath.Join(tmp, "api-token.txt"),
 		stableExecutorPath + " render-service-bundle",
+		stableExecutorPath + " permissions request-all",
 		"--binary-path " + stableExecutorPath,
 		"--desktop-binary-path " + filepath.Join(stableDesktopAppPath, "Contents", "MacOS", "executor-desktop"),
 		"--agent-user jamie --agent-group staff",
@@ -674,6 +686,7 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"$script:PendingReplacementCleanup += $Previous",
 		"& $ExecutorInstallPath @SetupArgs",
 		"& $ExecutorInstallPath render-service-bundle",
+		"& $ExecutorInstallPath permissions request-all",
 		"--binary-path $ExecutorInstallPath",
 		"--desktop-user $DesktopUser",
 		"Export-ScheduledTask -TaskName $DesktopTaskName",
@@ -707,6 +720,8 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"SYSTEM:(OI)(CI)(F)",
 		"Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\register-desktop-startup.ps1')",
 		"Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\configure-cloudflared.ps1')",
+		"$PermissionRetryAttempts = if ($env:EXECUTOR_PERMISSION_RETRY_ATTEMPTS)",
+		"for ($PermissionAttempt = 1; $PermissionAttempt -le $PermissionRetryAttempts; $PermissionAttempt++)",
 	} {
 		if !strings.Contains(bootstrap, want) {
 			t.Fatalf("bootstrap.ps1 missing %q:\n%s", want, bootstrap)
@@ -854,6 +869,8 @@ func TestUnixScriptsAutoDetectWSLFromEnvironmentAndProcVersion(t *testing.T) {
 		"CHMOD_BIN="+chmodStub,
 		"MKTEMP_BIN="+mktempStub,
 		"EXECUTOR_PROC_VERSION_PATH="+procVersionPath,
+		"EXECUTOR_PERMISSION_RETRY_ATTEMPTS=2",
+		"EXECUTOR_PERMISSION_RETRY_DELAY=0",
 		"CLOUDFLARE_API_TOKEN_FILE="+apiTokenPath,
 		"SUDO_USER=jamie",
 		"WSL_INTEROP=/run/WSL/123_interop",

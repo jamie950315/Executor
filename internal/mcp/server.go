@@ -147,6 +147,13 @@ func BuiltinTools() []Tool {
 			InputSchema: deviceStatusToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
+		{
+			Name:         "device_permissions",
+			Description:  "Inspect or request all host permissions used by Executor. A request may still require owner approval in operating-system prompts or settings.",
+			InputSchema:  devicePermissionsToolSchema(),
+			OutputSchema: devicePermissionsOutputSchema(),
+			Annotations:  ToolAnnotations{DestructiveHint: true},
+		},
 	}
 }
 
@@ -704,6 +711,33 @@ func deviceStatusToolSchema() map[string]any {
 		},
 		"action",
 	)
+}
+
+func devicePermissionsToolSchema() map[string]any {
+	return schemaObject(
+		map[string]any{
+			"action": enumProperty("string", "status", "request_all"),
+		},
+		"action",
+	)
+}
+
+func devicePermissionsOutputSchema() map[string]any {
+	item := schemaObject(map[string]any{
+		"id":           map[string]any{"type": "string"},
+		"label":        map[string]any{"type": "string"},
+		"state":        enumProperty("string", "granted", "pending", "denied", "manual", "unavailable", "not_required"),
+		"required":     map[string]any{"type": "boolean"},
+		"detail":       map[string]any{"type": "string"},
+		"settings_url": map[string]any{"type": "string"},
+	}, "id", "label", "state", "required")
+	return schemaObject(map[string]any{
+		"platform":         map[string]any{"type": "string"},
+		"requested":        map[string]any{"type": "boolean"},
+		"ready":            map[string]any{"type": "boolean"},
+		"restart_required": map[string]any{"type": "boolean"},
+		"permissions":      map[string]any{"type": "array", "items": item},
+	}, "platform", "requested", "ready", "permissions")
 }
 
 func schemaObject(properties map[string]any, required ...string) map[string]any {

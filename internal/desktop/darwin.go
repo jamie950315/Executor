@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 const darwinWindowsScript = "ObjC.import('Foundation'); var se = Application('System Events'); var apps = se.applicationProcesses.whose({backgroundOnly: false})(); JSON.stringify(apps.map(function(app) { try { var appName = ''; try { appName = app.name(); } catch (error) {} var wins = []; try { wins = app.windows().map(function(win) { var title = ''; var id = 0; try { title = win.name() || ''; } catch (error) {} try { id = win.id() || 0; } catch (error) {} return {title: title, id: id}; }); } catch (error) { wins = []; } return {app: appName, windows: wins}; } catch (error) { return {app: '', windows: []}; } }));"
@@ -18,13 +20,69 @@ type eventPoster interface {
 }
 
 type darwinBackend struct {
-	runner   commandRunner
-	events   eventPoster
-	geometry func(context.Context) (int, int, error)
+	runner      commandRunner
+	events      eventPoster
+	permissions darwinPermissionProvider
+	geometry    func(context.Context) (int, int, error)
 }
 
 func newDarwinBackend(runner commandRunner, events eventPoster) darwinBackend {
-	return darwinBackend{runner: runner, events: events, geometry: mainDisplayDimensions}
+	return darwinBackend{runner: runner, events: events, permissions: defaultDarwinPermissionProvider(), geometry: mainDisplayDimensions}
+}
+
+type darwinPermissionState struct {
+	NativeAvailable bool
+	ScreenRecording bool
+	Accessibility   bool
+	InputControl    bool
+}
+
+type darwinPermissionProvider interface {
+	Status() darwinPermissionState
+	Request() darwinPermissionState
+}
+
+const darwinFullDiskSettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
+func (b darwinBackend) PermissionStatus(context.Context) (permissionmodel.Report, error) {
+	return darwinPermissionReport(b.permissions.Status(), false), nil
+}
+
+func (b darwinBackend) RequestPermissions(ctx context.Context) (permissionmodel.Report, error) {
+	state := b.permissions.Request()
+	report := darwinPermissionReport(state, true)
+	if _, err := b.runner.Run(ctx, "open", darwinFullDiskSettingsURL); err != nil {
+		for index := range report.Items {
+			if report.Items[index].ID == "full_disk_access" {
+				report.Items[index].Detail += "; could not open System Settings automatically: " + err.Error()
+				break
+			}
+		}
+	}
+	return report, nil
+}
+
+func darwinPermissionReport(state darwinPermissionState, requested bool) permissionmodel.Report {
+	nativeState := func(granted bool) permissionmodel.State {
+		if !state.NativeAvailable {
+			return permissionmodel.StateUnavailable
+		}
+		if granted {
+			return permissionmodel.StateGranted
+		}
+		if requested {
+			return permissionmodel.StatePending
+		}
+		return permissionmodel.StateDenied
+	}
+	report := permissionmodel.NewReport("macos", requested, []permissionmodel.Item{
+		{ID: "screen_recording", Label: "Screen Recording", State: nativeState(state.ScreenRecording), Required: true, Detail: "Allows Executor Desktop.app to capture the primary display."},
+		{ID: "accessibility", Label: "Accessibility", State: nativeState(state.Accessibility), Required: true, Detail: "Allows Executor Desktop.app to inspect and control applications."},
+		{ID: "input_control", Label: "Input Control", State: nativeState(state.InputControl), Required: true, Detail: "Allows Executor Desktop.app to post keyboard and pointer events."},
+		{ID: "full_disk_access", Label: "Full Disk Access", State: permissionmodel.StateManual, Required: false, Detail: "Add the installed executor binary when access to TCC-protected files is required.", SettingsURL: darwinFullDiskSettingsURL},
+	})
+	report.RestartRequired = requested && state.NativeAvailable && (!state.ScreenRecording || !state.Accessibility || !state.InputControl)
+	return report
 }
 
 func (b darwinBackend) Screenshot(ctx context.Context, path string) error {

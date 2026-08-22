@@ -7,15 +7,18 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 type fakeBackend struct {
-	called       string
-	setupOptions SetupOptions
-	setupResult  *SetupResult
-	killErr      error
-	rotateErr    error
-	enableErr    error
+	called             string
+	setupOptions       SetupOptions
+	setupResult        *SetupResult
+	killErr            error
+	rotateErr          error
+	enableErr          error
+	permissionRequests []bool
 }
 
 func (f *fakeBackend) Setup(_ context.Context, options SetupOptions) (SetupResult, error) {
@@ -69,6 +72,67 @@ func (f *fakeBackend) Doctor(context.Context, bool) (DoctorResult, error) {
 func (f *fakeBackend) EnableURLSecret(context.Context) (RotateResult, error) {
 	f.called = "auth-enable-url-secret"
 	return RotateResult{Endpoint: "https://executor.example.com/secret/mcp", RecoveryKey: "url-mode-recovery", URLSecret: "url-mode-secret", Dashboard: "http://127.0.0.1:8788/?token=url-mode-dashboard"}, f.enableErr
+}
+func (f *fakeBackend) Permissions(_ context.Context, request bool) (permissionmodel.Report, error) {
+	f.called = "permissions"
+	f.permissionRequests = append(f.permissionRequests, request)
+	state := permissionmodel.StateDenied
+	if request {
+		state = permissionmodel.StatePending
+	}
+	report := permissionmodel.NewReport("darwin", request, []permissionmodel.Item{
+		{ID: "screen_recording", Label: "Screen Recording", State: state, Required: true},
+		{ID: "full_disk_access", Label: "Full Disk Access", State: permissionmodel.StateManual, Required: false},
+	})
+	report.RestartRequired = request
+	return report, nil
+}
+
+func TestRunPermissionsStatusJSON(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"permissions", "status", "--json"}, backend, &stdout, &stderr)
+	if code != 0 || backend.called != "permissions" || len(backend.permissionRequests) != 1 || backend.permissionRequests[0] {
+		t.Fatalf("code=%d called=%q requests=%#v stderr=%q", code, backend.called, backend.permissionRequests, stderr.String())
+	}
+	var report permissionmodel.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("permission JSON = %q: %v", stdout.String(), err)
+	}
+	if report.Platform != "darwin" || report.Requested || report.Ready || len(report.Items) != 2 {
+		t.Fatalf("permission report = %#v", report)
+	}
+}
+
+func TestRunPermissionsRequestAllDoesNotClaimPendingIsGranted(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"permissions", "request-all"}, backend, &stdout, &stderr)
+	if code != 0 || len(backend.permissionRequests) != 1 || !backend.permissionRequests[0] {
+		t.Fatalf("code=%d requests=%#v stderr=%q", code, backend.permissionRequests, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "Screen Recording: pending") || !strings.Contains(output, "complete any operating-system prompts") || !strings.Contains(strings.ToLower(output), "restart") {
+		t.Fatalf("permission request output = %q", output)
+	}
+	if strings.Contains(strings.ToLower(output), "all permissions are approved") {
+		t.Fatalf("pending permission was reported as approved: %q", output)
+	}
+}
+
+func TestRunPermissionsRejectsUnexpectedArgumentsBeforeRequesting(t *testing.T) {
+	t.Parallel()
+
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"permissions", "request-all", "typo"}, backend, &stdout, &stderr)
+	if code != 2 || len(backend.permissionRequests) != 0 {
+		t.Fatalf("code=%d requests=%#v stdout=%q stderr=%q", code, backend.permissionRequests, stdout.String(), stderr.String())
+	}
 }
 
 func TestRunStatusJSON(t *testing.T) {

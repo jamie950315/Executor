@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 type SetupOptions struct {
@@ -61,6 +63,7 @@ type Backend interface {
 	Rotate(context.Context) (RotateResult, error)
 	Doctor(context.Context, bool) (DoctorResult, error)
 	EnableURLSecret(context.Context) (RotateResult, error)
+	Permissions(context.Context, bool) (permissionmodel.Report, error)
 }
 
 func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.Writer) int {
@@ -170,6 +173,31 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 			return 1
 		}
 		return 0
+	case "permissions":
+		if len(args) < 2 || (args[1] != "status" && args[1] != "request-all") {
+			usage(stderr)
+			return 2
+		}
+		set := flag.NewFlagSet("permissions "+args[1], flag.ContinueOnError)
+		set.SetOutput(stderr)
+		asJSON := set.Bool("json", false, "print JSON")
+		if err := set.Parse(args[2:]); err != nil {
+			return 2
+		}
+		if set.NArg() != 0 {
+			usage(stderr)
+			return 2
+		}
+		report, err := backend.Permissions(ctx, args[1] == "request-all")
+		if err != nil {
+			return printError(stderr, err)
+		}
+		if *asJSON {
+			_ = json.NewEncoder(stdout).Encode(report)
+		} else {
+			printPermissionReport(stdout, report)
+		}
+		return 0
 	case "auth":
 		if len(args) == 2 && args[1] == "enable-url-secret" {
 			result, err := backend.EnableURLSecret(ctx)
@@ -190,6 +218,34 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 	}
 }
 
+func printPermissionReport(stdout io.Writer, report permissionmodel.Report) {
+	state := "action required"
+	if report.Ready {
+		state = "ready"
+	}
+	fmt.Fprintf(stdout, "Executor permissions (%s): %s\n", report.Platform, state)
+	for _, item := range report.Items {
+		requirement := "optional"
+		if item.Required {
+			requirement = "required"
+		}
+		fmt.Fprintf(stdout, "- %s: %s (%s)\n", item.Label, item.State, requirement)
+		if item.Detail != "" {
+			fmt.Fprintf(stdout, "  %s\n", item.Detail)
+		}
+	}
+	if report.Ready {
+		fmt.Fprintln(stdout, "All required permissions are approved.")
+	} else if report.Requested {
+		fmt.Fprintln(stdout, "Requests sent; complete any operating-system prompts or settings, then run `executor permissions status` again.")
+	} else {
+		fmt.Fprintln(stdout, "Required permissions are not fully approved. Run `executor permissions request-all`.")
+	}
+	if report.RestartRequired {
+		fmt.Fprintln(stdout, "Restart the active-user Executor Desktop helper after approving the requested permissions.")
+	}
+}
+
 func printError(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "Executor error: %v\n", err)
 	return 1
@@ -202,6 +258,8 @@ Usage:
   executor setup --domain <hostname> [--cloudflare-token-file <path>] [--cloudflare-account-id <id>] [--cloudflare-zone-id <id>] [--cloudflare-tunnel-name <name>]
   executor status [--json]
   executor doctor [--full] [--json]
+  executor permissions status [--json]
+  executor permissions request-all [--json]
   executor kill | resume | rotate
   executor auth enable-url-secret`))
 }
