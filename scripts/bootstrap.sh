@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_ROOT="${EXECUTOR_BUNDLE_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 STATE_DIR="${EXECUTOR_STATE_DIR:-/var/lib/executor}"
 TARGET="${EXECUTOR_TARGET:-$(uname | tr '[:upper:]' '[:lower:]')}"
+PROC_VERSION_PATH="${EXECUTOR_PROC_VERSION_PATH:-/proc/version}"
 DOMAIN="${EXECUTOR_DOMAIN:?set EXECUTOR_DOMAIN}"
 EXECUTOR_INSTALL_BINARY_PATH="${EXECUTOR_INSTALL_BINARY_PATH:-/usr/local/bin/executor}"
 EXECUTOR_KILL_INSTALL_BINARY_PATH="${EXECUTOR_KILL_INSTALL_BINARY_PATH:-/usr/local/bin/executor-kill}"
@@ -58,10 +59,27 @@ if [[ -z "${CLOUDFLARED_BIN_RESOLVED}" ]]; then
 fi
 CLOUDFLARED_BIN="${CLOUDFLARED_BIN_RESOLVED}"
 
-case "${TARGET}" in
-  darwin) TARGET="macos" ;;
-  linux) TARGET="linux" ;;
-esac
+is_wsl_target() {
+  if [[ -n "${WSL_INTEROP:-}" || -n "${WSL_DISTRO_NAME:-}" ]]; then
+    return 0
+  fi
+  [[ -r "${PROC_VERSION_PATH}" ]] && grep -qi microsoft "${PROC_VERSION_PATH}"
+}
+
+normalize_target() {
+  raw_target="$1"
+  if is_wsl_target; then
+    printf 'wsl\n'
+    return 0
+  fi
+  case "${raw_target}" in
+    darwin) printf 'macos\n' ;;
+    linux) printf 'linux\n' ;;
+    *) printf '%s\n' "${raw_target}" ;;
+  esac
+}
+
+TARGET="$(normalize_target "${TARGET}")"
 
 if [[ "${TARGET}" == "macos" && -z "${EXECUTOR_BROKER_GROUP:-}" ]]; then
   BROKER_GROUP="wheel"
@@ -292,6 +310,58 @@ if meta["token_file_path"] != expected_token_path:
 PY
 }
 
+cloudflare_preflight() {
+  if [[ -n "${CLOUDFLARE_API_TOKEN_FILE}" ]]; then
+    if [[ ! -f "${CLOUDFLARE_API_TOKEN_FILE}" ]]; then
+      printf 'Cloudflare API token file is missing or is not a regular file: %s\n' "${CLOUDFLARE_API_TOKEN_FILE}" >&2
+      exit 1
+    fi
+    if [[ ! -s "${CLOUDFLARE_API_TOKEN_FILE}" ]] || ! LC_ALL=C grep -q '[^[:space:]]' "${CLOUDFLARE_API_TOKEN_FILE}"; then
+      printf 'Cloudflare API token file is empty: %s\n' "${CLOUDFLARE_API_TOKEN_FILE}" >&2
+      exit 1
+    fi
+    if ! token_mode="$(${STAT_BIN} -c %a "${CLOUDFLARE_API_TOKEN_FILE}" 2>/dev/null)"; then
+      token_mode="$(${STAT_BIN} -f %Lp "${CLOUDFLARE_API_TOKEN_FILE}")"
+    fi
+    if [[ "${token_mode}" != "600" ]]; then
+      printf 'Cloudflare API token file must have mode 0600 before installation: %s (mode %s)\n' "${CLOUDFLARE_API_TOKEN_FILE}" "${token_mode}" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  if [[ ! -f "${CONFIG_PATH}" || ! -f "${CLOUDFLARED_TOKEN_PATH}" ]] || ! cloudflare_metadata_complete; then
+    printf 'Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata and runtime token before installing files or creating credentials.\n' >&2
+    exit 1
+  fi
+}
+
+validate_bundle_payload() {
+  for bundled_binary in "${BUNDLED_EXECUTOR_PATH}" "${BUNDLED_EXECUTOR_KILL_PATH}"; do
+    if [[ ! -f "${bundled_binary}" ]]; then
+      printf 'missing bundled binary: %s\n' "${bundled_binary}" >&2
+      exit 1
+    fi
+  done
+  if [[ "${TARGET}" == "macos" && ! -d "${BUNDLED_MACOS_DESKTOP_APP_PATH}" ]]; then
+    printf 'missing bundled directory: %s\n' "${BUNDLED_MACOS_DESKTOP_APP_PATH}" >&2
+    exit 1
+  fi
+  if [[ "${TARGET}" == "macos" ]]; then
+    for app_file in \
+      "${BUNDLED_MACOS_DESKTOP_APP_PATH}/Contents/Info.plist" \
+      "${BUNDLED_MACOS_DESKTOP_APP_PATH}/Contents/MacOS/executor-desktop"; do
+      if [[ ! -f "${app_file}" ]]; then
+        printf 'missing bundled macOS Desktop app file: %s\n' "${app_file}" >&2
+        exit 1
+      fi
+    done
+    if [[ ! -x "${BUNDLED_MACOS_DESKTOP_APP_PATH}/Contents/MacOS/executor-desktop" ]]; then
+      printf 'bundled macOS Desktop helper is not executable: %s\n' "${BUNDLED_MACOS_DESKTOP_APP_PATH}/Contents/MacOS/executor-desktop" >&2
+      exit 1
+    fi
+  fi
+}
+
 discover_owned_legacy_cloudflared() {
 	case "${TARGET}" in
 		linux|wsl)
@@ -424,6 +494,8 @@ bootstrap_macos() {
   "${LAUNCHCTL_BIN}" kickstart -k "gui/${gui_uid}/com.executor.desktop"
 }
 
+validate_bundle_payload
+cloudflare_preflight
 mkdir -p "${STATE_DIR}" "${DATA_DIR}" "$(dirname "${CONFIG_PATH}")" "$(dirname "${CLOUDFLARED_TOKEN_PATH}")" "${BACKUP_ROOT}"
 discover_owned_legacy_cloudflared
 : > "${MANIFEST_PATH}"

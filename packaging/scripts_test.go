@@ -238,7 +238,7 @@ func TestBootstrapMacOSLoadsLaunchdUnits(t *testing.T) {
 	replaceInFile(t, executorStub, "com.cloudflare.cloudflared", "com.executor.cloudflared")
 	writeStub(t, launchctlStub, "#!/usr/bin/env bash\nprintf 'launchctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"print\" ]]; then marker=\"${COMMAND_LOG}.print.${2//\\//_}\"; if [[ ! -e \"$marker\" ]]; then : > \"$marker\"; exit 0; fi; exit 1; fi\n")
 	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-gn\" && \"$2\" == \"jamie\" ]]; then printf 'staff\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nexit 0\n")
-	writeStub(t, statStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%u\" ]]; then printf '777\\n'; exit 0; fi\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%Su\" ]]; then printf 'console-user\\n'; exit 0; fi\nprintf '777\\n'\n")
+	writeStub(t, statStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-c\" ]]; then exit 1; fi\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%u\" ]]; then printf '777\\n'; exit 0; fi\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%Su\" ]]; then printf 'console-user\\n'; exit 0; fi\nif [[ \"$1\" == \"-f\" && \"$2\" == \"%Lp\" ]]; then printf '600\\n'; exit 0; fi\nprintf '777\\n'\n")
 	writeStub(t, dsclStub, "#!/usr/bin/env bash\nexit 1\n")
 	writeStub(t, sysadminctlStub, "#!/usr/bin/env bash\nprintf 'sysadminctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
 	writeStub(t, chownStub, "#!/usr/bin/env bash\nprintf 'chown %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
@@ -458,8 +458,188 @@ func TestBootstrapRequiresCloudflareTokenFileOrCompletedMetadata(t *testing.T) {
 	if got := readFile(t, legacyService); got != legacyBody {
 		t.Fatalf("failed bootstrap changed working legacy tunnel:\n%s", got)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "legacy-cloudflared-manifest.txt")); err != nil {
-		t.Fatalf("legacy migration evidence was not preserved: %v", err)
+	if got := readFile(t, filepath.Join(stateDir, "service-manifest.txt")); got != legacyManifest {
+		t.Fatalf("Cloudflare preflight failure changed existing manifest:\n%s", got)
+	}
+	if _, err := os.Stat(stableExecutorPath); !os.IsNotExist(err) {
+		t.Fatalf("Cloudflare preflight failure installed executor before validation, err=%v", err)
+	}
+	if _, err := os.Stat(stableKillPath); !os.IsNotExist(err) {
+		t.Fatalf("Cloudflare preflight failure installed executor-kill before validation, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "secrets.json")); !os.IsNotExist(err) {
+		t.Fatalf("Cloudflare preflight failure consumed the one-time recovery key, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("Cloudflare preflight failure created config before validation, err=%v", err)
+	}
+	if data, err := os.ReadFile(logPath); err == nil && strings.Contains(string(data), " setup ") {
+		t.Fatalf("Cloudflare preflight failure ran setup before validation:\n%s", data)
+	}
+}
+
+func TestBootstrapRejectsInsecureCloudflareTokenBeforeInstalling(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	bundleRoot := filepath.Join(tmp, "bundle")
+	if err := os.MkdirAll(bundleRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executorStub := filepath.Join(bundleRoot, "executor")
+	executorKillStub := filepath.Join(bundleRoot, "executor-kill")
+	writeStub(t, executorStub, "#!/usr/bin/env bash\nprintf 'setup unexpectedly ran\\n' >&2\nexit 99\n")
+	writeStub(t, executorKillStub, "#!/usr/bin/env bash\nexit 0\n")
+	tokenPath := filepath.Join(tmp, "cloudflare.token")
+	if err := os.WriteFile(tokenPath, []byte("test-token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stableExecutorPath := filepath.Join(tmp, "installed", "executor")
+	stableKillPath := filepath.Join(tmp, "installed", "executor-kill")
+	env := append(os.Environ(),
+		"EXECUTOR_TARGET=linux",
+		"EXECUTOR_DOMAIN=executor.example.com",
+		"EXECUTOR_STATE_DIR="+filepath.Join(tmp, "state"),
+		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
+		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
+		"EXECUTOR_KILL_INSTALL_BINARY_PATH="+stableKillPath,
+		"CLOUDFLARE_API_TOKEN_FILE="+tokenPath,
+		"CLOUDFLARED_BIN=/usr/bin/true",
+	)
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "bootstrap.sh"))
+	cmd.Dir = root
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bootstrap accepted insecure Cloudflare token permissions:\n%s", output)
+	}
+	if !strings.Contains(string(output), "0600") {
+		t.Fatalf("bootstrap did not explain required token permissions:\n%s", output)
+	}
+	for _, path := range []string{stableExecutorPath, stableKillPath, filepath.Join(tmp, "state", "secrets.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("insecure token preflight changed %s, err=%v", path, err)
+		}
+	}
+}
+
+func TestBootstrapRejectsBlankCloudflareTokenBeforeInstalling(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	bundleRoot := filepath.Join(tmp, "bundle")
+	if err := os.MkdirAll(bundleRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, filepath.Join(bundleRoot, "executor"), "#!/usr/bin/env bash\nprintf 'setup unexpectedly ran\\n' >&2\nexit 99\n")
+	writeStub(t, filepath.Join(bundleRoot, "executor-kill"), "#!/usr/bin/env bash\nexit 0\n")
+	tokenPath := filepath.Join(tmp, "cloudflare.token")
+	if err := os.WriteFile(tokenPath, []byte(" \t\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stableExecutorPath := filepath.Join(tmp, "installed", "executor")
+	env := append(os.Environ(),
+		"EXECUTOR_TARGET=linux",
+		"EXECUTOR_DOMAIN=executor.example.com",
+		"EXECUTOR_STATE_DIR="+filepath.Join(tmp, "state"),
+		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
+		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
+		"EXECUTOR_KILL_INSTALL_BINARY_PATH="+filepath.Join(tmp, "installed", "executor-kill"),
+		"CLOUDFLARE_API_TOKEN_FILE="+tokenPath,
+		"CLOUDFLARED_BIN=/usr/bin/true",
+	)
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "bootstrap.sh"))
+	cmd.Dir = root
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bootstrap accepted a blank Cloudflare token:\n%s", output)
+	}
+	if !strings.Contains(string(output), "empty") {
+		t.Fatalf("bootstrap did not explain blank token rejection:\n%s", output)
+	}
+	if _, err := os.Stat(stableExecutorPath); !os.IsNotExist(err) {
+		t.Fatalf("blank token preflight installed executor, err=%v", err)
+	}
+}
+
+func TestBootstrapValidatesCompleteBundleBeforeInstalling(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	bundleRoot := filepath.Join(tmp, "bundle")
+	if err := os.MkdirAll(bundleRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, filepath.Join(bundleRoot, "executor"), "#!/usr/bin/env bash\nexit 99\n")
+	tokenPath := filepath.Join(tmp, "cloudflare.token")
+	if err := os.WriteFile(tokenPath, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stableExecutorPath := filepath.Join(tmp, "installed", "executor")
+	env := append(os.Environ(),
+		"EXECUTOR_TARGET=linux",
+		"EXECUTOR_DOMAIN=executor.example.com",
+		"EXECUTOR_STATE_DIR="+filepath.Join(tmp, "state"),
+		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
+		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
+		"EXECUTOR_KILL_INSTALL_BINARY_PATH="+filepath.Join(tmp, "installed", "executor-kill"),
+		"CLOUDFLARE_API_TOKEN_FILE="+tokenPath,
+		"CLOUDFLARED_BIN=/usr/bin/true",
+	)
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "bootstrap.sh"))
+	cmd.Dir = root
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bootstrap accepted an incomplete bundle:\n%s", output)
+	}
+	if !strings.Contains(string(output), "missing bundled binary") {
+		t.Fatalf("bootstrap did not identify the incomplete bundle:\n%s", output)
+	}
+	if _, err := os.Stat(stableExecutorPath); !os.IsNotExist(err) {
+		t.Fatalf("incomplete bundle installed executor before validation, err=%v", err)
+	}
+}
+
+func TestBootstrapValidatesMacOSDesktopAppBeforeInstalling(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	bundleRoot := filepath.Join(tmp, "bundle")
+	if err := os.MkdirAll(filepath.Join(bundleRoot, "Executor Desktop.app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, filepath.Join(bundleRoot, "executor"), "#!/usr/bin/env bash\nprintf 'setup unexpectedly ran\\n' >&2\nexit 99\n")
+	writeStub(t, filepath.Join(bundleRoot, "executor-kill"), "#!/usr/bin/env bash\nexit 0\n")
+	tokenPath := filepath.Join(tmp, "cloudflare.token")
+	if err := os.WriteFile(tokenPath, []byte("test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stableExecutorPath := filepath.Join(tmp, "installed", "executor")
+	env := append(os.Environ(),
+		"EXECUTOR_TARGET=macos",
+		"EXECUTOR_DOMAIN=executor.example.com",
+		"EXECUTOR_STATE_DIR="+filepath.Join(tmp, "state"),
+		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
+		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
+		"EXECUTOR_KILL_INSTALL_BINARY_PATH="+filepath.Join(tmp, "installed", "executor-kill"),
+		"EXECUTOR_MACOS_DESKTOP_APP_PATH="+filepath.Join(tmp, "installed", "Executor Desktop.app"),
+		"CLOUDFLARE_API_TOKEN_FILE="+tokenPath,
+		"CLOUDFLARED_BIN=/usr/bin/true",
+	)
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "bootstrap.sh"))
+	cmd.Dir = root
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("bootstrap accepted an incomplete macOS Desktop app:\n%s", output)
+	}
+	if !strings.Contains(string(output), "missing bundled macOS Desktop app file") {
+		t.Fatalf("bootstrap did not identify incomplete macOS app contents:\n%s", output)
+	}
+	if _, err := os.Stat(stableExecutorPath); !os.IsNotExist(err) {
+		t.Fatalf("incomplete macOS app installed executor before validation, err=%v", err)
 	}
 }
 
@@ -473,10 +653,18 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 	for _, want := range []string{
 		"Join-Path $env:ProgramData \"Executor\"",
 		"$DesktopTaskName = \"ExecutorDesktop\"",
-		"$DesktopUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+		"$DesktopUser = if ($env:EXECUTOR_DESKTOP_USER)",
+		"function Resolve-ActiveConsoleUser",
+		"function Resolve-DesktopStartupPath",
+		"Get-CimInstance Win32_ComputerSystem",
+		"ProfileList",
+		"$DesktopStartup = Resolve-DesktopStartupPath -UserName $DesktopUser",
+		"throw \"Unable to determine the active desktop user.",
 		"$BundleRoot = if ($env:EXECUTOR_BUNDLE_ROOT)",
 		"$ExecutorInstallPath = if ($env:EXECUTOR_INSTALL_BINARY_PATH)",
 		"$ExecutorKillInstallPath = if ($env:EXECUTOR_KILL_INSTALL_BINARY_PATH)",
+		"function Assert-CloudflarePreflight",
+		"Assert-CloudflarePreflight",
 		"Install-ManagedFile -Source $BundledExecutorPath -Destination $ExecutorInstallPath",
 		"Install-ManagedFile -Source $BundledExecutorKillPath -Destination $ExecutorKillInstallPath",
 		"$PendingReplacementCleanup = @()",
@@ -487,6 +675,7 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"& $ExecutorInstallPath @SetupArgs",
 		"& $ExecutorInstallPath render-service-bundle",
 		"--binary-path $ExecutorInstallPath",
+		"--desktop-user $DesktopUser",
 		"Export-ScheduledTask -TaskName $DesktopTaskName",
 		"Add-ManifestRecord -Kind \"scheduled-task\" -PathValue $DesktopTaskName",
 		"Record-ScheduledTaskState -DesktopTaskName $DesktopTaskName",
@@ -528,6 +717,12 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 	serviceStart := strings.Index(bootstrap, "Start-OrRestartService -Name \"ExecutorAgent\"")
 	if serviceInstall < 0 || stateACL < 0 || serviceStart < 0 || !(serviceInstall < stateACL && stateACL < serviceStart) {
 		t.Fatalf("Windows bootstrap must create service identity before ACLs and start only afterward")
+	}
+	preflight := strings.Index(bootstrap, "\nAssert-CloudflarePreflight\n")
+	firstStateWrite := strings.Index(bootstrap, "New-Item -ItemType Directory -Path $StateDir")
+	firstBinaryInstall := strings.Index(bootstrap, "Install-ManagedFile -Source $BundledExecutorPath")
+	if preflight < 0 || firstStateWrite < 0 || firstBinaryInstall < 0 || !(preflight < firstStateWrite && preflight < firstBinaryInstall) {
+		t.Fatal("Windows Cloudflare preflight must finish before state or installed binaries change")
 	}
 	newTunnelStart := strings.LastIndex(bootstrap, "windows\\configure-cloudflared.ps1")
 	legacyMigration := strings.LastIndex(bootstrap, "if ((Test-Path $LegacyCloudflaredBackupPath)")
@@ -589,6 +784,99 @@ func TestUnixBootstrapResolvesCloudflaredExecutablePathForService(t *testing.T) 
 		if !strings.Contains(bootstrap, want) {
 			t.Fatalf("Unix bootstrap does not resolve cloudflared to a service-safe absolute path; missing %q", want)
 		}
+	}
+}
+
+func TestUnixScriptsAutoDetectWSLFromEnvironmentAndProcVersion(t *testing.T) {
+	t.Parallel()
+
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	bundleRoot := filepath.Join(tmp, "bundle")
+	stateDir := filepath.Join(tmp, "state")
+	installRoot := filepath.Join(tmp, "install-root")
+	commandLog := filepath.Join(tmp, "commands.log")
+	procVersionPath := filepath.Join(tmp, "proc-version")
+	tmpBundle := filepath.Join(tmp, "tmp-bundle")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bundleRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(procVersionPath, []byte("Linux version 5.15.167.4-microsoft-standard-WSL2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	apiTokenPath := filepath.Join(tmp, "api-token.txt")
+	if err := os.WriteFile(apiTokenPath, []byte("api-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	executorStub := filepath.Join(bundleRoot, "executor")
+	executorKillStub := filepath.Join(bundleRoot, "executor-kill")
+	stableExecutorPath := filepath.Join(tmp, "stable-bin", "executor")
+	stableKillPath := filepath.Join(tmp, "stable-bin", "executor-kill")
+	systemctlStub := filepath.Join(binDir, "systemctl")
+	runuserStub := filepath.Join(binDir, "runuser")
+	idStub := filepath.Join(binDir, "id")
+	chownStub := filepath.Join(binDir, "chown")
+	chmodStub := filepath.Join(binDir, "chmod")
+	mktempStub := filepath.Join(binDir, "mktemp")
+
+	writeStub(t, executorStub, "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s %s\\n' \"$0\" \"$*\" >> \"$COMMAND_LOG\"\nif [[ \"$1\" == \"setup\" ]]; then\n  mkdir -p \"$(dirname \"$EXECUTOR_CONFIG_PATH\")\" \"$(dirname \"$CLOUDFLARED_TOKEN_PATH\")\"\n  printf '{\"bootstrap_secret\":\"secret\"}\\n' > \"${EXECUTOR_STATE_DIR}/secrets.json\"\n  printf 'cf-token\\n' > \"$CLOUDFLARED_TOKEN_PATH\"\n  printf '{\"version\":1,\"state_dir\":\"%s\",\"domain\":\"%s\",\"agent_address\":\"127.0.0.1:8787\",\"dashboard_address\":\"127.0.0.1:8788\",\"broker_endpoint\":\"/tmp/broker.sock\",\"desktop_endpoint\":\"/tmp/desktop.sock\",\"audit_retention_hours\":168,\"cloudflare\":{\"account_id\":\"acct-1\",\"zone_id\":\"zone-1\",\"tunnel_id\":\"tunnel-1\",\"tunnel_name\":\"executor\",\"dns_record_id\":\"dns-1\",\"token_file_path\":\"'\"$CLOUDFLARED_TOKEN_PATH\"'\",\"hostname\":\"'\"$EXECUTOR_DOMAIN\"'\"}}\\n' \"$EXECUTOR_STATE_DIR\" \"$EXECUTOR_DOMAIN\" > \"$EXECUTOR_CONFIG_PATH\"\n  exit 0\nfi\nif [[ \"$1\" == \"render-service-bundle\" ]]; then\n  shift\n  output=''\n  target=''\n  while [[ $# -gt 0 ]]; do\n    case \"$1\" in\n      --output) output=\"$2\"; shift 2 ;;\n      --target) target=\"$2\"; shift 2 ;;\n      *) shift ;;\n    esac\n  done\n  printf 'render-target=%s\\n' \"$target\" >> \"$COMMAND_LOG\"\n  mkdir -p \"$output/systemd\" \"$output/systemd-user\"\n  printf '[Service]\\n' > \"$output/systemd/executor-agent.service\"\n  printf '[Service]\\n' > \"$output/systemd/executor-broker.service\"\n  printf '[Service]\\n' > \"$output/systemd/executor-dashboard.service\"\n  printf '[Service]\\n' > \"$output/systemd/executor-cloudflared.service\"\n  printf '[Service]\\n' > \"$output/systemd-user/executor-desktop.service\"\n  mkdir -p \"$output/wsl\"\n  printf 'WSL README\\n' > \"$output/wsl/README.txt\"\n  exit 0\nfi\nexit 1\n")
+	writeStub(t, executorKillStub, "#!/usr/bin/env bash\nexit 0\n")
+	writeStub(t, systemctlStub, "#!/usr/bin/env bash\nprintf 'systemctl %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
+	writeStub(t, runuserStub, "#!/usr/bin/env bash\nprintf 'runuser %s\\n' \"$*\" >> \"$COMMAND_LOG\"\n")
+	writeStub(t, idStub, "#!/usr/bin/env bash\nif [[ \"$1\" == \"-u\" && \"$2\" == \"jamie\" ]]; then printf '501\\n'; exit 0; fi\nif [[ \"$1\" == \"-gn\" && \"$2\" == \"jamie\" ]]; then printf 'jamie\\n'; exit 0; fi\nif [[ \"$1\" == \"-un\" ]]; then printf 'root\\n'; exit 0; fi\nif [[ \"$1\" == \"-u\" ]]; then printf '0\\n'; exit 0; fi\nexit 0\n")
+	writeStub(t, chownStub, "#!/usr/bin/env bash\nexit 0\n")
+	writeStub(t, chmodStub, "#!/usr/bin/env bash\nexit 0\n")
+	writeStub(t, mktempStub, "#!/usr/bin/env bash\nmkdir -p \""+tmpBundle+"\"\nprintf '%s\\n' \""+tmpBundle+"\"\n")
+
+	env := append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"COMMAND_LOG="+commandLog,
+		"EXECUTOR_STATE_DIR="+stateDir,
+		"EXECUTOR_INSTALL_ROOT="+installRoot,
+		"EXECUTOR_BUNDLE_ROOT="+bundleRoot,
+		"EXECUTOR_INSTALL_BINARY_PATH="+stableExecutorPath,
+		"EXECUTOR_KILL_INSTALL_BINARY_PATH="+stableKillPath,
+		"EXECUTOR_DOMAIN=executor.example.com",
+		"EXECUTOR_CONFIG_PATH="+filepath.Join(stateDir, "config.json"),
+		"CLOUDFLARED_TOKEN_PATH="+filepath.Join(stateDir, "cloudflared", "executor.token"),
+		"SYSTEMCTL_BIN="+systemctlStub,
+		"RUNUSER_BIN="+runuserStub,
+		"ID_BIN="+idStub,
+		"CHOWN_BIN="+chownStub,
+		"CHMOD_BIN="+chmodStub,
+		"MKTEMP_BIN="+mktempStub,
+		"EXECUTOR_PROC_VERSION_PATH="+procVersionPath,
+		"CLOUDFLARE_API_TOKEN_FILE="+apiTokenPath,
+		"SUDO_USER=jamie",
+		"WSL_INTEROP=/run/WSL/123_interop",
+	)
+
+	runScript(t, filepath.Join(root, "scripts", "bootstrap.sh"), env)
+
+	log := readFile(t, commandLog)
+	if !strings.Contains(log, "render-target=wsl") {
+		t.Fatalf("bootstrap should render WSL bundle when WSL is detected:\n%s", log)
+	}
+	if !strings.Contains(log, "systemctl daemon-reload") {
+		t.Fatalf("bootstrap should still manage systemd on WSL:\n%s", log)
+	}
+
+	manifest := filepath.Join(stateDir, "service-manifest.txt")
+	if err := os.WriteFile(manifest, []byte("file|"+stableExecutorPath+"|remove\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runScript(t, filepath.Join(root, "scripts", "rollback.sh"), env)
+	log = readFile(t, commandLog)
+	if !strings.Contains(log, "systemctl stop executor-agent.service executor-broker.service executor-dashboard.service executor-cloudflared.service") {
+		t.Fatalf("rollback should use the WSL/Linux systemd path after auto-detection:\n%s", log)
 	}
 }
 

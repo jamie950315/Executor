@@ -3,6 +3,7 @@ set -euo pipefail
 
 STATE_DIR="${EXECUTOR_STATE_DIR:-/var/lib/executor}"
 TARGET="${EXECUTOR_TARGET:-$(uname | tr '[:upper:]' '[:lower:]')}"
+PROC_VERSION_PATH="${EXECUTOR_PROC_VERSION_PATH:-/proc/version}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
 LAUNCHCTL_BIN="${LAUNCHCTL_BIN:-launchctl}"
 ID_BIN="${ID_BIN:-id}"
@@ -26,10 +27,27 @@ replace_file_atomically() {
   fi
 }
 
-case "${TARGET}" in
-  darwin) TARGET="macos" ;;
-  linux) TARGET="linux" ;;
-esac
+is_wsl_target() {
+  if [[ -n "${WSL_INTEROP:-}" || -n "${WSL_DISTRO_NAME:-}" ]]; then
+    return 0
+  fi
+  [[ -r "${PROC_VERSION_PATH}" ]] && grep -qi microsoft "${PROC_VERSION_PATH}"
+}
+
+normalize_target() {
+  raw_target="$1"
+  if is_wsl_target; then
+    printf 'wsl\n'
+    return 0
+  fi
+  case "${raw_target}" in
+    darwin) printf 'macos\n' ;;
+    linux) printf 'linux\n' ;;
+    *) printf '%s\n' "${raw_target}" ;;
+  esac
+}
+
+TARGET="$(normalize_target "${TARGET}")"
 
 if [[ ! -f "${MANIFEST_PATH}" ]]; then
   printf 'no manifest found at %s\n' "${MANIFEST_PATH}"

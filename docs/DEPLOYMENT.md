@@ -1,5 +1,56 @@
 # Executor Deployment
 
+## Deployment entrypoints
+
+Use one of these paths:
+
+- Release archive deployment: unpack the target platform release bundle and run the included bootstrap script.
+- Clone deployment: use `scripts/deploy-from-source.sh` on macOS, Linux, or WSL, or `scripts/deploy-from-source.ps1` on Windows.
+
+The source-deployment entrypoints are the canonical wrappers for a cloned repository. They are expected to build the local `executor` and `executor-kill` binaries from source, assemble the bundle assets required by the current platform, and then hand off to `scripts/bootstrap.sh` or `scripts/bootstrap.ps1`. A coding agent should use those wrapper names for clone deployments rather than calling `executor setup` alone.
+
+If a checkout does not yet contain those wrapper scripts, treat that clone as missing its source-deployment entrypoints. In that case, either switch to a packaged release bundle or perform the same source-build-plus-bootstrap flow explicitly before claiming the clone is deployable.
+
+Web ChatGPT cannot perform this first-time installation by itself. Until Executor is already running, ChatGPT on the web has no MCP access to the target machine, cannot install privileged services, and cannot satisfy the local secret and permission prompts needed for bootstrap.
+
+## Prerequisites
+
+- Go 1.24 or newer for source deployment
+- `cloudflared` 2025.4.0 or newer installed on the target host and resolvable by the bootstrap script
+- Administrator or root access
+- Python 3 on macOS, Linux, and WSL
+- `systemd` on Linux and WSL
+- A Cloudflare-controlled hostname for the target machine
+- A Cloudflare API token file kept outside the repository
+
+On Unix targets, the Cloudflare API token file must be a regular file with mode `0600`. Setup rejects broader permissions.
+
+Representative clone-deployment commands:
+
+```bash
+# macOS, Linux, or WSL
+export EXECUTOR_DOMAIN=executor.example.com
+export CLOUDFLARE_API_TOKEN_FILE=/secure/cloudflare.token
+sudo -E ./scripts/deploy-from-source.sh
+```
+
+```powershell
+# Windows PowerShell
+$env:EXECUTOR_DOMAIN = "executor.example.com"
+$env:CLOUDFLARE_API_TOKEN_FILE = "C:\secure\cloudflare.token"
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\deploy-from-source.ps1
+```
+
+Optional inputs are shared by release and source deployments:
+
+- `CLOUDFLARE_ACCOUNT_ID` when the token can see more than one Cloudflare account
+- `CLOUDFLARE_ZONE_ID` when more than one zone could match the requested hostname
+- `CLOUDFLARE_TUNNEL_NAME` to override the default tunnel name `executor`
+- `EXECUTOR_STATE_DIR` to override the persistent state path consistently across setup, services, rollback, and lifecycle commands
+- `EXECUTOR_DESKTOP_USER` on Windows only when automatic active-console-user detection cannot select the intended logged-in user
+
+Do not treat `executor setup` by itself as a complete installation. `executor setup` prepares config, secrets, and optional Cloudflare metadata, but the packaged services are installed by `scripts/bootstrap.sh` or `scripts/bootstrap.ps1`.
+
 ## Cloudflare Tunnel
 
 Executor expects a remotely-managed Cloudflare Named Tunnel and a proxied CNAME record that points to `<tunnel-id>.cfargotunnel.com`.
@@ -20,6 +71,22 @@ This matches the current Cloudflare documentation for remotely-managed tunnels, 
 - optional `--cloudflare-tunnel-name <name>`
 
 The packaging build never stores the Cloudflare API token in config. It persists only deployment metadata such as the selected account ID, zone ID, tunnel ID, DNS record ID, hostname, and managed tunnel token file path.
+
+The Cloudflare token must be able to:
+
+- list accessible accounts when an explicit account ID is not provided
+- list zones for the selected account when an explicit zone ID is not provided
+- create or reuse a remotely-managed named tunnel
+- fetch the tunnel runtime token
+- write the tunnel ingress configuration
+- create or update the proxied CNAME record for the public hostname
+
+Selection rules:
+
+- If the token can see exactly one account, setup can infer it.
+- If the token can see more than one account, provide `CLOUDFLARE_ACCOUNT_ID` or `--cloudflare-account-id`.
+- If the hostname matches exactly one accessible zone suffix, setup chooses the longest matching zone name.
+- If no accessible zone matches, setup fails; provide the correct hostname or `CLOUDFLARE_ZONE_ID`.
 
 Executor runs its remotely managed tunnel through an isolated service: `com.executor.cloudflared` on macOS, `executor-cloudflared.service` on Linux/WSL, and `ExecutorCloudflared` on Windows. Normal bootstrap, rollback, Resume, and Kill Switch operations manage only that service. A one-time upgrade migration may stop a generic `cloudflared` service only when an earlier Executor manifest, ownership record, or Executor-created ImagePath backup proves that Executor previously created or replaced it; unrelated host services remain untouched, and restored host services return to their prior running state.
 
@@ -63,6 +130,35 @@ New installations prefer `127.0.0.1:8787` for the Agent and `127.0.0.1:8788` for
 
 Setup reports the remote Streamable HTTP endpoint and local `executor stdio` command. Legacy SSE is not part of the current release. Every successful credential rotation also returns a new loopback Dashboard bootstrap URL; Dashboard authentication follows the current on-disk key immediately, so an old cookie stops working after an external `executor-kill` rotation.
 
+## Per-platform deployment notes
+
+### macOS
+
+- Run the source or release deployment path from a local Terminal session with `sudo`.
+- Source deployments need Go 1.24+, Python 3, and `cloudflared`.
+- Grant Screen Recording and Accessibility to the installed `/Library/Application Support/Executor/Executor Desktop.app`.
+- Clone deployments should use `scripts/deploy-from-source.sh`; packaged releases should use `scripts/bootstrap.sh`.
+
+### Linux
+
+- Requires `systemd`, Python 3, Go 1.24+ for source deployment, and `cloudflared`.
+- Run deployment as root or through `sudo` so the system units and user desktop unit can be installed.
+- X11 desktop control needs a screenshot provider, `gdbus`, and `xdotool`.
+- Wayland desktop control needs a screenshot provider, `gdbus`, and `wtype` or `ydotool`; advanced mouse actions remain limited by compositor support.
+
+### WSL
+
+- Requires `systemd` inside the WSL distribution, Python 3, Go 1.24+ for source deployment, and `cloudflared`.
+- Use the Linux deployment path for terminal, filesystem, OAuth, and tunnel services.
+- Linux GUI control requires WSLg. Windows desktop control still belongs on the Windows companion installation.
+
+### Windows
+
+- Run deployment from an elevated PowerShell session.
+- Source deployments need Go 1.24+ and `cloudflared`.
+- The packaged services install the desktop helper as an active-user startup path instead of a Windows Service.
+- Clone deployments should use `scripts/deploy-from-source.ps1`; packaged releases should use `scripts/bootstrap.ps1`.
+
 ## Computer Use runtime
 
 The active-user Desktop helper provides the screenshot and input boundary. A Computer Use client first calls `desktop_observe` with `action=screenshot`, then sends the returned `captureId` to `desktop_control` with `action=batch`. Executor validates the complete batch and platform capability before input begins, checks every coordinate against the captured image, consumes the capture ID once, serializes desktop observation and control in both the Agent and Desktop helper, and returns a new screenshot after the batch. Remote capture continuity is bound to the authenticated client identity because ChatGPT may create a fresh MCP session for each tool call; local stdio capture continuity remains bound to its MCP session. Any control from any MCP session invalidates all older captures. IPC disconnects cancel the in-flight helper request, and batch wait limits keep normal execution inside the IPC window.
@@ -85,6 +181,8 @@ Set `EXECUTOR_MACOS_SIGN_IDENTITY` when building Darwin release artifacts. Publi
 
 If an AI agent performs setup, Kill, rotation, or another action that generates a recovery key, the agent must reproduce that recovery key verbatim in its final private response to the requesting owner. It must not redact the key or direct the owner to an unattended Terminal. The response must identify the key as sensitive and shown once, and instruct the owner to save it immediately. This delivery exception does not allow the key to be stored in files, configuration, persistent logs, issues, pull requests, or public channels.
 
+Treat every setup attempt as recovery-key-sensitive. Watch the setup output directly. If a recovery key is printed, capture it immediately and treat it as the newest valid key for that host. Repeated setup with an existing secret store states that the existing key remains unchanged and cannot display it again; keep using the newest known valid key or rotate credentials deliberately.
+
 OAuth authorization metadata currently directs ChatGPT through Dynamic Client Registration (DCR), because repeated real ChatGPT web callback attempts stopped before token exchange when CIMD was advertised. The CIMD resolver remains implemented but is not advertised until that callback path is interoperable. The token endpoint accepts both public-client `none` with PKCE and ChatGPT's `private_key_jwt` method with RS256 verification against the JWKS published by the trusted ChatGPT CIMD origin.
 
 The authorization form uses a native HTML submit input for mobile Safari reliability and preserves ChatGPT's `resource` parameter through authorization and token exchange. An `authorization denied` response is generated only when the submitted recovery key does not match the current verifier. Because every Kill or rotation invalidates the previous key immediately, always use the newest key for the exact hostname being linked.
@@ -95,12 +193,47 @@ Service templates always point at the stable installed `executor` path, never at
 
 - `scripts/bootstrap.sh` and `scripts/bootstrap.ps1` write a service manifest plus per-file backups under the state directory before replacing managed files or runtime startup entries.
 - The bootstrap scripts also back up and replace the stable `executor` and `executor-kill` binaries through the same manifest workflow, so rollback restores or removes them together with the service files.
-- Both bootstrap scripts require either a secure Cloudflare API token file for setup or a config that already contains completed Cloudflare deployment metadata. If that metadata is incomplete, they stop before installing or starting `cloudflared`.
+- Both bootstrap scripts validate the complete bundle and require either a secure, nonblank Cloudflare API token file or a config with completed Cloudflare metadata plus its runtime tunnel token. Invalid input stops before binaries, state, credentials, or services are changed.
 - `scripts/bootstrap.sh` and `scripts/bootstrap.ps1` install and start the persistent local dashboard service together with agent, broker, desktop, and `cloudflared`.
 - `scripts/rollback.sh` and `scripts/rollback.ps1` stop managed services, including the persistent local dashboard service, restore backed up files when present, and remove files or services that were created by the current install.
 - The Unix packaging scripts do not create or delete a dedicated service identity; they bind the agent service to the real desktop owner account instead.
 - `scripts/uninstall.sh` and `scripts/uninstall.ps1` run rollback first, then remove the local deployment state directory.
 - The Go Cloudflare client deletes newly created DNS and tunnel resources in reverse order when a deployment step fails after creation, and removes any freshly written token file.
+
+Use these commands after a failed or unwanted installation:
+
+```bash
+# macOS, Linux, or WSL rollback
+sudo ./scripts/rollback.sh
+```
+
+```bash
+# macOS, Linux, or WSL full uninstall
+sudo ./scripts/uninstall.sh
+```
+
+```powershell
+# Windows rollback
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\rollback.ps1
+```
+
+```powershell
+# Windows full uninstall
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1
+```
+
+Rollback is the right first response when bootstrap replaced files or installed services but the deployment did not pass validation. Uninstall is for removing the local installation and state after rollback.
+
+## Validation checklist
+
+After deployment:
+
+1. Run `executor status` and confirm the host reports `armed`.
+2. Run `executor doctor --full`; every local check and `remote OAuth DCR` must pass.
+3. Confirm `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-authorization-server` return JSON through the public hostname.
+4. Confirm unauthenticated `POST /mcp` or `GET /mcp` returns HTTP 401 with `WWW-Authenticate`, not a Cloudflare HTML challenge.
+5. Link the exact hostname in ChatGPT and enter that host's newest recovery key.
+6. If desktop control is required, verify one screenshot and one explicit follow-up action after the platform permissions are granted.
 
 ## GitHub Actions
 

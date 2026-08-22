@@ -12,6 +12,7 @@ import (
 type fakeBackend struct {
 	called       string
 	setupOptions SetupOptions
+	setupResult  *SetupResult
 	killErr      error
 	rotateErr    error
 	enableErr    error
@@ -20,6 +21,9 @@ type fakeBackend struct {
 func (f *fakeBackend) Setup(_ context.Context, options SetupOptions) (SetupResult, error) {
 	f.called = "setup"
 	f.setupOptions = options
+	if f.setupResult != nil {
+		return *f.setupResult, nil
+	}
 	return SetupResult{Domain: "executor.example.com", MCPURL: "https://executor.example.com/mcp", RecoveryKey: "recovery-once"}, nil
 }
 func (f *fakeBackend) Status(context.Context) (Status, error) {
@@ -144,6 +148,24 @@ func TestRunSetupPrintsOneTimeConnectionMaterial(t *testing.T) {
 		if !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(text)) {
 			t.Fatalf("setup output %q missing %q", stdout.String(), text)
 		}
+	}
+}
+
+func TestRunSetupDoesNotClaimAnEmptyRecoveryKey(t *testing.T) {
+	backend := &fakeBackend{setupResult: &SetupResult{
+		Domain: "executor.example.com",
+		MCPURL: "https://executor.example.com/mcp",
+	}}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"setup", "--domain", "executor.example.com"}, backend, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Recovery key (shown once):") {
+		t.Fatalf("setup claimed to show an empty recovery key: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Existing recovery key remains unchanged") {
+		t.Fatalf("setup did not explain repeat setup behavior: %q", stdout.String())
 	}
 }
 

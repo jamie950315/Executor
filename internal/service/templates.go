@@ -29,6 +29,7 @@ type InstallConfig struct {
 	CloudflaredBinaryPath string
 	CloudflaredTokenPath  string
 	CloudflaredLogPath    string
+	DesktopUser           string
 	AgentUser             string
 	AgentGroup            string
 	BrokerUser            string
@@ -58,6 +59,9 @@ func RenderBundle(target Target, cfg InstallConfig) (Bundle, error) {
 	}
 	if cfg.DesktopBinaryPath == "" {
 		cfg.DesktopBinaryPath = cfg.BinaryPath
+	}
+	if cfg.DesktopUser == "" {
+		cfg.DesktopUser = cfg.AgentUser
 	}
 	files := map[string]string{}
 	for output, source := range targetTemplates(target) {

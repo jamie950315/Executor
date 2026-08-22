@@ -3,10 +3,10 @@ $ErrorActionPreference = "Stop"
 $Binary = "{{ .BinaryPath }}"
 $Config = "{{ .ConfigPath }}"
 $TaskName = "ExecutorDesktop"
-$CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$DesktopUser = "{{ .DesktopUser }}"
 $Action = New-ScheduledTaskAction -Execute $Binary -Argument "desktop --config `"$Config`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
-$Principal = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Limited
+$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $DesktopUser
+$Principal = New-ScheduledTaskPrincipal -UserId $DesktopUser -LogonType Interactive -RunLevel Limited
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
 
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Description "Executor desktop helper" -Force | Out-Null

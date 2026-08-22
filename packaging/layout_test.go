@@ -21,6 +21,8 @@ func TestPackagingScaffoldExists(t *testing.T) {
 		t.Fatalf("Abs: %v", err)
 	}
 	checks := []string{
+		filepath.Join(root, "scripts", "deploy-from-source.sh"),
+		filepath.Join(root, "scripts", "deploy-from-source.ps1"),
 		filepath.Join(root, "scripts", "bootstrap.sh"),
 		filepath.Join(root, "scripts", "bootstrap.ps1"),
 		filepath.Join(root, "scripts", "rollback.sh"),
@@ -37,6 +39,50 @@ func TestPackagingScaffoldExists(t *testing.T) {
 	for _, path := range checks {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("missing artifact %s: %v", path, err)
+		}
+	}
+}
+
+func TestUnixDeploymentEntrypointsAreExecutable(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"deploy-from-source.sh", "bootstrap.sh", "rollback.sh", "uninstall.sh"} {
+		info, err := os.Stat(filepath.Join(root, "scripts", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("scripts/%s is not executable: %s", name, info.Mode().Perm())
+		}
+	}
+}
+
+func TestDeployFromSourcePreparesNativeBundle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix source deployment entrypoint is tested on macOS and Linux")
+	}
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleDir := filepath.Join(t.TempDir(), "bundle")
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "deploy-from-source.sh"), "--prepare-only", bundleDir)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "EXECUTOR_MACOS_SIGN_IDENTITY=-")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("prepare native source bundle: %v\n%s", err, output)
+	}
+	for _, name := range []string{"executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md"} {
+		if _, err := os.Stat(filepath.Join(bundleDir, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("prepared bundle missing %s: %v", name, err)
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		if _, err := os.Stat(filepath.Join(bundleDir, "Executor Desktop.app", "Contents", "MacOS", "executor-desktop")); err != nil {
+			t.Fatalf("prepared macOS bundle missing Desktop app: %v", err)
 		}
 	}
 }
@@ -118,10 +164,10 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	}
 
 	linuxEntries := readTarEntries(t, filepath.Join(outDir, "executor_linux_amd64.tar.gz"))
-	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
+	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "scripts/deploy-from-source.sh", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
 
 	windowsEntries := readZipEntries(t, filepath.Join(outDir, "executor_windows_amd64.zip"))
-	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
+	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "scripts/deploy-from-source.ps1", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
 
 	sums := string(mustReadFile(t, filepath.Join(outDir, "SHA256SUMS.txt")))
 	if strings.Contains(sums, outDir) {

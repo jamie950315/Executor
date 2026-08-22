@@ -90,7 +90,12 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		if err != nil {
 			return printError(stderr, err)
 		}
-		fmt.Fprintf(stdout, "Executor is configured.\nDomain: %s\nMCP (Streamable HTTP): %s\nLocal stdio: executor stdio\nRecovery key (shown once): %s\n", result.Domain, result.MCPURL, result.RecoveryKey)
+		fmt.Fprintf(stdout, "Executor is configured.\nDomain: %s\nMCP (Streamable HTTP): %s\nLocal stdio: executor stdio\n", result.Domain, result.MCPURL)
+		if result.RecoveryKey != "" {
+			fmt.Fprintf(stdout, "Recovery key (shown once): %s\n", result.RecoveryKey)
+		} else {
+			fmt.Fprintln(stdout, "Existing recovery key remains unchanged; setup cannot display it again.")
+		}
 		if result.Dashboard != "" {
 			fmt.Fprintf(stdout, "Dashboard: %s\n", result.Dashboard)
 		}

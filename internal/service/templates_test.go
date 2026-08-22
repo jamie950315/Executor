@@ -134,8 +134,10 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 	}
 	assertContainsAll(t, windows.Files["windows/register-desktop-startup.ps1"],
 		"$TaskName = \"ExecutorDesktop\"",
+		"$DesktopUser = \"jamie\"",
 		"New-ScheduledTaskAction",
-		"New-ScheduledTaskTrigger -AtLogOn",
+		"New-ScheduledTaskTrigger -AtLogOn -User $DesktopUser",
+		"New-ScheduledTaskPrincipal -UserId $DesktopUser",
 		"-LogonType Interactive",
 		"-ExecutionTimeLimit ([TimeSpan]::Zero)",
 		"Register-ScheduledTask -TaskName $TaskName",
@@ -146,6 +148,9 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 	}
 	if strings.Contains(windows.Files["windows/register-desktop-startup.ps1"], "InteractiveToken") {
 		t.Fatalf("windows desktop script uses unsupported PowerShell 5.1 logon type:\n%s", windows.Files["windows/register-desktop-startup.ps1"])
+	}
+	if strings.Contains(windows.Files["windows/register-desktop-startup.ps1"], "WindowsIdentity") {
+		t.Fatalf("windows desktop script should use the resolved desktop user from bootstrap instead of the current process identity:\n%s", windows.Files["windows/register-desktop-startup.ps1"])
 	}
 }
 

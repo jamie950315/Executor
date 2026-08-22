@@ -2,6 +2,12 @@
 
 This page records the verified causes of the OAuth and rotation failures encountered during the first ChatGPT deployments. Diagnose by boundary: Cloudflare edge, Executor OAuth, local state ownership, and browser consent are separate systems.
 
+## Before the first install
+
+Web ChatGPT cannot self-install Executor onto a fresh machine. Before MCP exists, ChatGPT on the web has no host connection, cannot build local binaries, cannot install privileged services, and cannot complete the required local secret and permission steps. Perform the first deployment from a local coding agent, a direct terminal session, or another already-installed host tool.
+
+For clone deployments, the documented source-deployment entrypoints are `scripts/deploy-from-source.sh` on macOS, Linux, and WSL, and `scripts/deploy-from-source.ps1` on Windows. Those wrappers are the canonical source-build path; `executor setup` alone is not a complete installation.
+
 ## Recommended validation order
 
 1. Run `executor status` and confirm the host is `armed`.
@@ -26,6 +32,8 @@ This page records the verified causes of the OAuth and rotation failures encount
 
 **Correct fix:** Use the newest recovery key produced for that exact hostname. An AI-managed setup or rotation must return the complete new key in the same private owner chat. Store keys in a password manager labeled by hostname; never store them in the repository, logs, issues, or public channels.
 
+If repeated setup reports that the existing recovery key remains unchanged, no new key was created and the old key cannot be displayed again. Use the newest known valid key or rotate credentials explicitly.
+
 ## Consent button does not submit on mobile Safari
 
 **Observed symptom:** Pressing Return in the recovery-key field submitted the form, but tapping the styled authorization button did not.
@@ -49,6 +57,28 @@ This page records the verified causes of the OAuth and rotation failures encount
 **Verified cause:** Screen Recording is granted by macOS TCC to a stable signed application identity. A standalone ad-hoc helper binary launched from changing build paths does not provide the stable bundle identifier and signing requirement needed for persistent LaunchAgent permission.
 
 **Correct fix:** Install the release's signed `/Library/Application Support/Executor/Executor Desktop.app`, then grant Screen Recording and Accessibility to that app in System Settings > Privacy & Security. Restart the `com.executor.desktop` LaunchAgent after permission changes. Production archives should be signed with a stable `Developer ID Application` identity through `EXECUTOR_MACOS_SIGN_IDENTITY`; ad-hoc builds may require permission to be granted again after upgrades. Do not grant these permissions only to Terminal or to `/usr/local/bin/executor`.
+
+## Clone deployment fails before services start
+
+**Observed symptom:** A source deployment from a fresh clone fails before the services are installed.
+
+**Common verified causes:**
+
+- Go 1.24 or newer is missing.
+- `cloudflared` 2025.4.0 or newer is not installed or not resolvable on the target machine.
+- On macOS, Linux, or WSL, the Cloudflare API token file is not a regular file with mode `0600`.
+- On Linux or WSL, `systemd` is not available.
+- On macOS, Linux, or WSL, Python 3 is missing from the bootstrap path.
+
+**Correct fix:** Satisfy the prerequisite that failed, then rerun the source-deployment entrypoint. If bootstrap already replaced files or installed services before the failure, run the platform rollback script before retrying.
+
+## Cloudflare account or zone selection fails
+
+**Observed symptom:** Setup fails while choosing the Cloudflare account or zone for the requested hostname.
+
+**Verified cause:** Automatic selection only works when the token can see exactly one account and the requested hostname matches at least one accessible zone. With multiple accounts, or with no matching zone suffix, setup cannot infer the target reliably.
+
+**Correct fix:** Supply `CLOUDFLARE_ACCOUNT_ID` or `--cloudflare-account-id` when the token can see multiple accounts. Supply `CLOUDFLARE_ZONE_ID` or `--cloudflare-zone-id` when the hostname cannot be matched automatically. Keep the hostname inside a zone that the same token can manage.
 
 ## ChatGPT receives the first screenshot but does not call `desktop_control`
 
@@ -87,5 +117,19 @@ OAuth, consent, recovery-key validation, state persistence, and remote DCR diagn
 **Verified ChatGPT Safari behavior:** A completed Work response can remain visually stuck on its first streamed token even for a no-tool prompt. Reloading the same conversation reveals the complete stored response and tool details. This rendering problem is outside Executor; do not treat the initially visible fragment as proof that an MCP call failed.
 
 **Correct verification:** Reload the ChatGPT conversation if streaming stops on a fragment, then verify the complete stored response, the returned MCP payload, and the host-side metadata-only audit record.
+
+## Deployment failed after files or services changed
+
+**Observed symptom:** Bootstrap replaced files, installed services, or changed Cloudflare-managed state, but validation did not pass.
+
+**Correct fix:** Use rollback before retrying:
+
+- macOS, Linux, WSL: `sudo ./scripts/rollback.sh`
+- Windows: `powershell.exe -ExecutionPolicy Bypass -File .\scripts\rollback.ps1`
+
+Use uninstall only when you want to remove the local installation and state entirely:
+
+- macOS, Linux, WSL: `sudo ./scripts/uninstall.sh`
+- Windows: `powershell.exe -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1`
 
 Before publishing a change, run the complete Go tests, race tests, vet, shell syntax checks, and `scripts/build-release-artifacts.sh`. The release script must produce `executor` and `executor-kill` archives for Darwin, Linux, and Windows on both amd64 and arm64. Real host validation remains required for launchd, systemd, Windows Services, ConPTY, WSL, and each public Cloudflare hostname.

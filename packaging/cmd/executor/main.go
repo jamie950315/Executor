@@ -38,6 +38,7 @@ func runRenderServiceBundle(args []string) int {
 	cloudflaredBinary := set.String("cloudflared-binary-path", "cloudflared", "cloudflared binary path")
 	cloudflaredToken := set.String("cloudflared-token-path", "", "cloudflared token file path")
 	cloudflaredLog := set.String("cloudflared-log-path", "", "cloudflared log path")
+	desktopUser := set.String("desktop-user", "", "active desktop user for user-session helpers")
 	agentUser := set.String("agent-user", "", "dedicated low-privilege agent user")
 	agentGroup := set.String("agent-group", "", "dedicated low-privilege agent group")
 	brokerUser := set.String("broker-user", "", "broker service user")
@@ -60,6 +61,7 @@ func runRenderServiceBundle(args []string) int {
 		CloudflaredBinaryPath: *cloudflaredBinary,
 		CloudflaredTokenPath:  *cloudflaredToken,
 		CloudflaredLogPath:    *cloudflaredLog,
+		DesktopUser:           *desktopUser,
 		AgentUser:             *agentUser,
 		AgentGroup:            *agentGroup,
 		BrokerUser:            *brokerUser,

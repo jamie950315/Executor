@@ -30,10 +30,59 @@ $LegacyCloudflaredBackupPath = Join-Path (Split-Path $CloudflaredTokenPath -Pare
 $BrokerUser = if ($env:EXECUTOR_BROKER_USER) { $env:EXECUTOR_BROKER_USER } else { "SYSTEM" }
 $BrokerGroup = if ($env:EXECUTOR_BROKER_GROUP) { $env:EXECUTOR_BROKER_GROUP } else { "SYSTEM" }
 $WindowsAgentService = if ($env:EXECUTOR_WINDOWS_AGENT_SERVICE) { $env:EXECUTOR_WINDOWS_AGENT_SERVICE } else { "NT SERVICE\ExecutorAgent" }
-$DesktopUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+function Resolve-ActiveConsoleUser {
+  try {
+    $ComputerSystem = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    if ($ComputerSystem -and $ComputerSystem.UserName) {
+      return $ComputerSystem.UserName
+    }
+  } catch {
+  }
+
+  try {
+    $QueryUser = & query user 2>$null
+    foreach ($Line in $QueryUser) {
+      $Trimmed = $Line.TrimStart()
+      if (-not $Trimmed -or $Trimmed.StartsWith("USERNAME")) {
+        continue
+      }
+      $Parts = $Trimmed -split '\s+'
+      if ($Parts.Length -ge 3 -and $Parts[1] -eq "console") {
+        return $Parts[0].TrimStart('>')
+      }
+    }
+  } catch {
+  }
+
+  throw "Unable to determine the active desktop user. Set EXECUTOR_DESKTOP_USER."
+}
+
+$DesktopUser = if ($env:EXECUTOR_DESKTOP_USER) { $env:EXECUTOR_DESKTOP_USER } else { Resolve-ActiveConsoleUser }
 $AgentUser = if ($env:EXECUTOR_AGENT_USER) { $env:EXECUTOR_AGENT_USER } else { $DesktopUser }
 $AgentGroup = if ($env:EXECUTOR_AGENT_GROUP) { $env:EXECUTOR_AGENT_GROUP } else { $DesktopUser }
-$DesktopStartup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
+
+function Resolve-DesktopStartupPath {
+  param([string]$UserName)
+  try {
+    $Account = [System.Security.Principal.NTAccount]::new($UserName)
+    $Sid = $Account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $ProfileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid"
+    $ProfilePath = (Get-ItemProperty -LiteralPath $ProfileKey -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
+    if ($ProfilePath) {
+      $ExpandedProfilePath = [Environment]::ExpandEnvironmentVariables($ProfilePath)
+      return Join-Path $ExpandedProfilePath "AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
+    }
+  } catch {
+  }
+  $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  if ($CurrentUser -eq $UserName -and $env:APPDATA) {
+    return Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\executor-desktop.cmd"
+  }
+  throw "Unable to resolve the active desktop user's Startup path: $UserName"
+}
+
+$DesktopStartup = Resolve-DesktopStartupPath -UserName $DesktopUser
 $DesktopTaskName = "ExecutorDesktop"
 $CloudflareAPITokenFile = if ($env:CLOUDFLARE_API_TOKEN_FILE) { $env:CLOUDFLARE_API_TOKEN_FILE } elseif ($env:EXECUTOR_CLOUDFLARE_TOKEN_FILE) { $env:EXECUTOR_CLOUDFLARE_TOKEN_FILE } else { "" }
 $CloudflareAccountID = if ($env:CLOUDFLARE_ACCOUNT_ID) { $env:CLOUDFLARE_ACCOUNT_ID } elseif ($env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID) { $env:EXECUTOR_CLOUDFLARE_ACCOUNT_ID } else { "" }
@@ -44,6 +93,52 @@ $PendingReplacementCleanup = @()
 if (-not $Domain) {
   throw "Set EXECUTOR_DOMAIN."
 }
+
+function Assert-CloudflarePreflight {
+  if ($CloudflareAPITokenFile) {
+    if (-not (Test-Path -LiteralPath $CloudflareAPITokenFile -PathType Leaf)) {
+      throw "Cloudflare API token file is missing or is not a regular file: $CloudflareAPITokenFile"
+    }
+    $CloudflareAPITokenText = [System.IO.File]::ReadAllText($CloudflareAPITokenFile)
+    if ([string]::IsNullOrWhiteSpace($CloudflareAPITokenText)) {
+      throw "Cloudflare API token file is empty: $CloudflareAPITokenFile"
+    }
+    $CloudflareAPITokenText = $null
+    return
+  }
+
+  if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or -not (Test-Path -LiteralPath $CloudflaredTokenPath -PathType Leaf)) {
+    throw "Cloudflare setup incomplete. Provide CLOUDFLARE_API_TOKEN_FILE or pre-existing completed Cloudflare metadata and runtime token before installing files or creating credentials."
+  }
+  try {
+    $ExistingConfig = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    $ExistingCloudflare = $ExistingConfig.cloudflare
+  } catch {
+    throw "Existing Executor config cannot be read for Cloudflare preflight: $($_.Exception.Message)"
+  }
+  if (-not $ExistingCloudflare `
+    -or -not $ExistingCloudflare.account_id `
+    -or -not $ExistingCloudflare.zone_id `
+    -or -not $ExistingCloudflare.tunnel_id `
+    -or -not $ExistingCloudflare.tunnel_name `
+    -or -not $ExistingCloudflare.dns_record_id `
+    -or -not $ExistingCloudflare.token_file_path `
+    -or -not $ExistingCloudflare.hostname `
+    -or $ExistingCloudflare.token_file_path -ne $CloudflaredTokenPath) {
+    throw "Existing Executor config has incomplete or mismatched Cloudflare deployment metadata."
+  }
+}
+
+function Assert-BundlePayload {
+  foreach ($BundledBinary in @($BundledExecutorPath, $BundledExecutorKillPath)) {
+    if (-not (Test-Path -LiteralPath $BundledBinary -PathType Leaf)) {
+      throw "Missing bundled binary: $BundledBinary"
+    }
+  }
+}
+
+Assert-BundlePayload
+Assert-CloudflarePreflight
 
 New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
@@ -164,6 +259,7 @@ New-Item -ItemType Directory -Path $TempBundle -Force | Out-Null
   --cloudflared-binary-path $CloudflaredBin `
   --cloudflared-token-path $CloudflaredTokenPath `
   --cloudflared-log-path $CloudflaredLogPath `
+  --desktop-user $DesktopUser `
   --agent-user $AgentUser `
   --agent-group $AgentGroup `
   --broker-user $BrokerUser `
