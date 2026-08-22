@@ -189,6 +189,52 @@ describe("dashboard HTTP control plane", () => {
     );
   });
 
+  it("returns only the Access subject and browser identity from the no-store session endpoint", async () => {
+    const first = await SELF.fetch(`${dashboardOrigin}/api/session`, {
+      headers: { "cf-access-jwt-assertion": await accessToken() },
+    });
+
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe("no-store");
+    const cookie = first.headers.get("set-cookie");
+    expect(cookie).toMatch(
+      /^__Host-executor-browser=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Strict$/,
+    );
+    const browserID = cookie?.match(/^__Host-executor-browser=([^;]+)/u)?.[1];
+    expect(browserID).toBeTruthy();
+    await expect(first.json()).resolves.toEqual({
+      access_subject: "access-user-1",
+      browser_id: browserID,
+    });
+
+    const second = await SELF.fetch(`${dashboardOrigin}/api/session`, {
+      headers: {
+        "cf-access-jwt-assertion": await accessToken(),
+        cookie: `__Host-executor-browser=${browserID}`,
+      },
+    });
+    expect(second.headers.get("set-cookie")).toBeNull();
+    const secondBody = await second.text();
+    expect(JSON.parse(secondBody)).toEqual({
+      access_subject: "access-user-1",
+      browser_id: browserID,
+    });
+    expect(secondBody).not.toContain("email");
+  });
+
+  it("adds production security headers to Static Assets without intercepting API routes", async () => {
+    const response = await SELF.fetch(`${dashboardOrigin}/deep/workspace/path`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+
+    const api = await SELF.fetch(`${dashboardOrigin}/api/not-an-asset`);
+    expect(api.status).toBe(401);
+  });
+
   it("rejects cross-origin requests and non-JSON state changes", async () => {
     const token = await accessToken();
     const crossOrigin = await SELF.fetch(`${dashboardOrigin}/api/devices`, {

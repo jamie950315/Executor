@@ -12,9 +12,9 @@ const maximumEnrollmentBytes = 64 * 1024;
 export default {
   async fetch(request, env): Promise<Response> {
     try {
-      return await routeRequest(request, env);
+      return withSecurityHeaders(await routeRequest(request, env));
     } catch {
-      return errorResponse("internal error", 500);
+      return withSecurityHeaders(errorResponse("internal error", 500));
     }
   },
 } satisfies ExportedHandler<Env>;
@@ -51,10 +51,39 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       }
       return jsonResponse({ devices: await listDevices(env.DB) }, 200, headers);
     }
+    if (request.method === "GET" && url.pathname === "/api/session") {
+      const headers = new Headers();
+      if (browser.setCookie !== null) {
+        headers.append("set-cookie", browser.setCookie);
+      }
+      return jsonResponse(
+        { access_subject: access.subject, browser_id: browser.id },
+        200,
+        headers,
+      );
+    }
     return errorResponse("not found", 404);
   }
 
   return env.ASSETS.fetch(request);
+}
+
+function withSecurityHeaders(response: Response): Response {
+  if (response.status === 101) {
+    return response;
+  }
+  const secured = new Response(response.body, response);
+  secured.headers.set(
+    "content-security-policy",
+    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'",
+  );
+  secured.headers.set("cross-origin-opener-policy", "same-origin");
+  secured.headers.set("permissions-policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()");
+  secured.headers.set("referrer-policy", "no-referrer");
+  secured.headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
+  secured.headers.set("x-content-type-options", "nosniff");
+  secured.headers.set("x-frame-options", "DENY");
+  return secured;
 }
 
 async function handleEnrollment(request: Request, env: Env): Promise<Response> {
