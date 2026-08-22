@@ -52,7 +52,13 @@ export async function enrollDevice(
       `INSERT INTO devices (
         device_id, name, platform, arch, version, mcp_url, public_jwk, generation,
         state, created_at, updated_at, last_seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, NULL)
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, NULL
+      WHERE NOT EXISTS (
+        SELECT 1 FROM device_tombstones
+        WHERE device_id = ?
+          AND (public_jwk <> ? OR revoked_generation >= ?)
+      )
       ON CONFLICT(device_id) DO UPDATE SET
         name = excluded.name,
         platform = excluded.platform,
@@ -75,12 +81,60 @@ export async function enrollDevice(
       input.generation,
       now,
       now,
+      input.device_id,
+      publicJWK,
+      input.generation,
     )
     .first<StoredDevice>();
   if (stored === null) {
     return null;
   }
   return { device: decodeDevice(stored), created: existing === null };
+}
+
+export async function deleteDeviceConditionally(
+  db: D1Database,
+  snapshot: DeviceRecord,
+  now: number,
+): Promise<{ deleted: boolean }> {
+  const publicJWK = canonicalPublicJWK(snapshot.public_jwk);
+  const revokedGeneration = snapshot.generation + 1;
+  if (!Number.isSafeInteger(revokedGeneration)) {
+    return { deleted: false };
+  }
+  const results = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO device_tombstones (device_id, public_jwk, revoked_generation, deleted_at)
+        SELECT device_id, public_jwk, generation + 1, ?
+        FROM devices
+        WHERE device_id = ? AND public_jwk = ? AND generation = ? AND updated_at = ?
+        ON CONFLICT(device_id) DO UPDATE SET
+          revoked_generation = MAX(device_tombstones.revoked_generation, excluded.revoked_generation),
+          deleted_at = excluded.deleted_at
+        WHERE device_tombstones.public_jwk = excluded.public_jwk`,
+      )
+      .bind(now, snapshot.device_id, publicJWK, snapshot.generation, snapshot.updated_at),
+    db
+      .prepare(
+        `DELETE FROM devices
+        WHERE device_id = ? AND public_jwk = ? AND generation = ? AND updated_at = ?
+          AND EXISTS (
+            SELECT 1 FROM device_tombstones
+            WHERE device_id = ? AND public_jwk = ? AND revoked_generation >= ?
+          )`,
+      )
+      .bind(
+        snapshot.device_id,
+        publicJWK,
+        snapshot.generation,
+        snapshot.updated_at,
+        snapshot.device_id,
+        publicJWK,
+        revokedGeneration,
+      ),
+  ]);
+  return { deleted: results[1]?.meta.changes === 1 };
 }
 
 export async function listDevices(db: D1Database): Promise<DeviceRecord[]> {

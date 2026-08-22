@@ -40,7 +40,11 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, inject("migrations"));
-  await env.DB.batch([env.DB.prepare("DELETE FROM audits"), env.DB.prepare("DELETE FROM devices")]);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM audits"),
+    env.DB.prepare("DELETE FROM devices"),
+    env.DB.prepare("DELETE FROM device_tombstones"),
+  ]);
 });
 
 describe("unlocked device control", () => {
@@ -49,7 +53,7 @@ describe("unlocked device control", () => {
     const unlocked = await unlock(socket);
 
     expect(unlocked.grantCookie).toMatch(
-      /^__Secure-executor-grant-[0-9a-f]{16}=.+; Path=\/api\/devices\/device-vector-1\/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
+      /^__Secure-executor-grant-[0-9a-f]{16}=.+; Path=\/api\/devices\/device-vector-1; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
     );
     expect(unlocked.grantCookie).not.toContain("grant-device-vector-1");
 
@@ -196,6 +200,26 @@ describe("unlocked device control", () => {
     );
     await closed;
   });
+
+  it("keeps a monotonic deletion tombstone so an old grant cannot resurrect", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const closed = nextClose(socket);
+    const deleted = await controlRequest("exact-delete", unlocked, {}, "DELETE");
+    expect(deleted.status).toBe(200);
+    await closed;
+
+    expect((await enrollDeviceGeneration(7)).status).toBe(409);
+    expect((await enrollDeviceGeneration(8)).status).toBe(409);
+    expect((await enrollDeviceGeneration(9)).status).toBe(201);
+
+    const oldGrantCall = await controlRequest("call", unlocked, {
+      method: "device.status",
+      arguments: {},
+    });
+    expect(oldGrantCall.status).toBe(401);
+    await expect(oldGrantCall.json()).resolves.toEqual({ error: "device locked" });
+  });
 });
 
 interface UnlockedSession {
@@ -288,24 +312,7 @@ function controlHeaders(accessToken: string, cookie: string): HeadersInit {
 }
 
 async function enrolledAuthenticatedSocket(): Promise<WebSocket> {
-  const enrolled = await SELF.fetch(`${dashboardOrigin}/api/device/enroll`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${enrollmentToken}`,
-      "content-type": "application/json",
-      origin: dashboardOrigin,
-    },
-    body: JSON.stringify({
-      device_id: deviceID,
-      name: "Vector Device",
-      platform: "darwin",
-      arch: "arm64",
-      version: "0.1.0",
-      mcp_url: "https://device.example/mcp",
-      public_jwk: vectors.device_public_key,
-      generation: 7,
-    }),
-  });
+  const enrolled = await enrollDeviceGeneration(7);
   expect(enrolled.status).toBe(201);
   const response = await SELF.fetch(`${dashboardOrigin}/api/device/connect/${deviceID}`, {
     headers: { upgrade: "websocket" },
@@ -332,6 +339,27 @@ async function enrolledAuthenticatedSocket(): Promise<WebSocket> {
   );
   await nextMessage(socket);
   return socket;
+}
+
+function enrollDeviceGeneration(generation: number): Promise<Response> {
+  return SELF.fetch(`${dashboardOrigin}/api/device/enroll`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${enrollmentToken}`,
+      "content-type": "application/json",
+      origin: dashboardOrigin,
+    },
+    body: JSON.stringify({
+      device_id: deviceID,
+      name: "Vector Device",
+      platform: "darwin",
+      arch: "arm64",
+      version: "0.1.0",
+      mcp_url: "https://device.example/mcp",
+      public_jwk: vectors.device_public_key,
+      generation,
+    }),
+  });
 }
 
 async function signGrant(browserID: string): Promise<string> {

@@ -3,6 +3,7 @@ import vectors from "../../../internal/relay/testdata/wire-vectors.json";
 
 import {
   canonicalDeviceChallenge,
+  decodeBase64URL as decodeStrictBase64URL,
   recoveryAdditionalData,
   sealRecoveryEnvelopeWithMaterial,
   verifyDeviceChallenge,
@@ -80,6 +81,27 @@ describe("cross-language relay crypto", () => {
     const tampered = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
     await expect(
       verifyDeviceGrant(devicePublicKey, tampered, {
+        deviceID: vectors.grant.claims.device_id,
+        accessSubject: vectors.grant.claims.access_subject,
+        browserID: vectors.grant.claims.browser_id,
+        generation: vectors.grant.claims.generation,
+        now: new Date(vectors.grant.claims.issued_at * 1000),
+      }),
+    ).rejects.toThrow("invalid device grant");
+  });
+
+  it("rejects non-canonical base64url unused bits in keys and grant signatures", async () => {
+    const nonCanonicalX = `${vectors.device_public_key.x.slice(0, -1)}Z`;
+    expect(() => decodeStrictBase64URL(nonCanonicalX)).toThrow("invalid base64url");
+
+    const tokenParts = vectors.grant.compact_jws.split(".");
+    const signature = tokenParts[2];
+    if (tokenParts.length !== 3 || signature === undefined || !signature.endsWith("w")) {
+      throw new Error("unexpected grant fixture");
+    }
+    const nonCanonicalGrant = `${tokenParts[0]}.${tokenParts[1]}.${signature.slice(0, -1)}x`;
+    await expect(
+      verifyDeviceGrant(devicePublicKey, nonCanonicalGrant, {
         deviceID: vectors.grant.claims.device_id,
         accessSubject: vectors.grant.claims.access_subject,
         browserID: vectors.grant.claims.browser_id,

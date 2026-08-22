@@ -57,4 +57,38 @@ describe("Go relay wire vectors", () => {
       ),
     ).toThrow("invalid relay envelope");
   });
+
+  it("rejects non-canonical base64url in recovery security fields", () => {
+    const fixture = vectors.messages.recovery_unlock;
+    const envelope = fixture.payload.envelope;
+    expect(() =>
+      decodeEnvelope(
+        JSON.stringify({
+          ...fixture,
+          payload: {
+            envelope: {
+              ...envelope,
+              salt: `${envelope.salt.slice(0, -1)}9`,
+            },
+          },
+        }),
+      ),
+    ).toThrow("invalid relay envelope");
+    expect(() =>
+      decodeEnvelope(
+        JSON.stringify({
+          ...fixture,
+          payload: {
+            envelope: {
+              ...envelope,
+              ephemeral_public_key: {
+                ...envelope.ephemeral_public_key,
+                x: `${envelope.ephemeral_public_key.x.slice(0, -1)}Z`,
+              },
+            },
+          },
+        }),
+      ),
+    ).toThrow("invalid relay envelope");
+  });
 });

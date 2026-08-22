@@ -2,6 +2,7 @@ import { verifyAccess } from "./access";
 import { handleControlRoute, matchControlRoute } from "./control";
 import { enrollDevice, getDevice, listDevices, writeAudit, type EnrollmentInput } from "./db";
 import { browserIdentity, errorResponse, jsonResponse, readBoundedJSON, rejectCrossOrigin, requireStateChangingRequest } from "./http";
+import { decodeBase64URL } from "./shared/base64";
 import type { PublicKeyJWK } from "./shared/wire";
 
 export { DeviceRelay } from "./device-relay";
@@ -181,15 +182,22 @@ function isPublicJWK(value: unknown): value is PublicKeyJWK {
     return false;
   }
   const record = value as Record<string, unknown>;
-  return (
+  if (
     Object.keys(record).length === 4 &&
     record.kty === "EC" &&
     record.crv === "P-256" &&
     typeof record.x === "string" &&
-    /^[A-Za-z0-9_-]{43}$/u.test(record.x) &&
+    record.x.length === 43 &&
     typeof record.y === "string" &&
-    /^[A-Za-z0-9_-]{43}$/u.test(record.y)
-  );
+    record.y.length === 43
+  ) {
+    try {
+      return decodeBase64URL(record.x).byteLength === 32 && decodeBase64URL(record.y).byteLength === 32;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function validText(value: unknown, maximum: number): value is string {

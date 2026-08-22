@@ -111,7 +111,7 @@ export async function deviceGrantCookieName(deviceID: string): Promise<string> {
 
 export async function deviceGrantSetCookie(deviceID: string, grant: string): Promise<string> {
   const name = await deviceGrantCookieName(deviceID);
-  return `${name}=${grant}; Path=/api/devices/${encodeURIComponent(deviceID)}/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict`;
+  return `${name}=${grant}; Path=/api/devices/${encodeURIComponent(deviceID)}; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict`;
 }
 
 function validBrowserID(value: string): boolean {

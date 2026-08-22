@@ -1,5 +1,5 @@
 import type { AccessIdentity } from "./access";
-import { getDevice, writeAudit, type DeviceRecord } from "./db";
+import { deleteDeviceConditionally, getDevice, writeAudit, type DeviceRecord } from "./db";
 import type { RelayFailureCode, RelayStreamResult } from "./device-relay";
 import {
   browserIdentity,
@@ -198,11 +198,12 @@ async function handleDelete(
   } catch {
     return errorResponse("invalid request", 400);
   }
-  await env.DB.prepare("UPDATE devices SET generation = generation + 1, updated_at = ? WHERE device_id = ?")
-    .bind(Date.now(), deviceID)
-    .run();
-  await env.DEVICE_RELAY.getByName(deviceID).disconnect();
-  await env.DB.prepare("DELETE FROM devices WHERE device_id = ?").bind(deviceID).run();
+  const deleted = await deleteDeviceConditionally(env.DB, unlocked.device, Date.now());
+  if (!deleted.deleted) {
+    await writeAudit(env.DB, deviceID, access.subject, "device.delete", "changed", Date.now());
+    return errorResponse("device changed", 409);
+  }
+  await env.DEVICE_RELAY.getByName(deviceID).disconnect(unlocked.device.generation);
   await writeAudit(env.DB, deviceID, access.subject, "device.delete", "success", Date.now());
   return jsonResponse({ deleted: true });
 }

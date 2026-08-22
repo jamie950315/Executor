@@ -1,7 +1,9 @@
-import { applyD1Migrations, env, evictDurableObject, SELF } from "cloudflare:test";
-import { beforeEach, describe, expect, inject, it } from "vitest";
+import { applyD1Migrations, env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
+import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 import vectors from "../../../internal/relay/testdata/wire-vectors.json";
 
+import { deleteDeviceConditionally, getDevice } from "../../src/db";
+import { DeviceRelay } from "../../src/device-relay";
 import { canonicalDeviceChallenge, encodeBase64URL } from "../../src/shared/crypto";
 import { decodeEnvelope, makeEnvelope } from "../../src/shared/wire";
 
@@ -10,7 +12,11 @@ const enrollmentToken = "test-enrollment-token";
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, inject("migrations"));
-  await env.DB.batch([env.DB.prepare("DELETE FROM audits"), env.DB.prepare("DELETE FROM devices")]);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM audits"),
+    env.DB.prepare("DELETE FROM devices"),
+    env.DB.prepare("DELETE FROM device_tombstones"),
+  ]);
 });
 
 describe("DeviceRelay WebSocket", () => {
@@ -116,9 +122,130 @@ describe("DeviceRelay WebSocket", () => {
     await expect(responsePromise).resolves.toEqual({ ok: true, response: JSON.stringify(expected) });
     socket.close(1000, "test complete");
   });
+
+  it("keeps an authenticated request pending when a second challenge socket closes", async () => {
+    await enroll();
+    const authenticated = await connectAuthenticated();
+    const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+    const request = makeEnvelope("request", "message-authenticated-owner", {
+      request_id: "request-authenticated-owner",
+      method: "device.status",
+      arguments: {},
+    });
+
+    const responsePromise = stub.relayOnce(request);
+    expect(decodeEnvelope(await nextMessage(authenticated))).toEqual(request);
+
+    const challengeOnly = await connectSocket();
+    await nextMessage(challengeOnly);
+    challengeOnly.close(1000, "challenge abandoned");
+    await scheduler.wait(20);
+    await expect(promiseStillPending(responsePromise, 20)).resolves.toBe(true);
+
+    const expected = makeEnvelope("response", "authenticated-owner-response", {
+      request_id: "request-authenticated-owner",
+      result: { ready: true },
+    });
+    authenticated.send(JSON.stringify(expected));
+    await expect(responsePromise).resolves.toEqual({ ok: true, response: JSON.stringify(expected) });
+    authenticated.close(1000, "test complete");
+  });
+
+  it("disconnects only the deleted generation and preserves a re-enrolled connection", async () => {
+    await enroll();
+    const oldSocket = await connectAuthenticated();
+    const snapshot = await getDevice(env.DB, "device-vector-1");
+    if (snapshot === null) {
+      throw new Error("missing device snapshot");
+    }
+    await expect(deleteDeviceConditionally(env.DB, snapshot, Date.now())).resolves.toEqual({ deleted: true });
+    await enroll(9);
+    const replacement = await connectAuthenticated(9);
+    await eventually(async () => oldSocket.readyState === WebSocket.CLOSED);
+
+    await env.DEVICE_RELAY.getByName("device-vector-1").disconnect(7);
+
+    await expect(noClose(replacement, 20)).resolves.toBe(true);
+    await expect(deviceState()).resolves.toBe("online");
+    replacement.close(1000, "test complete");
+  });
+
+  it("clears the request deadline timer when a response stream is cancelled", async () => {
+    await enroll();
+    const socket = await connectAuthenticated();
+    const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+    const request = makeEnvelope("request", "message-cancel-timer", {
+      request_id: "request-cancel-timer",
+      method: "terminal.output",
+      arguments: {},
+    });
+
+    await runInDurableObject(stub, async (instance: DeviceRelay) => {
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+      try {
+        const result = instance.relayStream(request);
+        if (!result.ok) {
+          throw new Error(`unexpected relay failure: ${result.error}`);
+        }
+        const deadline = setTimeoutSpy.mock.results.at(-1)?.value;
+        expect(deadline).toBeDefined();
+        await result.stream.cancel("browser cancelled");
+        expect(clearTimeoutSpy).toHaveBeenCalledWith(deadline);
+      } finally {
+        setTimeoutSpy.mockRestore();
+        clearTimeoutSpy.mockRestore();
+      }
+    });
+
+    socket.close(1000, "test complete");
+  });
+
+  it("uses one absolute deadline timer across all non-final stream chunks", async () => {
+    await enroll();
+    const clientSocket = await connectAuthenticated();
+    const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+    const request = makeEnvelope("request", "message-absolute-deadline", {
+      request_id: "request-absolute-deadline",
+      method: "terminal.output",
+      arguments: {},
+    });
+
+    await runInDurableObject(stub, async (instance: DeviceRelay, state) => {
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const result = instance.relayStream(request);
+        if (!result.ok) {
+          throw new Error(`unexpected relay failure: ${result.error}`);
+        }
+        expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+        const serverSocket = state.getWebSockets("device")[0];
+        if (serverSocket === undefined) {
+          throw new Error("missing relay socket");
+        }
+        await instance.webSocketMessage(
+          serverSocket,
+          JSON.stringify(
+            makeEnvelope("stream_chunk", "absolute-deadline-0", {
+              request_id: "request-absolute-deadline",
+              sequence: 0,
+              data: btoa("first"),
+              final: false,
+            }),
+          ),
+        );
+        expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+        await result.stream.cancel("test complete");
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    clientSocket.close(1000, "test complete");
+  });
 });
 
-async function enroll(): Promise<void> {
+async function enroll(generation = 7): Promise<void> {
   const response = await SELF.fetch(`${dashboardOrigin}/api/device/enroll`, {
     method: "POST",
     headers: {
@@ -134,7 +261,7 @@ async function enroll(): Promise<void> {
       version: "0.1.0",
       mcp_url: "https://device.example/mcp",
       public_jwk: vectors.device_public_key,
-      generation: 7,
+      generation,
     }),
   });
   expect(response.status).toBe(201);
@@ -151,7 +278,7 @@ async function connectSocket(): Promise<WebSocket> {
   return socket;
 }
 
-async function connectAuthenticated(): Promise<WebSocket> {
+async function connectAuthenticated(generation = 7): Promise<WebSocket> {
   const socket = await connectSocket();
   const challenge = parseChallenge(await nextMessage(socket));
   const privateKey = await crypto.subtle.importKey(
@@ -186,6 +313,17 @@ async function connectAuthenticated(): Promise<WebSocket> {
     }),
   );
   expect(JSON.parse(await nextMessage(socket))).toEqual({ version: 1, type: "device_authenticated" });
+  if (generation !== 7) {
+    socket.send(
+      JSON.stringify(
+        makeEnvelope("heartbeat", `generation-${generation}-heartbeat`, {
+          device_id: "device-vector-1",
+          generation,
+          sent_at: Math.floor(Date.now() / 1000),
+        }),
+      ),
+    );
+  }
   return socket;
 }
 
@@ -250,6 +388,13 @@ async function promiseStillPending(promise: Promise<unknown>, milliseconds: numb
 async function noMessage(socket: WebSocket, milliseconds: number): Promise<boolean> {
   return Promise.race([
     nextMessage(socket).then(() => false),
+    scheduler.wait(milliseconds).then(() => true),
+  ]);
+}
+
+async function noClose(socket: WebSocket, milliseconds: number): Promise<boolean> {
+  return Promise.race([
+    nextClose(socket).then(() => false),
     scheduler.wait(milliseconds).then(() => true),
   ]);
 }

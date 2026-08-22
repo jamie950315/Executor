@@ -10,12 +10,14 @@ const challengeLifetimeSeconds = 30;
 
 interface PendingOnce {
   mode: "once";
+  socket: WebSocket;
   resolve: (value: RelayOnceResult) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
 
 interface PendingStream {
   mode: "stream";
+  socket: WebSocket;
   controller: ReadableStreamDefaultController<Uint8Array>;
   nextSequence: number;
   totalBytes: number;
@@ -37,6 +39,7 @@ export type RelayFailureCode = "offline" | "duplicate" | "message_too_large" | "
 interface ChallengeAttachment {
   version: 1;
   deviceID: string;
+  generation: number;
   authenticated: false;
   nonce: string;
   issuedAt: number;
@@ -45,6 +48,7 @@ interface ChallengeAttachment {
 interface AuthenticatedAttachment {
   version: 1;
   deviceID: string;
+  generation: number;
   authenticated: true;
 }
 
@@ -58,7 +62,8 @@ export class DeviceRelay extends DurableObject<Env> {
       return new Response(null, { status: 426 });
     }
     const deviceID = request.headers.get("x-executor-device-id");
-    if (deviceID === null || (await getDevice(this.env.DB, deviceID)) === null) {
+    const device = deviceID === null ? null : await getDevice(this.env.DB, deviceID);
+    if (deviceID === null || device === null) {
       return new Response(null, { status: 404 });
     }
 
@@ -70,6 +75,7 @@ export class DeviceRelay extends DurableObject<Env> {
     server.serializeAttachment({
       version: 1,
       deviceID,
+      generation: device.generation,
       authenticated: false,
       nonce,
       issuedAt,
@@ -108,7 +114,7 @@ export class DeviceRelay extends DurableObject<Env> {
           resolve({ ok: false, error: "timeout" });
         }
       }, relayTimeoutMilliseconds);
-      this.pending.set(requestID, { mode: "once", resolve, timeout });
+      this.pending.set(requestID, { mode: "once", socket, resolve, timeout });
       try {
         socket.send(wire);
       } catch {
@@ -137,7 +143,10 @@ export class DeviceRelay extends DurableObject<Env> {
         streamController = controller;
       },
       cancel: () => {
-        if (this.pending.delete(requestID)) {
+        const pending = this.pending.get(requestID);
+        if (pending !== undefined && pending.socket === socket) {
+          clearTimeout(pending.timeout);
+          this.pending.delete(requestID);
           this.sendCancellation(socket, requestID);
         }
       },
@@ -148,6 +157,7 @@ export class DeviceRelay extends DurableObject<Env> {
     const timeout = this.streamTimeout(requestID, socket);
     this.pending.set(requestID, {
       mode: "stream",
+      socket,
       controller: streamController,
       nextSequence: 0,
       totalBytes: 0,
@@ -162,12 +172,14 @@ export class DeviceRelay extends DurableObject<Env> {
     return { ok: true, stream };
   }
 
-  async disconnect(): Promise<void> {
+  async disconnect(generation: number): Promise<void> {
     for (const socket of this.ctx.getWebSockets("device")) {
-      socket.close(1000, "device removed");
+      if (relayAttachment(socket)?.generation === generation) {
+        this.failPendingForSocket(socket, "offline");
+        socket.close(1000, "device removed");
+      }
     }
-    this.failAllPending("offline");
-    await this.setDeviceOffline();
+    await this.setDeviceOffline(null, generation);
   }
 
   override async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -190,18 +202,24 @@ export class DeviceRelay extends DurableObject<Env> {
   }
 
   override async webSocketClose(socket: WebSocket): Promise<void> {
-    const deviceID = relayAttachment(socket)?.deviceID ?? null;
-    this.failAllPending("offline");
-    if (!this.hasOtherAuthenticatedSocket(socket)) {
-      await this.setDeviceOffline(deviceID);
+    const attachment = relayAttachment(socket);
+    if (attachment?.authenticated !== true) {
+      return;
+    }
+    this.failPendingForSocket(socket, "offline");
+    if (!this.hasOtherAuthenticatedSocket(socket, attachment.generation)) {
+      await this.setDeviceOffline(attachment.deviceID, attachment.generation);
     }
   }
 
   override async webSocketError(socket: WebSocket): Promise<void> {
-    const deviceID = relayAttachment(socket)?.deviceID ?? null;
-    this.failAllPending("offline");
-    if (!this.hasOtherAuthenticatedSocket(socket)) {
-      await this.setDeviceOffline(deviceID);
+    const attachment = relayAttachment(socket);
+    if (attachment?.authenticated !== true) {
+      return;
+    }
+    this.failPendingForSocket(socket, "offline");
+    if (!this.hasOtherAuthenticatedSocket(socket, attachment.generation)) {
+      await this.setDeviceOffline(attachment.deviceID, attachment.generation);
     }
   }
 
@@ -225,6 +243,7 @@ export class DeviceRelay extends DurableObject<Env> {
     const device = await getDevice(this.env.DB, attachment.deviceID);
     if (
       device === null ||
+      device.generation !== attachment.generation ||
       !(await verifyDeviceChallenge(
         device.public_jwk,
         attachment.deviceID,
@@ -237,22 +256,28 @@ export class DeviceRelay extends DurableObject<Env> {
       return;
     }
 
+    const updatedAt = Date.now();
+    const updated = await this.env.DB.prepare(
+      `UPDATE devices SET state = 'online', last_seen_at = ?, updated_at = ?
+      WHERE device_id = ? AND generation = ?`,
+    )
+      .bind(updatedAt, updatedAt, attachment.deviceID, attachment.generation)
+      .run();
+    if (updated.meta.changes !== 1) {
+      socket.close(1008, "device authentication failed");
+      return;
+    }
+    socket.serializeAttachment({
+      version: 1,
+      deviceID: attachment.deviceID,
+      generation: attachment.generation,
+      authenticated: true,
+    } satisfies AuthenticatedAttachment);
     for (const existing of this.ctx.getWebSockets("device")) {
       if (existing !== socket && relayAttachment(existing)?.authenticated === true) {
         existing.close(1000, "connection replaced");
       }
     }
-    socket.serializeAttachment({
-      version: 1,
-      deviceID: attachment.deviceID,
-      authenticated: true,
-    } satisfies AuthenticatedAttachment);
-    const updatedAt = Date.now();
-    await this.env.DB.prepare(
-      "UPDATE devices SET state = 'online', last_seen_at = ?, updated_at = ? WHERE device_id = ?",
-    )
-      .bind(updatedAt, updatedAt, attachment.deviceID)
-      .run();
     socket.send(JSON.stringify({ version: 1, type: "device_authenticated" }));
   }
 
@@ -273,16 +298,18 @@ export class DeviceRelay extends DurableObject<Env> {
       if (
         device === null ||
         envelope.payload.device_id !== attachment.deviceID ||
-        envelope.payload.generation !== device.generation
+        envelope.payload.generation !== attachment.generation ||
+        attachment.generation !== device.generation
       ) {
         socket.close(1008, "invalid heartbeat");
         return;
       }
       const now = Date.now();
       await this.env.DB.prepare(
-        "UPDATE devices SET state = 'online', last_seen_at = ?, updated_at = ? WHERE device_id = ?",
+        `UPDATE devices SET state = 'online', last_seen_at = ?, updated_at = ?
+        WHERE device_id = ? AND generation = ?`,
       )
-        .bind(now, now, attachment.deviceID)
+        .bind(now, now, attachment.deviceID, attachment.generation)
         .run();
       return;
     }
@@ -294,7 +321,7 @@ export class DeviceRelay extends DurableObject<Env> {
       return;
     }
     const pending = this.pending.get(envelope.payload.request_id);
-    if (pending === undefined) {
+    if (pending === undefined || pending.socket !== socket) {
       return;
     }
     clearTimeout(pending.timeout);
@@ -323,14 +350,15 @@ export class DeviceRelay extends DurableObject<Env> {
     return null;
   }
 
-  private hasOtherAuthenticatedSocket(excluded: WebSocket): boolean {
+  private hasOtherAuthenticatedSocket(excluded: WebSocket, generation: number): boolean {
     return this.ctx
       .getWebSockets("device")
       .some(
         (socket) =>
           socket !== excluded &&
           socket.readyState === WebSocket.OPEN &&
-          relayAttachment(socket)?.authenticated === true,
+          relayAttachment(socket)?.authenticated === true &&
+          relayAttachment(socket)?.generation === generation,
       );
   }
 
@@ -351,9 +379,11 @@ export class DeviceRelay extends DurableObject<Env> {
     }
   }
 
-  private failAllPending(error: RelayFailureCode): void {
-    for (const requestID of this.pending.keys()) {
-      this.failPending(requestID, error);
+  private failPendingForSocket(socket: WebSocket, error: RelayFailureCode): void {
+    for (const [requestID, pending] of this.pending) {
+      if (pending.socket === socket) {
+        this.failPending(requestID, error);
+      }
     }
   }
 
@@ -375,7 +405,7 @@ export class DeviceRelay extends DurableObject<Env> {
   private handleStreamChunk(socket: WebSocket, envelope: RelayEnvelope<"stream_chunk">): void {
     const requestID = envelope.payload.request_id;
     const pending = this.pending.get(requestID);
-    if (pending === undefined || pending.mode !== "stream") {
+    if (pending === undefined || pending.mode !== "stream" || pending.socket !== socket) {
       return;
     }
     if (envelope.payload.sequence !== pending.nextSequence) {
@@ -393,12 +423,10 @@ export class DeviceRelay extends DurableObject<Env> {
     pending.controller.enqueue(bytes);
     pending.totalBytes = total;
     pending.nextSequence += 1;
-    clearTimeout(pending.timeout);
     if (envelope.payload.final) {
+      clearTimeout(pending.timeout);
       this.pending.delete(requestID);
       pending.controller.close();
-    } else {
-      pending.timeout = this.streamTimeout(requestID, socket);
     }
   }
 
@@ -411,13 +439,19 @@ export class DeviceRelay extends DurableObject<Env> {
     }, relayTimeoutMilliseconds);
   }
 
-  private async setDeviceOffline(knownDeviceID: string | null = null): Promise<void> {
+  private async setDeviceOffline(
+    knownDeviceID: string | null = null,
+    knownGeneration: number | null = null,
+  ): Promise<void> {
     const deviceID = knownDeviceID ?? this.deviceIDFromAnyAttachment();
-    if (deviceID === null) {
+    const generation = knownGeneration ?? this.generationFromAnyAttachment();
+    if (deviceID === null || generation === null) {
       return;
     }
-    await this.env.DB.prepare("UPDATE devices SET state = 'offline', updated_at = ? WHERE device_id = ?")
-      .bind(Date.now(), deviceID)
+    await this.env.DB.prepare(
+      "UPDATE devices SET state = 'offline', updated_at = ? WHERE device_id = ? AND generation = ?",
+    )
+      .bind(Date.now(), deviceID, generation)
       .run();
   }
 
@@ -426,6 +460,16 @@ export class DeviceRelay extends DurableObject<Env> {
       const attachment = relayAttachment(socket);
       if (attachment !== null) {
         return attachment.deviceID;
+      }
+    }
+    return null;
+  }
+
+  private generationFromAnyAttachment(): number | null {
+    for (const socket of this.ctx.getWebSockets("device")) {
+      const attachment = relayAttachment(socket);
+      if (attachment !== null) {
+        return attachment.generation;
       }
     }
     return null;
@@ -467,17 +511,20 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
     record.version !== 1 ||
     typeof record.deviceID !== "string" ||
     record.deviceID.length === 0 ||
+    typeof record.generation !== "number" ||
+    !Number.isSafeInteger(record.generation) ||
+    record.generation <= 0 ||
     typeof record.authenticated !== "boolean"
   ) {
     return null;
   }
   if (record.authenticated) {
-    return Object.keys(record).length === 3
-      ? { version: 1, deviceID: record.deviceID, authenticated: true }
+    return Object.keys(record).length === 4
+      ? { version: 1, deviceID: record.deviceID, generation: record.generation, authenticated: true }
       : null;
   }
   if (
-    Object.keys(record).length !== 5 ||
+    Object.keys(record).length !== 6 ||
     typeof record.nonce !== "string" ||
     typeof record.issuedAt !== "number" ||
     !Number.isSafeInteger(record.issuedAt)
@@ -487,6 +534,7 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
   return {
     version: 1,
     deviceID: record.deviceID,
+    generation: record.generation,
     authenticated: false,
     nonce: record.nonce,
     issuedAt: record.issuedAt,

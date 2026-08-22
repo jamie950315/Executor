@@ -1,3 +1,5 @@
+import { decodeBase64URL } from "./base64";
+
 export const PROTOCOL_VERSION = 1 as const;
 
 export const MESSAGE_TYPES = [
@@ -353,12 +355,15 @@ function positiveInteger(value: unknown): value is number {
 }
 
 function base64URLString(value: unknown, minimumLength: number, maximumLength: number): value is string {
-  return (
-    typeof value === "string" &&
-    value.length >= minimumLength &&
-    value.length <= maximumLength &&
-    /^[A-Za-z0-9_-]+$/.test(value)
-  );
+  if (typeof value !== "string" || value.length < minimumLength || value.length > maximumLength) {
+    return false;
+  }
+  try {
+    decodeBase64URL(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function standardBase64(value: unknown): value is string {

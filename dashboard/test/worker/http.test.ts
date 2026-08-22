@@ -16,7 +16,11 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, inject("migrations"));
-  await env.DB.batch([env.DB.prepare("DELETE FROM audits"), env.DB.prepare("DELETE FROM devices")]);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM audits"),
+    env.DB.prepare("DELETE FROM devices"),
+    env.DB.prepare("DELETE FROM device_tombstones"),
+  ]);
 });
 
 describe("dashboard HTTP control plane", () => {
@@ -100,6 +104,23 @@ describe("dashboard HTTP control plane", () => {
     );
     expect(replacement.status).toBe(409);
     await expect(replacement.json()).resolves.toEqual({ error: "device key conflict" });
+  });
+
+  it("rejects a non-canonical base64url P-256 enrollment key", async () => {
+    const fixture = deviceFixture();
+    const response = await enrollRequest(
+      {
+        ...fixture,
+        public_jwk: {
+          ...fixture.public_jwk,
+          x: `${fixture.public_jwk.x.slice(0, -1)}Z`,
+        },
+      },
+      enrollmentToken,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid request" });
   });
 
   it("validates Access issuer, audience, time claims, signature, and subject", async () => {

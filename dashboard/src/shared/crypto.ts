@@ -1,4 +1,7 @@
 import type { PublicKeyJWK, RecoveryContext, RecoveryEnvelope } from "./wire";
+import { decodeBase64URL, encodeBase64URL } from "./base64";
+
+export { decodeBase64URL, encodeBase64URL } from "./base64";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
@@ -267,27 +270,6 @@ export async function sha256Hex(value: string): Promise<string> {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function encodeBase64URL(value: Uint8Array): string {
-  let binary = "";
-  for (const byte of value) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-}
-
-export function decodeBase64URL(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
-    throw new Error("invalid base64url");
-  }
-  const remainder = value.length % 4;
-  if (remainder === 1) {
-    throw new Error("invalid base64url");
-  }
-  const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - remainder) % 4);
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
 function parseGrantObject(segment: string, expectedKeys: readonly string[]): Record<string, unknown> {
   const bytes = decodeBase64URL(segment);
   if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024) {
@@ -330,7 +312,16 @@ function parseGrantClaims(segment: string): GrantClaims {
   ) {
     throw new Error();
   }
-  return record as unknown as GrantClaims;
+  return {
+    version: 1,
+    device_id: record.device_id,
+    access_subject: record.access_subject,
+    browser_id: record.browser_id,
+    generation: record.generation,
+    issued_at: record.issued_at,
+    expires_at: record.expires_at,
+    jti: record.jti,
+  };
 }
 
 function validateGrantExpectation(expected: GrantExpectation): void {
