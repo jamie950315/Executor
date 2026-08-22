@@ -83,6 +83,32 @@ describe("DeviceRelay WebSocket", () => {
   it("accepts a signed monotonic generation refresh and rejects its replay", async () => {
     await enroll();
     const socket = await connectAuthenticated();
+    const sameGeneration: DeviceRefresh = {
+      device_id: "device-vector-1",
+      generation: 7,
+      name: "Metadata Refresh",
+      platform: "darwin",
+      arch: "arm64",
+      executor_version: "dev",
+      mcp_url: "https://device.example/mcp",
+      issued_at: Math.floor(Date.now() / 1000) - 1,
+    };
+    socket.send(
+      JSON.stringify({
+        version: 1,
+        type: "device_refresh",
+        ...sameGeneration,
+        signature: await signDeviceRefresh(sameGeneration),
+      }),
+    );
+    expect(JSON.parse(await nextMessage(socket))).toEqual({
+      version: 1,
+      type: "device_refreshed",
+      generation: 7,
+    });
+    await expect(getDevice(env.DB, "device-vector-1")).resolves.toEqual(
+      expect.objectContaining({ generation: 7, name: "Metadata Refresh" }),
+    );
     const refresh: DeviceRefresh = {
       device_id: "device-vector-1",
       generation: 8,
@@ -91,7 +117,7 @@ describe("DeviceRelay WebSocket", () => {
       arch: "arm64",
       executor_version: "dev",
       mcp_url: "https://device.example/mcp",
-      issued_at: Math.floor(Date.now() / 1000),
+      issued_at: sameGeneration.issued_at + 1,
     };
     const signature = await signDeviceRefresh(refresh);
     const message = JSON.stringify({ version: 1, type: "device_refresh", ...refresh, signature });
