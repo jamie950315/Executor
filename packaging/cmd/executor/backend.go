@@ -24,6 +24,7 @@ import (
 	"github.com/jamie950315/executor/internal/doctor"
 	"github.com/jamie950315/executor/internal/ipc"
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
+	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
@@ -165,6 +166,28 @@ func (b *backend) Permissions(ctx context.Context, request bool) (permissionmode
 		return permissionmodel.Report{}, err
 	}
 	return permissionmodel.ValidateReport(report)
+}
+
+func (b *backend) EnrollDashboard(ctx context.Context, options cli.DashboardEnrollOptions) (cli.DashboardEnrollResult, error) {
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		return cli.DashboardEnrollResult{}, err
+	}
+	cfg.UnifiedDashboard.URL = options.URL
+	cfg.UnifiedDashboard.Enrolled = false
+	if err := config.Save(b.configPath(), cfg); err != nil {
+		return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
+	}
+	if err := relayclient.Enroll(ctx, relayclient.EnrollOptions{
+		ConfigPath: b.configPath(), TokenFile: options.TokenFile, ExecutorVersion: "dev",
+	}); err != nil {
+		return cli.DashboardEnrollResult{}, err
+	}
+	loaded, err := config.Load(b.configPath())
+	if err != nil {
+		return cli.DashboardEnrollResult{}, err
+	}
+	return cli.DashboardEnrollResult{DeviceID: loaded.UnifiedDashboard.DeviceID, URL: loaded.UnifiedDashboard.URL}, nil
 }
 
 func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {

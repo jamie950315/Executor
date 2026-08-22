@@ -21,6 +21,7 @@ import (
 	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/oauth"
+	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 	"github.com/jamie950315/executor/internal/terminal"
 )
@@ -248,6 +249,49 @@ func TestRunDashboardServesLoopbackStatusWithoutSecretsAndStopsOnCancel(t *testi
 
 	cancel()
 	assertDaemonStopped(t, errCh)
+}
+
+type fakeDashboardRelay struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (r *fakeDashboardRelay) Run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	close(r.stopped)
+	return nil
+}
+
+func TestRunDashboardOwnsConfiguredRelayAndStopsItWithHTTPRuntime(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	relayRuntime := &fakeDashboardRelay{started: make(chan struct{}), stopped: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error {
+		return runDashboard(ctx, configPath, func(relayclient.ClientOptions) (dashboardRelay, error) {
+			return relayRuntime, nil
+		})
+	})
+	select {
+	case <-relayRuntime.started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("configured dashboard relay did not start")
+	}
+	response := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/", nil, nil)
+	response.Body.Close()
+	cancel()
+	assertDaemonStopped(t, errCh)
+	select {
+	case <-relayRuntime.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard relay did not stop with RunDashboard context")
+	}
 }
 
 func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {

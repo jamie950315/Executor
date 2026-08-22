@@ -37,3 +37,11 @@ func TestRunRuntimeCommandLeavesCLICommandsUnhandled(t *testing.T) {
 		t.Fatal("setup was intercepted as a runtime command")
 	}
 }
+
+func TestRunRuntimeCommandLeavesDashboardEnrollmentForCLI(t *testing.T) {
+	t.Parallel()
+	handled, _ := runRuntimeCommand(context.Background(), []string{"dashboard", "enroll", "--url", "https://dashboard.example"}, bytes.NewBuffer(nil), io.Discard, io.Discard, runtimeCommands{})
+	if handled {
+		t.Fatal("dashboard enrollment was intercepted as the dashboard service runtime")
+	}
+}

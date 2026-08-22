@@ -26,6 +26,16 @@ type SetupResult struct {
 	RecoveryKey string `json:"recovery_key"`
 }
 
+type DashboardEnrollOptions struct {
+	URL       string
+	TokenFile string
+}
+
+type DashboardEnrollResult struct {
+	DeviceID string `json:"device_id"`
+	URL      string `json:"url"`
+}
+
 type Status struct {
 	State     string `json:"state"`
 	Domain    string `json:"domain"`
@@ -64,6 +74,7 @@ type Backend interface {
 	Doctor(context.Context, bool) (DoctorResult, error)
 	EnableURLSecret(context.Context) (RotateResult, error)
 	Permissions(context.Context, bool) (permissionmodel.Report, error)
+	EnrollDashboard(context.Context, DashboardEnrollOptions) (DashboardEnrollResult, error)
 }
 
 func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.Writer) int {
@@ -72,6 +83,28 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		return 2
 	}
 	switch args[0] {
+	case "dashboard":
+		if len(args) < 2 || args[1] != "enroll" {
+			usage(stderr)
+			return 2
+		}
+		set := flag.NewFlagSet("dashboard enroll", flag.ContinueOnError)
+		set.SetOutput(stderr)
+		dashboardURL := set.String("url", "", "Unified Dashboard HTTPS origin")
+		tokenFile := set.String("token-file", "", "path to a mode-600 one-time enrollment token file")
+		if err := set.Parse(args[2:]); err != nil {
+			return 2
+		}
+		if set.NArg() != 0 || *dashboardURL == "" || *tokenFile == "" {
+			usage(stderr)
+			return 2
+		}
+		result, err := backend.EnrollDashboard(ctx, DashboardEnrollOptions{URL: *dashboardURL, TokenFile: *tokenFile})
+		if err != nil {
+			return printError(stderr, err)
+		}
+		fmt.Fprintf(stdout, "Executor device %s enrolled with Unified Dashboard %s.\n", result.DeviceID, result.URL)
+		return 0
 	case "setup":
 		set := flag.NewFlagSet("setup", flag.ContinueOnError)
 		set.SetOutput(stderr)
@@ -255,6 +288,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, strings.TrimSpace(`Executor — sovereign machine control
 
 Usage:
+	  executor dashboard enroll --url <https-origin> --token-file <mode-600-file>
   executor setup --domain <hostname> [--cloudflare-token-file <path>] [--cloudflare-account-id <id>] [--cloudflare-zone-id <id>] [--cloudflare-tunnel-name <name>]
   executor status [--json]
   executor doctor [--full] [--json]

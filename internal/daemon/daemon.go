@@ -26,6 +26,7 @@ import (
 	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/oauth"
+	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 	"github.com/jamie950315/executor/internal/terminal"
 )
@@ -168,6 +169,18 @@ func RunAgent(ctx context.Context, configPath string) error {
 // RunDashboard serves the owner-only local control dashboard until ctx is
 // canceled. The dashboard listener is intentionally restricted to loopback.
 func RunDashboard(ctx context.Context, configPath string) error {
+	return runDashboard(ctx, configPath, func(options relayclient.ClientOptions) (dashboardRelay, error) {
+		return relayclient.NewClient(options)
+	})
+}
+
+type dashboardRelay interface {
+	Run(context.Context) error
+}
+
+type dashboardRelayFactory func(relayclient.ClientOptions) (dashboardRelay, error)
+
+func runDashboard(ctx context.Context, configPath string, relayFactory dashboardRelayFactory) error {
 	cfg, values, err := loadRuntime(configPath)
 	if err != nil {
 		return err
@@ -197,7 +210,44 @@ func RunDashboard(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	return serveHTTP(ctx, &http.Server{Handler: handler}, listener)
+	server := &http.Server{Handler: handler}
+	if cfg.UnifiedDashboard.URL == "" || !cfg.UnifiedDashboard.Enrolled {
+		return serveHTTP(ctx, server, listener)
+	}
+	if relayFactory == nil {
+		_ = listener.Close()
+		return errors.New("dashboard relay factory is required")
+	}
+	relayRuntime, err := relayFactory(relayclient.ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: serverVersion,
+	})
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("create dashboard relay: %w", err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type runtimeResult struct {
+		component string
+		err       error
+	}
+	results := make(chan runtimeResult, 2)
+	go func() {
+		results <- runtimeResult{component: "local dashboard", err: serveHTTP(runCtx, server, listener)}
+	}()
+	go func() { results <- runtimeResult{component: "dashboard relay", err: relayRuntime.Run(runCtx)} }()
+	var firstErr error
+	for completed := 0; completed < 2; completed++ {
+		result := <-results
+		if result.err != nil && firstErr == nil && ctx.Err() == nil {
+			firstErr = fmt.Errorf("%s: %w", result.component, result.err)
+			cancel()
+		}
+		if completed == 0 && ctx.Err() != nil {
+			cancel()
+		}
+	}
+	return firstErr
 }
 
 func disabled(path string) bool {
