@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/control"
 	"github.com/jamie950315/executor/internal/mcp"
@@ -219,6 +221,71 @@ func TestClientAuthenticatesRefreshesDispatchesHeartbeatsAndStopsOnContext(t *te
 	case <-socket.closed:
 	case <-time.After(time.Second):
 		t.Fatal("client did not close the WebSocket on shutdown")
+	}
+}
+
+func TestClientUsesRealTLSWebSocketTransportForHandshakeRefreshAndHeartbeat(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	heartbeatReceived := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, err := websocket.Accept(writer, request, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		nonce := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		challenge := []byte(`{"version":1,"type":"device_challenge","device_id":"` + cfg.UnifiedDashboard.DeviceID + `","nonce":"` + nonce + `","issued_at":` + strconv.FormatInt(now.Unix(), 10) + `}`)
+		if err := connection.Write(request.Context(), websocket.MessageText, challenge); err != nil {
+			return
+		}
+		if _, _, err := connection.Read(request.Context()); err != nil {
+			return
+		}
+		if err := connection.Write(request.Context(), websocket.MessageText, []byte(`{"version":1,"type":"device_authenticated"}`)); err != nil {
+			return
+		}
+		if _, _, err := connection.Read(request.Context()); err != nil {
+			return
+		}
+		ack := []byte(`{"version":1,"type":"device_refreshed","generation":` + strconv.FormatUint(values.Generation, 10) + `}`)
+		if err := connection.Write(request.Context(), websocket.MessageText, ack); err != nil {
+			return
+		}
+		_, heartbeat, err := connection.Read(request.Context())
+		if err == nil && decodeEnvelopeForTest(t, heartbeat).Type == relay.MessageTypeHeartbeat {
+			close(heartbeatReceived)
+		}
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", HTTPClient: server.Client(),
+		HeartbeatInterval: 5 * time.Millisecond, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	select {
+	case <-heartbeatReceived:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("real WebSocket transport did not complete the relay handshake")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("real WebSocket client did not stop")
 	}
 }
 
