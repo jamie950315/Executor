@@ -13,6 +13,24 @@ import (
 )
 
 func acquireEnrollmentFileLock(ctx context.Context, configPath string) (*os.File, func(), bool, error) {
+	return acquireEnrollmentFileLockWithOwnership(ctx, configPath, unix.Fchown)
+}
+
+func acquireEnrollmentFileLockWithOwnership(
+	ctx context.Context,
+	configPath string,
+	setOwner func(fd, uid, gid int) error,
+) (*os.File, func(), bool, error) {
+	configFD, err := unix.Open(configPath, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, false, errors.New("invalid dashboard enrollment config")
+	}
+	var configStat unix.Stat_t
+	configErr := unix.Fstat(configFD, &configStat)
+	_ = unix.Close(configFD)
+	if configErr != nil || configStat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, nil, false, errors.New("invalid dashboard enrollment config")
+	}
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return nil, nil, false, errors.New("open dashboard enrollment lock")
 	}
@@ -29,6 +47,10 @@ func acquireEnrollmentFileLock(ctx context.Context, configPath string) (*os.File
 		return nil, nil, false, errors.New("invalid dashboard enrollment lock")
 	}
 	if err := unix.Fchmod(fd, 0o600); err != nil {
+		closeFile()
+		return nil, nil, false, errors.New("secure dashboard enrollment lock")
+	}
+	if setOwner == nil || setOwner(fd, int(configStat.Uid), int(configStat.Gid)) != nil {
 		closeFile()
 		return nil, nil, false, errors.New("secure dashboard enrollment lock")
 	}
