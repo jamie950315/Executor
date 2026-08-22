@@ -108,17 +108,17 @@ export async function deleteDeviceConditionally(
         `INSERT INTO device_tombstones (device_id, public_jwk, revoked_generation, deleted_at)
         SELECT device_id, public_jwk, generation + 1, ?
         FROM devices
-        WHERE device_id = ? AND public_jwk = ? AND generation = ? AND updated_at = ?
+        WHERE device_id = ? AND public_jwk = ? AND generation = ?
         ON CONFLICT(device_id) DO UPDATE SET
           revoked_generation = MAX(device_tombstones.revoked_generation, excluded.revoked_generation),
           deleted_at = excluded.deleted_at
         WHERE device_tombstones.public_jwk = excluded.public_jwk`,
       )
-      .bind(now, snapshot.device_id, publicJWK, snapshot.generation, snapshot.updated_at),
+      .bind(now, snapshot.device_id, publicJWK, snapshot.generation),
     db
       .prepare(
         `DELETE FROM devices
-        WHERE device_id = ? AND public_jwk = ? AND generation = ? AND updated_at = ?
+        WHERE device_id = ? AND public_jwk = ? AND generation = ?
           AND EXISTS (
             SELECT 1 FROM device_tombstones
             WHERE device_id = ? AND public_jwk = ? AND revoked_generation >= ?
@@ -128,7 +128,6 @@ export async function deleteDeviceConditionally(
         snapshot.device_id,
         publicJWK,
         snapshot.generation,
-        snapshot.updated_at,
         snapshot.device_id,
         publicJWK,
         revokedGeneration,
