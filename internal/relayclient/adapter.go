@@ -128,8 +128,14 @@ func (a *Adapter) HandleRequest(ctx context.Context, requestID, method string, a
 		return HandleResult{}, err
 	}
 	actor := actorHash(call.authorization.AccessSubject, call.authorization.BrowserID)
+	auditedMethod := method
+	if _, hostMethod := hostToolMethods[method]; !hostMethod {
+		if _, lifecycleMethod := lifecycleMethods[method]; !lifecycleMethod {
+			auditedMethod = "device.unsupported"
+		}
+	}
 	if disabled(filepath.Join(call.config.StateDir, "disabled")) {
-		a.appendAudit(call.config, actor, method, "disabled")
+		a.appendAudit(call.config, actor, auditedMethod, "disabled")
 		return HandleResult{}, ErrExecutorDisabled
 	}
 	if _, ok := hostToolMethods[method]; ok {
