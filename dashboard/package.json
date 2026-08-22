@@ -1,0 +1,29 @@
+{
+  "name": "@executor/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "npm run typecheck && npm run lint",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types worker-configuration.d.ts"
+  },
+  "dependencies": {
+    "jose": "6.2.10"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260822.1",
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.2.0",
+    "@typescript-eslint/eslint-plugin": "8.67.0",
+    "@typescript-eslint/parser": "8.67.0",
+    "eslint": "10.9.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.0",
+    "wrangler": "4.125.0"
+  }
+}
