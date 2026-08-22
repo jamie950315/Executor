@@ -162,6 +162,44 @@
       "ciphertext": "wW9CKKY5ygXvxapRavR5JfoddZXjbgWjG_eVD1ZdPWKGFbay_QrLWIo"
     }
   },
+  "sensitive_result": {
+    "context": {
+      "device_id": "device-vector-1",
+      "access_subject": "access-vector-1",
+      "browser_id": "browser-vector-1",
+      "generation": 7,
+      "request_id": "request-vector-sensitive",
+      "method": "control.rotate"
+    },
+    "aad": "{\"version\":1,\"algorithm\":\"ECDH-P256+HKDF-SHA256+A256GCM\",\"device_id\":\"device-vector-1\",\"access_subject\":\"access-vector-1\",\"browser_id\":\"browser-vector-1\",\"generation\":7,\"request_id\":\"request-vector-sensitive\",\"method\":\"control.rotate\"}",
+    "test_only_plaintext": "{\"recovery_key\":\"test-only-sensitive-recovery\",\"url_secret\":\"test-only-sensitive-url\",\"dashboard\":\"test-only-sensitive-dashboard\"}",
+    "test_only_browser_private_key": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+      "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU",
+      "d": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"
+    },
+    "expected_envelope": {
+      "version": 1,
+      "algorithm": "ECDH-P256+HKDF-SHA256+A256GCM",
+      "device_id": "device-vector-1",
+      "access_subject": "access-vector-1",
+      "browser_id": "browser-vector-1",
+      "generation": 7,
+      "request_id": "request-vector-sensitive",
+      "method": "control.rotate",
+      "ephemeral_public_key": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "fPJ7GI0DT36KUjgDBLUaw8CJaeJ38hs1pgtI_EdmmXg",
+        "y": "B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E"
+      },
+      "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "nonce": "oKGio6Slpqeoqaqr",
+      "ciphertext": "Kp3TQ6seY34lgYGYEzBNs_J58ItxFDAgjsBGnnuKzQ8hp6mZXigLGZoro5NYaaMSDKho9pooSJSRjCLSgJimUKFAytR-4WySWW5oMEl2JT9j5qiRTDX0rsFvso81336lKZAtqOOU-L37wqcRNGX5J0bGFHqQ_VAvQNUZaLHlK9tfmy_0xLQnY9eLUz5IfJ29P68"
+    }
+  },
   "grant": {
     "claims": {
       "version": 1,
