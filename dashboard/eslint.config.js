@@ -20,6 +20,8 @@ export default [
       "@typescript-eslint": tseslint,
     },
     rules: {
+      "no-undef": "off",
+      "no-unused-vars": "off",
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
