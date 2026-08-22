@@ -27,7 +27,7 @@ interface UnlockedContext {
 }
 
 export function matchControlRoute(request: Request, url: URL): ControlRoute | null {
-  const match = url.pathname.match(/^\/api\/devices\/([^/]+)\/(unlock|call)?$/u);
+  const match = url.pathname.match(/^\/api\/devices\/([^/]+)(?:\/(unlock|call))?\/?$/u);
   if (match?.[1] === undefined) {
     return null;
   }

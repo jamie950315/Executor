@@ -48,7 +48,6 @@
     // Fail closed until configured. Production values are set with
     // `wrangler secret put`; empty defaults only allow generated Env types.
     "ACCESS_AUD": "",
-    "ACCESS_TEAM_DOMAIN": "",
-    "ENROLLMENT_TOKEN_HASH": ""
+    "ACCESS_TEAM_DOMAIN": ""
   }
 }

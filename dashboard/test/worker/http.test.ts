@@ -20,6 +20,12 @@ beforeEach(async () => {
 });
 
 describe("dashboard HTTP control plane", () => {
+  it("serves the minimal dashboard placeholder through Workers Static Assets", async () => {
+    const response = await SELF.fetch(`${dashboardOrigin}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Executor Dashboard");
+  });
+
   it("rejects protected routes without a cryptographically verified Access JWT", async () => {
     const response = await SELF.fetch(`${dashboardOrigin}/api/devices`);
 
@@ -53,6 +59,17 @@ describe("dashboard HTTP control plane", () => {
       state: "offline",
       generation: 7,
     });
+  });
+
+  it("rejects MCP metadata URLs that could persist query or fragment secrets", async () => {
+    const response = await enrollRequest(
+      { ...deviceFixture(), mcp_url: "https://device.example/mcp?token=SENSITIVE" },
+      enrollmentToken,
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid request" });
+    const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM devices").first<{ count: number }>();
+    expect(count?.count).toBe(0);
   });
 
   it("refreshes the same device key idempotently and rejects replacement keys", async () => {

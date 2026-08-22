@@ -106,7 +106,7 @@ export function cookieValue(request: Request, name: string): string | null {
 
 export async function deviceGrantCookieName(deviceID: string): Promise<string> {
   const digest = await sha256Hex(deviceID);
-  return `__Host-executor-grant-${digest.slice(0, 16)}`;
+  return `__Secure-executor-grant-${digest.slice(0, 16)}`;
 }
 
 export async function deviceGrantSetCookie(deviceID: string, grant: string): Promise<string> {

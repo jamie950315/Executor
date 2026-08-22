@@ -49,7 +49,7 @@ describe("unlocked device control", () => {
     const unlocked = await unlock(socket);
 
     expect(unlocked.grantCookie).toMatch(
-      /^__Host-executor-grant-[0-9a-f]{16}=.+; Path=\/api\/devices\/device-vector-1\/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
+      /^__Secure-executor-grant-[0-9a-f]{16}=.+; Path=\/api\/devices\/device-vector-1\/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
     );
     expect(unlocked.grantCookie).not.toContain("grant-device-vector-1");
 
@@ -184,7 +184,7 @@ describe("unlocked device control", () => {
     const unlocked = await unlock(socket);
 
     const closed = nextClose(socket);
-    const response = await controlRequest("", unlocked, {}, "DELETE");
+    const response = await controlRequest("exact-delete", unlocked, {}, "DELETE");
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ deleted: true });
     await expect(
@@ -262,7 +262,12 @@ async function controlRequest(
   body: unknown,
   method = "POST",
 ): Promise<Response> {
-  const path = suffix === "" ? `/api/devices/${deviceID}/` : `/api/devices/${deviceID}/${suffix}`;
+  const path =
+    suffix === ""
+      ? `/api/devices/${deviceID}/`
+      : suffix === "exact-delete"
+        ? `/api/devices/${deviceID}`
+        : `/api/devices/${deviceID}/${suffix}`;
   return SELF.fetch(`${dashboardOrigin}${path}`, {
     method,
     headers: controlHeaders(
