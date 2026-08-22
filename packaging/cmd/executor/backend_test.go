@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,104 @@ import (
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestDashboardEnrollmentSerializesOriginConfigurationWithRelayWorkflow(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := secrets.Create(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(stateDir, "config.json")
+	if err := config.Save(configPath, config.Default(stateDir)); err != nil {
+		t.Fatal(err)
+	}
+	firstTokenPath := filepath.Join(t.TempDir(), "first-enrollment.token")
+	secondTokenPath := filepath.Join(t.TempDir(), "second-enrollment.token")
+	if err := os.WriteFile(firstTokenPath, []byte("test-only-first-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondTokenPath, []byte("test-only-second-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const firstURL = "https://first-dashboard.example.test"
+	const secondURL = "https://second-dashboard.example.test"
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var firstPosts atomic.Int32
+	var secondPosts atomic.Int32
+	b := newBackend(stateDir)
+	b.remoteHTTPClient = &http.Client{Transport: backendRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "first-dashboard.example.test":
+			if firstPosts.Add(1) == 1 {
+				close(firstRequest)
+			}
+			<-releaseFirst
+		case "second-dashboard.example.test":
+			secondPosts.Add(1)
+		default:
+			return nil, errors.New("unexpected Dashboard host")
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}
+	type enrollmentOutcome struct {
+		result cli.DashboardEnrollResult
+		err    error
+	}
+	firstResult := make(chan enrollmentOutcome, 1)
+	go func() {
+		result, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+			URL: firstURL, TokenFile: firstTokenPath,
+		})
+		firstResult <- enrollmentOutcome{result: result, err: err}
+	}()
+	select {
+	case <-firstRequest:
+	case <-time.After(5 * time.Second):
+		close(releaseFirst)
+		t.Fatal("first Dashboard enrollment did not reach the request boundary")
+	}
+	secondResult := make(chan enrollmentOutcome, 1)
+	go func() {
+		result, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+			URL: secondURL, TokenFile: secondTokenPath,
+		})
+		secondResult <- enrollmentOutcome{result: result, err: err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	duringFirst, err := config.Load(configPath)
+	if err != nil {
+		close(releaseFirst)
+		t.Fatal(err)
+	}
+	if duringFirst.UnifiedDashboard.URL != firstURL {
+		close(releaseFirst)
+		<-firstResult
+		<-secondResult
+		t.Fatalf("concurrent enrollment changed URL during the first workflow: %q", duringFirst.UnifiedDashboard.URL)
+	}
+	if secondPosts.Load() != 0 {
+		close(releaseFirst)
+		<-firstResult
+		<-secondResult
+		t.Fatalf("second Dashboard enrollment POST count before release = %d, want 0", secondPosts.Load())
+	}
+	close(releaseFirst)
+	first := <-firstResult
+	second := <-secondResult
+	if first.err != nil || first.result.URL != firstURL {
+		t.Fatalf("first Dashboard enrollment = %#v, %v", first.result, first.err)
+	}
+	if second.err != nil || second.result.URL != secondURL {
+		t.Fatalf("second Dashboard enrollment = %#v, %v", second.result, second.err)
+	}
+	if firstPosts.Load() != 1 || secondPosts.Load() != 1 {
+		t.Fatalf("Dashboard enrollment POST counts = %d, %d; want 1, 1", firstPosts.Load(), secondPosts.Load())
+	}
+}
 
 func TestDashboardEquivalentOriginFinishesMatchingCleanupWithoutPosting(t *testing.T) {
 	stateDir := t.TempDir()

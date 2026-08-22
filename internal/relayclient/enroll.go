@@ -23,9 +23,15 @@ import (
 
 type EnrollOptions struct {
 	ConfigPath      string
+	DashboardURL    string
 	TokenFile       string
 	HTTPClient      *http.Client
 	ExecutorVersion string
+}
+
+type EnrollResult struct {
+	DeviceID string
+	URL      string
 }
 
 type enrollmentOperations struct {
@@ -45,20 +51,75 @@ type enrollmentRequest struct {
 }
 
 func Enroll(ctx context.Context, options EnrollOptions) error {
-	return enrollWithOperations(ctx, options, enrollmentOperations{
+	_, err := enrollWithOperationsResult(ctx, options, enrollmentOperations{
+		SaveConfig: config.Save, RemoveToken: os.Remove,
+	})
+	return err
+}
+
+func EnrollWithResult(ctx context.Context, options EnrollOptions) (EnrollResult, error) {
+	return enrollWithOperationsResult(ctx, options, enrollmentOperations{
 		SaveConfig: config.Save, RemoveToken: os.Remove,
 	})
 }
 
 func enrollWithOperations(ctx context.Context, options EnrollOptions, operations enrollmentOperations) error {
+	_, err := enrollWithOperationsResult(ctx, options, operations)
+	return err
+}
+
+func enrollWithOperationsResult(ctx context.Context, options EnrollOptions, operations enrollmentOperations) (EnrollResult, error) {
 	if ctx == nil || options.ConfigPath == "" || options.TokenFile == "" || strings.TrimSpace(options.ExecutorVersion) == "" {
-		return errors.New("invalid dashboard enrollment options")
+		return EnrollResult{}, errors.New("invalid dashboard enrollment options")
 	}
 	if operations.SaveConfig == nil || operations.RemoveToken == nil {
-		return errors.New("invalid dashboard enrollment options")
+		return EnrollResult{}, errors.New("invalid dashboard enrollment options")
+	}
+	operationLock, err := acquireEnrollmentLock(ctx, options.ConfigPath)
+	if err != nil {
+		if contextError := ctx.Err(); contextError != nil {
+			return EnrollResult{}, contextError
+		}
+		return EnrollResult{}, errors.New("dashboard enrollment lock unavailable")
+	}
+	defer operationLock.release()
+	if err := enrollLocked(ctx, options, operations, operationLock.waited, operationLock.previousSucceeded); err != nil {
+		_ = operationLock.finish(false)
+		return EnrollResult{}, err
 	}
 	cfg, err := config.Load(options.ConfigPath)
-	if err != nil || cfg.UnifiedDashboard.URL == "" || cfg.UnifiedDashboard.DeviceID == "" {
+	if err != nil {
+		_ = operationLock.finish(false)
+		return EnrollResult{}, errors.New("dashboard enrollment state unavailable")
+	}
+	if err := operationLock.finish(true); err != nil {
+		return EnrollResult{}, errors.New("dashboard enrollment lock unavailable")
+	}
+	return EnrollResult{DeviceID: cfg.UnifiedDashboard.DeviceID, URL: cfg.UnifiedDashboard.URL}, nil
+}
+
+func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollmentOperations, waited, previousSucceeded bool) error {
+	cfg, err := config.Load(options.ConfigPath)
+	if err != nil || cfg.UnifiedDashboard.DeviceID == "" {
+		return errors.New("dashboard enrollment is not configured")
+	}
+	originChanged := false
+	if options.DashboardURL != "" {
+		canonicalURL, err := config.CanonicalDashboardOrigin(options.DashboardURL)
+		if err != nil {
+			return errors.New("invalid Unified Dashboard configuration")
+		}
+		if cfg.UnifiedDashboard.URL != canonicalURL {
+			cfg.UnifiedDashboard.URL = canonicalURL
+			cfg.UnifiedDashboard.Enrolled = false
+			cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
+			if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
+				return errors.New("invalid Unified Dashboard configuration")
+			}
+			originChanged = true
+		}
+	}
+	if cfg.UnifiedDashboard.URL == "" {
 		return errors.New("dashboard enrollment is not configured")
 	}
 	if cfg.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
@@ -71,6 +132,19 @@ func enrollWithOperations(ctx context.Context, options EnrollOptions, operations
 		} else if err != nil {
 			return errors.New("dashboard enrollment token file is invalid")
 		}
+	}
+	if waited && !originChanged && cfg.UnifiedDashboard.EnrollmentCleanupFingerprint == "" {
+		info, err := os.Stat(options.TokenFile)
+		if errors.Is(err, os.ErrNotExist) {
+			if previousSucceeded && cfg.UnifiedDashboard.Enrolled {
+				return nil
+			}
+			return errors.New("dashboard enrollment token file is invalid")
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			return errors.New("dashboard enrollment token file is invalid")
+		}
+		return errors.New("dashboard enrollment did not complete while waiting")
 	}
 	values, err := secrets.Load(cfg.StateDir)
 	if err != nil {

@@ -169,32 +169,14 @@ func (b *backend) Permissions(ctx context.Context, request bool) (permissionmode
 }
 
 func (b *backend) EnrollDashboard(ctx context.Context, options cli.DashboardEnrollOptions) (cli.DashboardEnrollResult, error) {
-	cfg, err := config.Load(b.configPath())
+	result, err := relayclient.EnrollWithResult(ctx, relayclient.EnrollOptions{
+		ConfigPath: b.configPath(), DashboardURL: options.URL, TokenFile: options.TokenFile,
+		ExecutorVersion: "dev", HTTPClient: b.remoteHTTPClient,
+	})
 	if err != nil {
 		return cli.DashboardEnrollResult{}, err
 	}
-	canonicalURL, err := config.CanonicalDashboardOrigin(options.URL)
-	if err != nil {
-		return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
-	}
-	if cfg.UnifiedDashboard.URL != canonicalURL {
-		cfg.UnifiedDashboard.URL = canonicalURL
-		cfg.UnifiedDashboard.Enrolled = false
-		cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
-		if err := config.Save(b.configPath(), cfg); err != nil {
-			return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
-		}
-	}
-	if err := relayclient.Enroll(ctx, relayclient.EnrollOptions{
-		ConfigPath: b.configPath(), TokenFile: options.TokenFile, ExecutorVersion: "dev", HTTPClient: b.remoteHTTPClient,
-	}); err != nil {
-		return cli.DashboardEnrollResult{}, err
-	}
-	loaded, err := config.Load(b.configPath())
-	if err != nil {
-		return cli.DashboardEnrollResult{}, err
-	}
-	return cli.DashboardEnrollResult{DeviceID: loaded.UnifiedDashboard.DeviceID, URL: loaded.UnifiedDashboard.URL}, nil
+	return cli.DashboardEnrollResult{DeviceID: result.DeviceID, URL: result.URL}, nil
 }
 
 func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {

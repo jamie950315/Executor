@@ -1,26 +1,309 @@
 package relayclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/relay"
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestConcurrentEnrollmentProcessesUsingSameTokenPostOnce(t *testing.T) {
+	if os.Getenv("EXECUTOR_ENROLLMENT_PROCESS_HELPER") == "1" {
+		certificate, err := os.ReadFile(os.Getenv("EXECUTOR_ENROLLMENT_CERTIFICATE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(certificate) {
+			t.Fatal("parse enrollment test certificate")
+		}
+		readyPath := os.Getenv("EXECUTOR_ENROLLMENT_HELPER_READY")
+		if readyPath != "" {
+			if err := os.WriteFile(readyPath, []byte("ready\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err = Enroll(context.Background(), EnrollOptions{
+			ConfigPath: os.Getenv("EXECUTOR_ENROLLMENT_CONFIG"),
+			TokenFile:  os.Getenv("EXECUTOR_ENROLLMENT_TOKEN"),
+			HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				RootCAs:    roots,
+			}}},
+			ExecutorVersion: "test-version",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-concurrent-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	firstPost := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if posts.Add(1) == 1 {
+			close(firstPost)
+			<-releaseFirst
+		}
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	certificatePath := filepath.Join(t.TempDir(), "server-certificate.pem")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	startHelper := func(readyPath string) (*exec.Cmd, *bytes.Buffer) {
+		t.Helper()
+		output := &bytes.Buffer{}
+		command := exec.Command(executable, "-test.run=^TestConcurrentEnrollmentProcessesUsingSameTokenPostOnce$")
+		command.Stdout = output
+		command.Stderr = output
+		command.Env = append(os.Environ(),
+			"EXECUTOR_ENROLLMENT_PROCESS_HELPER=1",
+			"EXECUTOR_ENROLLMENT_CERTIFICATE="+certificatePath,
+			"EXECUTOR_ENROLLMENT_CONFIG="+configPath,
+			"EXECUTOR_ENROLLMENT_TOKEN="+tokenPath,
+			"EXECUTOR_ENROLLMENT_HELPER_READY="+readyPath,
+		)
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return command, output
+	}
+
+	first, firstOutput := startHelper("")
+	select {
+	case <-firstPost:
+	case <-time.After(5 * time.Second):
+		_ = first.Process.Kill()
+		t.Fatalf("first enrollment process did not POST: %s", firstOutput.String())
+	}
+	secondReady := filepath.Join(t.TempDir(), "second-ready")
+	second, secondOutput := startHelper(secondReady)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(secondReady); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			_ = first.Process.Kill()
+			_ = second.Process.Kill()
+			t.Fatalf("second enrollment process did not start: %s", secondOutput.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(150 * time.Millisecond)
+	postsBeforeRelease := posts.Load()
+	close(releaseFirst)
+	if err := first.Wait(); err != nil {
+		_ = second.Process.Kill()
+		t.Fatalf("first enrollment process failed: %v: %s", err, firstOutput.String())
+	}
+	if err := second.Wait(); err != nil {
+		t.Fatalf("second enrollment process failed: %v: %s", err, secondOutput.String())
+	}
+	if postsBeforeRelease != 1 || posts.Load() != 1 {
+		t.Fatalf("concurrent enrollment POST counts = before release %d, total %d; want 1, 1", postsBeforeRelease, posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("concurrent enrollment left token: %v", err)
+	}
+}
+
+func TestEnrollmentCancellationWhileWaitingPreservesToken(t *testing.T) {
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-cancelled-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	firstPost := make(chan struct{})
+	releaseRequests := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if posts.Add(1) == 1 {
+			close(firstPost)
+		}
+		<-releaseRequests
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	options := EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- Enroll(context.Background(), options) }()
+	select {
+	case <-firstPost:
+	case <-time.After(5 * time.Second):
+		close(releaseRequests)
+		t.Fatal("first enrollment did not reach the server")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	secondResult := make(chan error, 1)
+	go func() { secondResult <- Enroll(ctx, options) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, context.Canceled) {
+			close(releaseRequests)
+			t.Fatalf("waiting enrollment cancellation = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		close(releaseRequests)
+		t.Fatal("waiting enrollment did not return promptly after cancellation")
+	}
+	if posts.Load() != 1 {
+		close(releaseRequests)
+		t.Fatalf("cancelled waiting enrollment POST count = %d, want 1", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		close(releaseRequests)
+		t.Fatalf("cancelled waiting enrollment consumed token: %v", err)
+	}
+	close(releaseRequests)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first enrollment failed after release: %v", err)
+	}
+}
+
+func TestWaitingEnrollmentDoesNotReportSuccessWhenNoPostOccurred(t *testing.T) {
+	configPath, cfg, _ := relayFixture(t)
+	cfg.UnifiedDashboard.URL = "https://already-enrolled.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	missingTokenPath := filepath.Join(t.TempDir(), "missing-enrollment.token")
+	lock, err := acquireEnrollmentLock(context.Background(), configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		result <- Enroll(context.Background(), EnrollOptions{
+			ConfigPath: configPath, TokenFile: missingTokenPath, ExecutorVersion: "test-version",
+		})
+	}()
+	time.Sleep(100 * time.Millisecond)
+	lock.release()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("waiting enrollment reported success without a token or POST")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting enrollment did not finish after the lock was released")
+	}
+}
+
+func TestEnrollmentWorkflowsForDifferentConfigPathsDoNotBlockEachOther(t *testing.T) {
+	firstConfigPath, _, _ := relayFixture(t)
+	secondConfigPath, _, _ := relayFixture(t)
+	firstTokenPath := filepath.Join(t.TempDir(), "first-enrollment.token")
+	secondTokenPath := filepath.Join(t.TempDir(), "second-enrollment.token")
+	if err := os.WriteFile(firstTokenPath, []byte("test-only-first-independent-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondTokenPath, []byte("test-only-second-independent-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstRequest := make(chan struct{})
+	secondRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	client := &http.Client{Transport: enrollmentRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "first-independent.example.test":
+			close(firstRequest)
+			<-releaseFirst
+		case "second-independent.example.test":
+			close(secondRequest)
+		default:
+			return nil, errors.New("unexpected independent enrollment host")
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- Enroll(context.Background(), EnrollOptions{
+			ConfigPath: firstConfigPath, DashboardURL: "https://first-independent.example.test",
+			TokenFile: firstTokenPath, HTTPClient: client, ExecutorVersion: "test-version",
+		})
+	}()
+	select {
+	case <-firstRequest:
+	case <-time.After(5 * time.Second):
+		close(releaseFirst)
+		t.Fatal("first independent enrollment did not reach the request boundary")
+	}
+	secondResult := make(chan error, 1)
+	go func() {
+		secondResult <- Enroll(context.Background(), EnrollOptions{
+			ConfigPath: secondConfigPath, DashboardURL: "https://second-independent.example.test",
+			TokenFile: secondTokenPath, HTTPClient: client, ExecutorVersion: "test-version",
+		})
+	}()
+	select {
+	case <-secondRequest:
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		<-firstResult
+		t.Fatal("different config path was blocked by the first enrollment workflow")
+	}
+	close(releaseFirst)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first independent enrollment failed: %v", err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatalf("second independent enrollment failed: %v", err)
+	}
+}
 
 func TestEnrollPostsExactWorkerBodyAndDeletesTokenOnlyAfterSuccess(t *testing.T) {
 	t.Parallel()
