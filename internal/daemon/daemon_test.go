@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -256,6 +257,15 @@ type fakeDashboardRelay struct {
 	stopped chan struct{}
 }
 
+type failingDashboardRelay struct {
+	release chan struct{}
+}
+
+func (r *failingDashboardRelay) Run(context.Context) error {
+	<-r.release
+	return errors.New("relay unavailable")
+}
+
 func (r *fakeDashboardRelay) Run(ctx context.Context) error {
 	close(r.started)
 	<-ctx.Done()
@@ -292,6 +302,31 @@ func TestRunDashboardOwnsConfiguredRelayAndStopsItWithHTTPRuntime(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("dashboard relay did not stop with RunDashboard context")
 	}
+}
+
+func TestRunDashboardKeepsLocalRescueAvailableAfterRelayFailure(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	relayRuntime := &failingDashboardRelay{release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error {
+		return runDashboard(ctx, configPath, func(relayclient.ClientOptions) (dashboardRelay, error) {
+			return relayRuntime, nil
+		})
+	})
+	baseURL := "http://" + cfg.DashboardAddress
+	response := waitForHTTP(t, http.MethodGet, baseURL+"/", nil, nil)
+	response.Body.Close()
+	close(relayRuntime.release)
+	time.Sleep(20 * time.Millisecond)
+	response = waitForHTTP(t, http.MethodGet, baseURL+"/", nil, nil)
+	response.Body.Close()
+	cancel()
+	assertDaemonStopped(t, errCh)
 }
 
 func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {

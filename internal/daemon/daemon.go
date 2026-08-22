@@ -227,27 +227,33 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	type runtimeResult struct {
-		component string
-		err       error
-	}
-	results := make(chan runtimeResult, 2)
-	go func() {
-		results <- runtimeResult{component: "local dashboard", err: serveHTTP(runCtx, server, listener)}
-	}()
-	go func() { results <- runtimeResult{component: "dashboard relay", err: relayRuntime.Run(runCtx)} }()
-	var firstErr error
-	for completed := 0; completed < 2; completed++ {
-		result := <-results
-		if result.err != nil && firstErr == nil && ctx.Err() == nil {
-			firstErr = fmt.Errorf("%s: %w", result.component, result.err)
+	httpDone := make(chan error, 1)
+	relayDone := make(chan error, 1)
+	go func() { httpDone <- serveHTTP(runCtx, server, listener) }()
+	go func() { relayDone <- relayRuntime.Run(runCtx) }()
+	relayStopped := false
+	for {
+		select {
+		case httpErr := <-httpDone:
 			cancel()
-		}
-		if completed == 0 && ctx.Err() != nil {
+			if !relayStopped {
+				<-relayDone
+			}
+			return httpErr
+		case <-relayDone:
+			// Relay failures must not take down the independent loopback rescue
+			// surface. Client.Run normally reconnects internally; a fatal relay
+			// return leaves the local Dashboard serving until service shutdown.
+			relayStopped = true
+		case <-ctx.Done():
 			cancel()
+			httpErr := <-httpDone
+			if !relayStopped {
+				<-relayDone
+			}
+			return httpErr
 		}
 	}
-	return firstErr
 }
 
 func disabled(path string) bool {
