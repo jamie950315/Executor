@@ -45,6 +45,9 @@ func TestPackagingScaffoldExists(t *testing.T) {
 
 func TestUnixDeploymentEntrypointsAreExecutable(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable mode bits are not represented by Windows checkouts")
+	}
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
