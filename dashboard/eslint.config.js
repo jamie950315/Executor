@@ -8,7 +8,7 @@ export default [
   },
   eslint.configs.recommended,
   {
-    files: ["src/**/*.ts", "test/**/*.ts"],
+    files: ["src/**/*.{ts,tsx}", "test/**/*.{ts,tsx}", "vite.config.ts", "vitest*.ts"],
     languageOptions: {
       parser,
       parserOptions: {

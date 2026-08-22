@@ -145,7 +145,9 @@ async function validEnrollmentBearer(request: Request, expectedHash: string): Pr
   const actual = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)));
   const expected = decodeHexHash(expectedHash);
   const comparison = expected ?? new Uint8Array(32);
-  const equal = crypto.subtle.timingSafeEqual(actual, comparison);
+  const equal = (crypto.subtle as SubtleCrypto & {
+    timingSafeEqual(left: BufferSource, right: BufferSource): boolean;
+  }).timingSafeEqual(Uint8Array.from(actual).buffer, Uint8Array.from(comparison).buffer);
   return match !== null && match !== undefined && expected !== null && equal;
 }
 

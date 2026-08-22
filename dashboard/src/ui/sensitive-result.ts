@@ -100,9 +100,9 @@ export async function openSensitiveResultEnvelope(
     const nonce = decodeBase64URL(envelope.nonce);
     const ciphertext = decodeBase64URL(envelope.ciphertext);
     try {
-      const keyMaterial = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+      const keyMaterial = await crypto.subtle.importKey("raw", toArrayBuffer(shared), "HKDF", false, ["deriveKey"]);
       const key = await crypto.subtle.deriveKey(
-        { name: "HKDF", hash: "SHA-256", salt, info: hkdfInfo },
+        { name: "HKDF", hash: "SHA-256", salt: toArrayBuffer(salt), info: toArrayBuffer(hkdfInfo) },
         keyMaterial,
         { name: "AES-GCM", length: 256 },
         false,
@@ -110,9 +110,9 @@ export async function openSensitiveResultEnvelope(
       );
       const plaintext = new Uint8Array(
         await crypto.subtle.decrypt(
-          { name: "AES-GCM", iv: nonce, additionalData: sensitiveResultAdditionalData(expected) },
+          { name: "AES-GCM", iv: toArrayBuffer(nonce), additionalData: toArrayBuffer(sensitiveResultAdditionalData(expected)) },
           key,
-          ciphertext,
+          toArrayBuffer(ciphertext),
         ),
       );
       try {
@@ -214,4 +214,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function validText(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
+function toArrayBuffer(value: Uint8Array): ArrayBuffer {
+  return Uint8Array.from(value).buffer;
 }

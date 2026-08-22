@@ -6,11 +6,12 @@ import {
   openSensitiveResultEnvelope,
   sensitiveResultAdditionalData,
 } from "../../src/ui/sensitive-result";
+import type { SensitiveResultContext } from "../../src/ui/sensitive-result";
 
 describe("browser-sensitive lifecycle results", () => {
   it("opens the deterministic Go-compatible envelope with exact canonical AAD", async () => {
     const fixture = vectors.sensitive_result;
-    expect(new TextDecoder().decode(sensitiveResultAdditionalData(fixture.context))).toBe(fixture.aad);
+    expect(new TextDecoder().decode(sensitiveResultAdditionalData(fixture.context as SensitiveResultContext))).toBe(fixture.aad);
     const privateKey = await crypto.subtle.importKey(
       "jwk",
       fixture.test_only_browser_private_key,
@@ -20,7 +21,7 @@ describe("browser-sensitive lifecycle results", () => {
     );
 
     await expect(
-      openSensitiveResultEnvelope(privateKey, fixture.expected_envelope, fixture.context),
+      openSensitiveResultEnvelope(privateKey, fixture.expected_envelope, fixture.context as SensitiveResultContext),
     ).resolves.toEqual(JSON.parse(fixture.test_only_plaintext));
   });
 
@@ -44,14 +45,14 @@ describe("browser-sensitive lifecycle results", () => {
       openSensitiveResultEnvelope(
         privateKey,
         { ...fixture.expected_envelope, method: "control.kill" },
-        fixture.context,
+        fixture.context as SensitiveResultContext,
       ),
     ).rejects.toThrow("Sensitive result could not be verified");
     await expect(
       openSensitiveResultEnvelope(
         privateKey,
         { ...fixture.expected_envelope, ciphertext: `${fixture.expected_envelope.ciphertext.slice(0, -1)}A` },
-        fixture.context,
+        fixture.context as SensitiveResultContext,
       ),
     ).rejects.toThrow("Sensitive result could not be verified");
   });

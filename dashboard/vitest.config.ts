@@ -42,7 +42,7 @@ export default defineConfig({
         },
       },
       wrangler: {
-        configPath: "./wrangler.jsonc",
+        configPath: "./wrangler.test.jsonc",
       },
     }),
   ],
