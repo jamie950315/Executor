@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -83,7 +84,7 @@ func TestResultMessagesUseOneResponseOrOrderedLosslessChunksWithinBounds(t *test
 	}
 
 	large := bytes.Repeat([]byte("0123456789abcdef"), 80)
-	messages, err = resultMessages("request-large", large, 300, len(large))
+	messages, err = resultMessages("request-large", large, 300, 16*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +112,22 @@ func TestResultMessagesUseOneResponseOrOrderedLosslessChunksWithinBounds(t *test
 	if !bytes.Equal(rebuilt, large) {
 		t.Fatal("chunking truncated or reordered the result")
 	}
-	if _, err := resultMessages("request-too-large", append(large, 'x'), 300, len(large)); !errors.Is(err, ErrResultTooLarge) {
+	if _, err := resultMessages("request-too-large", large, 300, len(large)); !errors.Is(err, ErrResultTooLarge) {
 		t.Fatalf("oversized result error = %v", err)
+	}
+}
+
+func TestResultMessageIDsStayWithinCrossLanguageLimitForMaximumRequestID(t *testing.T) {
+	t.Parallel()
+	requestID := strings.Repeat("r", 256)
+	messages, err := resultMessages(requestID, []byte(`{"ok":true}`), 1024, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range messages {
+		if len(message.MessageID) > 256 {
+			t.Fatalf("message ID length = %d, want <= 256", len(message.MessageID))
+		}
 	}
 }
 
