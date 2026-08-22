@@ -34,6 +34,17 @@ export interface GrantExpectation {
   now: Date;
 }
 
+export interface DeviceRefresh {
+  device_id: string;
+  generation: number;
+  name: string;
+  platform: string;
+  arch: string;
+  executor_version: string;
+  mcp_url: string;
+  issued_at: number;
+}
+
 export function recoveryAdditionalData(context: RecoveryContext): Uint8Array {
   validateRecoveryContext(context);
   return encoder.encode(
@@ -233,6 +244,62 @@ export function canonicalDeviceChallenge(deviceID: string, nonce: string, issued
     nonce,
     issued_at: issuedAt,
   });
+}
+
+export function canonicalDeviceRefresh(refresh: DeviceRefresh): string {
+  if (
+    !nonEmpty(refresh.device_id, 256) ||
+    !positiveInteger(refresh.generation) ||
+    !nonEmpty(refresh.name, 256) ||
+    !nonEmpty(refresh.platform, 64) ||
+    !nonEmpty(refresh.arch, 64) ||
+    !nonEmpty(refresh.executor_version, 64) ||
+    typeof refresh.mcp_url !== "string" ||
+    refresh.mcp_url.length > 2048 ||
+    !positiveInteger(refresh.issued_at)
+  ) {
+    throw new Error("invalid device refresh");
+  }
+  return JSON.stringify({
+    version: 1,
+    purpose: "executor-device-refresh",
+    device_id: refresh.device_id,
+    generation: refresh.generation,
+    name: refresh.name,
+    platform: refresh.platform,
+    arch: refresh.arch,
+    executor_version: refresh.executor_version,
+    mcp_url: refresh.mcp_url,
+    issued_at: refresh.issued_at,
+  });
+}
+
+export async function verifyDeviceRefresh(
+  publicJWK: PublicKeyJWK,
+  refresh: DeviceRefresh,
+  signature: Uint8Array,
+): Promise<boolean> {
+  try {
+    validateP256PublicJWK(publicJWK);
+    if (signature.byteLength !== 64) {
+      return false;
+    }
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      publicJWK,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+    return await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      toArrayBuffer(signature),
+      toArrayBuffer(encoder.encode(canonicalDeviceRefresh(refresh))),
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function verifyDeviceChallenge(

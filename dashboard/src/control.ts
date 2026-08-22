@@ -24,6 +24,7 @@ interface ControlRoute {
 interface UnlockedContext {
   device: DeviceRecord;
   browserID: string;
+  grant: string;
 }
 
 export function matchControlRoute(request: Request, url: URL): ControlRoute | null {
@@ -166,7 +167,14 @@ async function handleCall(
   const relayEnvelope = makeEnvelope("request", crypto.randomUUID(), {
     request_id: requestID,
     method,
-    arguments: argumentsValue,
+    arguments: {
+      authorization: {
+        grant: unlocked.grant,
+        access_subject: access.subject,
+        browser_id: unlocked.browserID,
+      },
+      input: argumentsValue,
+    },
   });
   const relayed: RelayStreamResult = await env.DEVICE_RELAY.getByName(deviceID).relayStream(relayEnvelope);
   if (!relayed.ok) {
@@ -235,7 +243,7 @@ async function verifyUnlocked(
       generation: device.generation,
       now: new Date(),
     });
-    return { device, browserID: browser.id };
+    return { device, browserID: browser.id, grant };
   } catch {
     return null;
   }

@@ -93,7 +93,14 @@ describe("unlocked device control", () => {
     expect(request.payload).toEqual({
       request_id: request.payload.request_id,
       method: "device.status",
-      arguments: { marker: argumentMarker },
+      arguments: {
+        authorization: {
+          grant: cookiePair(unlocked.grantCookie).slice(cookiePair(unlocked.grantCookie).indexOf("=") + 1),
+          access_subject: accessSubject,
+          browser_id: unlocked.browserCookie.slice(unlocked.browserCookie.indexOf("=") + 1),
+        },
+        input: { marker: argumentMarker },
+      },
     });
     const responseEnvelope = makeEnvelope("response", "device-call-response", {
       request_id: request.payload.request_id,

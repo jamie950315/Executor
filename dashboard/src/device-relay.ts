@@ -2,7 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 
 import { getDevice } from "./db";
 import { boundedResponseTotal, MAXIMUM_RELAY_MESSAGE_BYTES } from "./limits";
-import { decodeBase64URL, encodeBase64URL, verifyDeviceChallenge } from "./shared/crypto";
+import {
+  decodeBase64URL,
+  encodeBase64URL,
+  verifyDeviceChallenge,
+  verifyDeviceRefresh,
+  type DeviceRefresh,
+} from "./shared/crypto";
 import { canonicalEnvelope, decodeEnvelope, type RelayEnvelope } from "./shared/wire";
 
 const relayTimeoutMilliseconds = 10_000;
@@ -50,6 +56,7 @@ interface AuthenticatedAttachment {
   deviceID: string;
   generation: number;
   authenticated: true;
+  lastRefreshIssuedAt: number;
 }
 
 type RelayAttachment = ChallengeAttachment | AuthenticatedAttachment;
@@ -272,6 +279,7 @@ export class DeviceRelay extends DurableObject<Env> {
       deviceID: attachment.deviceID,
       generation: attachment.generation,
       authenticated: true,
+      lastRefreshIssuedAt: 0,
     } satisfies AuthenticatedAttachment);
     for (const existing of this.ctx.getWebSockets("device")) {
       if (existing !== socket && relayAttachment(existing)?.authenticated === true) {
@@ -286,6 +294,11 @@ export class DeviceRelay extends DurableObject<Env> {
     attachment: AuthenticatedAttachment,
     message: string,
   ): Promise<void> {
+    const refresh = parseDeviceRefresh(message);
+    if (refresh !== null) {
+      await this.handleDeviceRefresh(socket, attachment, refresh);
+      return;
+    }
     let envelope: RelayEnvelope;
     try {
       envelope = decodeEnvelope(message);
@@ -339,6 +352,61 @@ export class DeviceRelay extends DurableObject<Env> {
     }
     pending.controller.enqueue(bytes);
     pending.controller.close();
+  }
+
+  private async handleDeviceRefresh(
+    socket: WebSocket,
+    attachment: AuthenticatedAttachment,
+    message: ParsedDeviceRefresh,
+  ): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    const device = await getDevice(this.env.DB, attachment.deviceID);
+    if (
+      device === null ||
+      message.refresh.device_id !== attachment.deviceID ||
+      message.refresh.generation < attachment.generation ||
+      message.refresh.generation < device.generation ||
+      message.refresh.issued_at <= attachment.lastRefreshIssuedAt ||
+      Math.abs(now - message.refresh.issued_at) > challengeLifetimeSeconds ||
+      !(await verifyDeviceRefresh(device.public_jwk, message.refresh, message.signature))
+    ) {
+      socket.close(1008, "device refresh failed");
+      return;
+    }
+    const updatedAt = Date.now();
+    const updated = await this.env.DB.prepare(
+      `UPDATE devices SET name = ?, platform = ?, arch = ?, version = ?, mcp_url = ?, generation = ?,
+        state = 'online', last_seen_at = ?, updated_at = ?
+      WHERE device_id = ? AND generation = ? AND public_jwk = ?`,
+    )
+      .bind(
+        message.refresh.name,
+        message.refresh.platform,
+        message.refresh.arch,
+        message.refresh.executor_version,
+        message.refresh.mcp_url,
+        message.refresh.generation,
+        updatedAt,
+        updatedAt,
+        attachment.deviceID,
+        attachment.generation,
+        JSON.stringify(device.public_jwk),
+      )
+      .run();
+    if (updated.meta.changes !== 1) {
+      socket.close(1008, "device refresh failed");
+      return;
+    }
+    socket.serializeAttachment({
+      version: 1,
+      deviceID: attachment.deviceID,
+      generation: message.refresh.generation,
+      authenticated: true,
+      lastRefreshIssuedAt: message.refresh.issued_at,
+    } satisfies AuthenticatedAttachment);
+    socket.send(
+      JSON.stringify({ version: 1, type: "device_refreshed", generation: message.refresh.generation }),
+    );
   }
 
   private authenticatedSocket(): WebSocket | null {
@@ -519,8 +587,17 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
     return null;
   }
   if (record.authenticated) {
-    return Object.keys(record).length === 4
-      ? { version: 1, deviceID: record.deviceID, generation: record.generation, authenticated: true }
+    return Object.keys(record).length === 5 &&
+      typeof record.lastRefreshIssuedAt === "number" &&
+      Number.isSafeInteger(record.lastRefreshIssuedAt) &&
+      record.lastRefreshIssuedAt >= 0
+      ? {
+          version: 1,
+          deviceID: record.deviceID,
+          generation: record.generation,
+          authenticated: true,
+          lastRefreshIssuedAt: record.lastRefreshIssuedAt,
+        }
       : null;
   }
   if (
@@ -539,6 +616,65 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
     nonce: record.nonce,
     issuedAt: record.issuedAt,
   };
+}
+
+interface ParsedDeviceRefresh {
+  refresh: DeviceRefresh;
+  signature: Uint8Array;
+}
+
+function parseDeviceRefresh(message: string): ParsedDeviceRefresh | null {
+  try {
+    const value: unknown = JSON.parse(message);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return null;
+    }
+    const record = value as Record<string, unknown>;
+    const keys = [
+      "version",
+      "type",
+      "device_id",
+      "generation",
+      "name",
+      "platform",
+      "arch",
+      "executor_version",
+      "mcp_url",
+      "issued_at",
+      "signature",
+    ];
+    if (
+      Object.keys(record).length !== keys.length ||
+      !keys.every((key) => Object.hasOwn(record, key)) ||
+      record.version !== 1 ||
+      record.type !== "device_refresh" ||
+      typeof record.device_id !== "string" ||
+      typeof record.generation !== "number" ||
+      typeof record.name !== "string" ||
+      typeof record.platform !== "string" ||
+      typeof record.arch !== "string" ||
+      typeof record.executor_version !== "string" ||
+      typeof record.mcp_url !== "string" ||
+      typeof record.issued_at !== "number" ||
+      typeof record.signature !== "string"
+    ) {
+      return null;
+    }
+    const refresh: DeviceRefresh = {
+      device_id: record.device_id,
+      generation: record.generation,
+      name: record.name,
+      platform: record.platform,
+      arch: record.arch,
+      executor_version: record.executor_version,
+      mcp_url: record.mcp_url,
+      issued_at: record.issued_at,
+    };
+    const signature = decodeBase64URL(record.signature);
+    return signature.byteLength === 64 ? { refresh, signature } : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseChallengeResponse(

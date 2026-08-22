@@ -4,7 +4,12 @@ import vectors from "../../../internal/relay/testdata/wire-vectors.json";
 
 import { deleteDeviceConditionally, getDevice } from "../../src/db";
 import { DeviceRelay } from "../../src/device-relay";
-import { canonicalDeviceChallenge, encodeBase64URL } from "../../src/shared/crypto";
+import {
+  canonicalDeviceChallenge,
+  canonicalDeviceRefresh,
+  encodeBase64URL,
+  type DeviceRefresh,
+} from "../../src/shared/crypto";
 import { decodeEnvelope, makeEnvelope } from "../../src/shared/wire";
 
 const dashboardOrigin = "https://dashboard.example";
@@ -73,6 +78,73 @@ describe("DeviceRelay WebSocket", () => {
       return row?.state === "online" && (row.last_seen_at ?? 0) >= sentAt * 1000;
     });
     socket.close(1000, "test complete");
+  });
+
+  it("accepts a signed monotonic generation refresh and rejects its replay", async () => {
+    await enroll();
+    const socket = await connectAuthenticated();
+    const refresh: DeviceRefresh = {
+      device_id: "device-vector-1",
+      generation: 8,
+      name: "Refreshed Device",
+      platform: "darwin",
+      arch: "arm64",
+      executor_version: "dev",
+      mcp_url: "https://device.example/mcp",
+      issued_at: Math.floor(Date.now() / 1000),
+    };
+    const signature = await signDeviceRefresh(refresh);
+    const message = JSON.stringify({ version: 1, type: "device_refresh", ...refresh, signature });
+    socket.send(message);
+    expect(JSON.parse(await nextMessage(socket))).toEqual({
+      version: 1,
+      type: "device_refreshed",
+      generation: 8,
+    });
+    await expect(getDevice(env.DB, "device-vector-1")).resolves.toEqual(
+      expect.objectContaining({ generation: 8, name: "Refreshed Device" }),
+    );
+
+    socket.send(message);
+    const close = await nextClose(socket);
+    expect(close.code).toBe(1008);
+    await expect(getDevice(env.DB, "device-vector-1")).resolves.toEqual(
+      expect.objectContaining({ generation: 8, name: "Refreshed Device" }),
+    );
+  });
+
+  it("rejects a lower-generation or incorrectly signed device refresh", async () => {
+    await enroll();
+    const lowerSocket = await connectAuthenticated();
+    const lower: DeviceRefresh = {
+      device_id: "device-vector-1",
+      generation: 6,
+      name: "Lower Device",
+      platform: "darwin",
+      arch: "arm64",
+      executor_version: "dev",
+      mcp_url: "https://device.example/mcp",
+      issued_at: Math.floor(Date.now() / 1000),
+    };
+    lowerSocket.send(
+      JSON.stringify({ version: 1, type: "device_refresh", ...lower, signature: await signDeviceRefresh(lower) }),
+    );
+    expect((await nextClose(lowerSocket)).code).toBe(1008);
+
+    const wrongKeySocket = await connectAuthenticated();
+    const current = { ...lower, generation: 7, name: "Wrong Key Device", issued_at: lower.issued_at + 1 };
+    wrongKeySocket.send(
+      JSON.stringify({
+        version: 1,
+        type: "device_refresh",
+        ...current,
+        signature: encodeBase64URL(crypto.getRandomValues(new Uint8Array(64))),
+      }),
+    );
+    expect((await nextClose(wrongKeySocket)).code).toBe(1008);
+    await expect(getDevice(env.DB, "device-vector-1")).resolves.toEqual(
+      expect.objectContaining({ generation: 7, name: "Vector Device" }),
+    );
   });
 
   it("rejects an offline relay immediately and never queues it for a later connection", async () => {
@@ -325,6 +397,30 @@ async function connectAuthenticated(generation = 7): Promise<WebSocket> {
     );
   }
   return socket;
+}
+
+async function signDeviceRefresh(refresh: DeviceRefresh): Promise<string> {
+  const privateKey = await crypto.subtle.importKey(
+    "jwk",
+    {
+      kty: "EC",
+      crv: "P-256",
+      x: vectors.test_only_device_private_key.x,
+      y: vectors.test_only_device_private_key.y,
+      d: vectors.test_only_device_private_key.d,
+    },
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(
+    await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      privateKey,
+      new TextEncoder().encode(canonicalDeviceRefresh(refresh)),
+    ),
+  );
+  return encodeBase64URL(signature);
 }
 
 function parseChallenge(message: string): { nonce: string; issued_at: number } {

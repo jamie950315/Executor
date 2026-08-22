@@ -3,6 +3,7 @@ import vectors from "../../../internal/relay/testdata/wire-vectors.json";
 
 import {
   canonicalDeviceChallenge,
+  canonicalDeviceRefresh,
   decodeBase64URL as decodeStrictBase64URL,
   recoveryAdditionalData,
   sealRecoveryEnvelopeWithMaterial,
@@ -37,6 +38,23 @@ function decodeBase64URL(value: string): Uint8Array {
 }
 
 describe("cross-language relay crypto", () => {
+  it("canonicalizes signed generation refresh metadata byte for byte", () => {
+    expect(
+      canonicalDeviceRefresh({
+        device_id: "device-vector-1",
+        generation: 8,
+        name: "Owner Mac",
+        platform: "darwin",
+        arch: "arm64",
+        executor_version: "dev",
+        mcp_url: "https://executor.example.test/mcp",
+        issued_at: 1_700_000_001,
+      }),
+    ).toBe(
+      '{"version":1,"purpose":"executor-device-refresh","device_id":"device-vector-1","generation":8,"name":"Owner Mac","platform":"darwin","arch":"arm64","executor_version":"dev","mcp_url":"https://executor.example.test/mcp","issued_at":1700000001}',
+    );
+  });
+
   it("reproduces the Go recovery AAD and deterministic envelope", async () => {
     expect(new TextDecoder().decode(recoveryAdditionalData(vectors.recovery.context))).toBe(
       vectors.recovery.aad,
