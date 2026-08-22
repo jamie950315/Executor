@@ -10,6 +10,26 @@ vi.mock("../../src/ui/device-actions", () => ({
 import { UnlockDialog } from "../../src/ui/UnlockDialog";
 
 describe("Unlock dialog", () => {
+  it("traps keyboard focus and closes on Escape", async () => {
+    const onDismiss = vi.fn();
+    render(<UnlockDialog
+      device={{
+        device_id: "device-1", name: "Owner Mac", platform: "darwin", arch: "arm64", version: "dev",
+        mcp_url: "https://device.example/mcp", public_jwk: { kty: "EC", crv: "P-256", x: vectors.device_public_key.x, y: vectors.device_public_key.y },
+        generation: 7, state: "online", created_at: 1, updated_at: 1, last_seen_at: 1, uiState: "locked",
+      }}
+      session={{ access_subject: "access-1", browser_id: "browser-1" }}
+      onUnlocked={vi.fn()}
+      onDismiss={onDismiss}
+    />);
+    const input = screen.getByLabelText("Recovery key");
+    expect(input).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
   it("clears recovery input and reports only a fixed failure after every submission", async () => {
     const marker = "SENSITIVE-RECOVERY-INPUT";
     render(<UnlockDialog

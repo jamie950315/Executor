@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { DeviceView } from "./DeviceGrid";
 import type { SessionContext } from "./api";
 import { performUnlock } from "./device-actions";
+import { useDialogFocus } from "./dialog-focus";
 
 export function UnlockDialog({ device, session, onUnlocked, onDismiss }: {
   device: DeviceView;
@@ -13,7 +14,7 @@ export function UnlockDialog({ device, session, onUnlocked, onDismiss }: {
   const [status, setStatus] = useState("Recovery material is encrypted directly to this device.");
   const [working, setWorking] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  const dialog = useDialogFocus(true, onDismiss);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); if (working || recoveryKey.length === 0) return;
     const controller = new AbortController(); setWorking(true); setStatus("Encrypting and verifying on the device…");
@@ -21,5 +22,5 @@ export function UnlockDialog({ device, session, onUnlocked, onDismiss }: {
     catch { setStatus("Unlock failed. The key was not retained."); }
     finally { setRecoveryKey(""); if (inputRef.current) inputRef.current.value = ""; setWorking(false); }
   };
-  return <div className="dialog-backdrop" role="presentation"><section className="sovereign-dialog" role="dialog" aria-modal="true" aria-labelledby="unlock-title"><p className="eyebrow">Browser-memory unlock</p><h2 id="unlock-title">Unlock {device.name}</h2><p>No recovery key is sent to the Dashboard Worker. It is sealed in this browser to device generation {device.generation}.</p><form onSubmit={(event) => void submit(event)}><label>Recovery key<input ref={inputRef} type="password" autoComplete="off" value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} /></label><p className="status-line" role="status" aria-live="polite">{status}</p><div className="button-row"><button type="button" onClick={onDismiss}>Cancel</button><button className="primary-button" type="submit" disabled={working || recoveryKey.length === 0}>{working ? "Unlocking…" : "Unlock device"}</button></div></form></section></div>;
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialog.containerRef} onKeyDown={dialog.onKeyDown} className="sovereign-dialog" role="dialog" aria-modal="true" aria-labelledby="unlock-title"><p className="eyebrow">Browser-memory unlock</p><h2 id="unlock-title">Unlock {device.name}</h2><p>No recovery key is sent to the Dashboard Worker. It is sealed in this browser to device generation {device.generation}.</p><form onSubmit={(event) => void submit(event)}><label>Recovery key<input ref={inputRef} type="password" autoComplete="off" value={recoveryKey} onChange={(event) => setRecoveryKey(event.target.value)} /></label><p className="status-line" role="status" aria-live="polite">{status}</p><div className="button-row"><button type="button" onClick={onDismiss}>Cancel</button><button className="primary-button" type="submit" disabled={working || recoveryKey.length === 0}>{working ? "Unlocking…" : "Unlock device"}</button></div></form></section></div>;
 }
