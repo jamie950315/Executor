@@ -152,7 +152,7 @@ func TestUnifiedDashboardMetadataPersistsWithoutEnrollmentCredential(t *testing.
 	cfg := Default(dir)
 	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
 	cfg.UnifiedDashboard.Enrolled = true
-	cfg.UnifiedDashboard.EnrollmentCleanupPending = true
+	cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI"
 	if err := Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,8 @@ func TestUnifiedDashboardMetadataPersistsWithoutEnrollmentCredential(t *testing.
 		t.Fatal(err)
 	}
 	if loaded.UnifiedDashboard.URL != cfg.UnifiedDashboard.URL || !loaded.UnifiedDashboard.Enrolled ||
-		!loaded.UnifiedDashboard.EnrollmentCleanupPending || loaded.UnifiedDashboard.DeviceID == "" {
+		loaded.UnifiedDashboard.EnrollmentCleanupFingerprint != cfg.UnifiedDashboard.EnrollmentCleanupFingerprint ||
+		loaded.UnifiedDashboard.DeviceID == "" {
 		t.Fatalf("unified dashboard metadata = %#v", loaded.UnifiedDashboard)
 	}
 	data, err := os.ReadFile(path)
@@ -172,6 +173,74 @@ func TestUnifiedDashboardMetadataPersistsWithoutEnrollmentCredential(t *testing.
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("config contains credential field %q: %s", forbidden, data)
 		}
+	}
+}
+
+func TestLoadCanonicalizesDashboardOriginAndRemovesLegacyCleanupBoolean(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	cfg := Default(dir)
+	cfg.UnifiedDashboard.URL = "https://DASHBOARD.EXAMPLE.test:443/"
+	cfg.UnifiedDashboard.Enrolled = true
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	dashboard := document["unified_dashboard"].(map[string]any)
+	dashboard["enrollment_cleanup_pending"] = true
+	encoded, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.UnifiedDashboard.URL != "https://dashboard.example.test" ||
+		loaded.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+		t.Fatalf("canonicalized dashboard metadata = %#v", loaded.UnifiedDashboard)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), "DASHBOARD.EXAMPLE") ||
+		strings.Contains(string(persisted), ":443") ||
+		strings.Contains(string(persisted), "enrollment_cleanup_pending") {
+		t.Fatalf("load did not durably canonicalize legacy metadata: %s", persisted)
+	}
+}
+
+func TestCanonicalDashboardOriginDistinguishesOnlyGenuineOriginChanges(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "https://HOST.example:443", want: "https://host.example"},
+		{input: "https://HOST.example:8443/", want: "https://host.example:8443"},
+		{input: "https://[2001:DB8::1]:443", want: "https://[2001:db8::1]"},
+	} {
+		got, err := CanonicalDashboardOrigin(test.input)
+		if err != nil {
+			t.Fatalf("CanonicalDashboardOrigin(%q): %v", test.input, err)
+		}
+		if got != test.want {
+			t.Fatalf("CanonicalDashboardOrigin(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+	first, _ := CanonicalDashboardOrigin("https://HOST.example:443")
+	second, _ := CanonicalDashboardOrigin("https://host.example")
+	different, _ := CanonicalDashboardOrigin("https://host.example:8443")
+	if first != second || first == different {
+		t.Fatalf("canonical origins = %q, %q, %q", first, second, different)
 	}
 }
 

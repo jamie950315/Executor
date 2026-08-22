@@ -2,6 +2,9 @@ package relayclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -78,6 +81,9 @@ func TestEnrollPostsExactWorkerBodyAndDeletesTokenOnlyAfterSuccess(t *testing.T)
 	}
 	if !loaded.UnifiedDashboard.Enrolled {
 		t.Fatal("successful enrollment was not durably recorded")
+	}
+	if loaded.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+		t.Fatal("successful enrollment left a cleanup fingerprint")
 	}
 }
 
@@ -195,8 +201,13 @@ func TestEnrollCleanupFailureCanRetryWithoutAnotherPost(t *testing.T) {
 	if !loaded.UnifiedDashboard.Enrolled {
 		t.Fatal("cleanup failure lost durable enrollment state")
 	}
-	if !loaded.UnifiedDashboard.EnrollmentCleanupPending {
-		t.Fatal("cleanup failure lost durable cleanup-pending state")
+	fingerprint := loaded.UnifiedDashboard.EnrollmentCleanupFingerprint
+	if fingerprint == "" {
+		t.Fatal("cleanup failure lost durable cleanup fingerprint")
+	}
+	plainHash := sha256.Sum256([]byte("test-only-enrollment-token"))
+	if fingerprint == hex.EncodeToString(plainHash[:]) || fingerprint == base64.RawURLEncoding.EncodeToString(plainHash[:]) {
+		t.Fatal("cleanup fingerprint is an unkeyed token hash")
 	}
 	if _, statErr := os.Stat(tokenPath); statErr != nil {
 		t.Fatalf("cleanup failure unexpectedly removed token: %v", statErr)
@@ -217,48 +228,127 @@ func TestEnrollCleanupFailureCanRetryWithoutAnotherPost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.UnifiedDashboard.EnrollmentCleanupPending {
-		t.Fatal("cleanup retry left cleanup-pending state set")
+	if loaded.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+		t.Fatal("cleanup retry left a cleanup fingerprint")
 	}
 }
 
-func TestCleanupPendingEnrollmentDoesNotReadTokenOrPostAgain(t *testing.T) {
+func TestCleanupFingerprintWithMissingFileClearsWithoutAnotherPost(t *testing.T) {
 	t.Parallel()
 	configPath, cfg, _ := relayFixture(t)
 	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
-	if err := os.WriteFile(tokenPath, []byte("invalid token contents with spaces"), 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, []byte("test-only-missing-cleanup-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var posts atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		posts.Add(1)
-		http.Error(writer, "unexpected POST", http.StatusInternalServerError)
+		writer.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
 	cfg.UnifiedDashboard.URL = server.URL
-	cfg.UnifiedDashboard.Enrolled = true
-	cfg.UnifiedDashboard.EnrollmentCleanupPending = true
 	if err := config.Save(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-
-	if err := Enroll(context.Background(), EnrollOptions{
+	options := EnrollOptions{
 		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
-	}); err != nil {
-		t.Fatalf("cleanup-only enrollment: %v", err)
 	}
-	if posts.Load() != 0 {
-		t.Fatalf("cleanup-only enrollment POST count = %d, want 0", posts.Load())
+	if err := enrollWithOperations(context.Background(), options, enrollmentOperations{
+		SaveConfig: config.Save,
+		RemoveToken: func(string) error {
+			return errors.New("forced cleanup failure")
+		},
+	}); err == nil {
+		t.Fatal("forced cleanup failure returned nil")
 	}
-	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cleanup-only enrollment left token: %v", err)
+	if err := os.Remove(tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := Enroll(context.Background(), options); err != nil {
+		t.Fatalf("missing-file cleanup retry: %v", err)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("missing-file cleanup retry POST count = %d, want 1", posts.Load())
 	}
 	loaded, err := config.Load(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.UnifiedDashboard.EnrollmentCleanupPending {
-		t.Fatal("cleanup-only enrollment left cleanup-pending state set")
+	if loaded.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+		t.Fatal("missing-file cleanup retry left a cleanup fingerprint")
+	}
+}
+
+func TestFinalSaveFailureWithNewTokenAtSamePathPostsNewToken(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	oldToken := "test-only-old-enrollment-token"
+	newToken := "test-only-new-enrollment-token"
+	if err := os.WriteFile(tokenPath, []byte(oldToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	options := EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}
+	forceFinalEnrollmentSaveFailure(t, options)
+	if err := os.WriteFile(tokenPath, []byte(newToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Enroll(context.Background(), options); err != nil {
+		t.Fatalf("new-token retry: %v", err)
+	}
+	if posts.Load() != 2 {
+		t.Fatalf("new-token retry POST count = %d, want 2", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new-token retry left token: %v", err)
+	}
+}
+
+func TestFinalSaveFailureWithOldTokenAtSamePathCleansWithoutAnotherPost(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	token := "test-only-old-enrollment-token"
+	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	options := EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}
+	forceFinalEnrollmentSaveFailure(t, options)
+	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Enroll(context.Background(), options); err != nil {
+		t.Fatalf("old-token retry: %v", err)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("old-token retry POST count = %d, want 1", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old-token retry left token: %v", err)
 	}
 }
 
@@ -344,7 +434,11 @@ func TestEnrollRejectsNonASCIIOriginHostBeforeRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.UnifiedDashboard.URL = "https://d\u00e4shboard.example.test"
-	if err := config.Save(configPath, cfg); err != nil {
+	encoded, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, append(encoded, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	requested := false
@@ -352,7 +446,7 @@ func TestEnrollRejectsNonASCIIOriginHostBeforeRequest(t *testing.T) {
 		requested = true
 		return nil, errors.New("unexpected request")
 	})}
-	err := Enroll(context.Background(), EnrollOptions{
+	err = Enroll(context.Background(), EnrollOptions{
 		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: client, ExecutorVersion: "test-version",
 	})
 	if err == nil {
@@ -384,6 +478,34 @@ func relayFixture(t *testing.T) (string, config.Config, secrets.Values) {
 		t.Fatal(err)
 	}
 	return configPath, cfg, values
+}
+
+func forceFinalEnrollmentSaveFailure(t *testing.T, options EnrollOptions) {
+	t.Helper()
+	saves := 0
+	err := enrollWithOperations(context.Background(), options, enrollmentOperations{
+		SaveConfig: func(path string, cfg config.Config) error {
+			saves++
+			if saves == 2 {
+				return errors.New("forced final save failure")
+			}
+			return config.Save(path, cfg)
+		},
+		RemoveToken: os.Remove,
+	})
+	if err == nil {
+		t.Fatal("forced final save failure returned nil")
+	}
+	if _, statErr := os.Stat(options.TokenFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("forced final save failure did not remove token: %v", statErr)
+	}
+	loaded, loadErr := config.Load(options.ConfigPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if loaded.UnifiedDashboard.EnrollmentCleanupFingerprint == "" {
+		t.Fatal("forced final save failure did not preserve cleanup fingerprint")
+	}
 }
 
 func containsSensitive(value string, markers ...string) bool {

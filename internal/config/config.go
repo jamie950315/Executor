@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -30,10 +32,10 @@ type Config struct {
 }
 
 type UnifiedDashboardMetadata struct {
-	URL                      string `json:"url,omitempty"`
-	DeviceID                 string `json:"device_id"`
-	Enrolled                 bool   `json:"enrolled,omitempty"`
-	EnrollmentCleanupPending bool   `json:"enrollment_cleanup_pending,omitempty"`
+	URL                          string `json:"url,omitempty"`
+	DeviceID                     string `json:"device_id"`
+	Enrolled                     bool   `json:"enrolled,omitempty"`
+	EnrollmentCleanupFingerprint string `json:"enrollment_cleanup_fingerprint,omitempty"`
 }
 
 type CloudflareMetadata struct {
@@ -96,18 +98,43 @@ func loadUnlocked(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	needsSave := false
 	if cfg.Version == 1 {
 		if err := migrateV1ToV2(&cfg); err != nil {
 			return Config{}, err
 		}
-		if err := saveUnlocked(path, cfg); err != nil {
-			return Config{}, fmt.Errorf("save migrated config: %w", err)
-		}
+		needsSave = true
 	} else if cfg.Version != CurrentVersion {
 		return Config{}, fmt.Errorf("unsupported config version %d", cfg.Version)
 	}
+	var legacy struct {
+		UnifiedDashboard struct {
+			EnrollmentCleanupPending *bool `json:"enrollment_cleanup_pending"`
+		} `json:"unified_dashboard"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	if legacy.UnifiedDashboard.EnrollmentCleanupPending != nil {
+		needsSave = true
+	}
+	if cfg.UnifiedDashboard.URL != "" {
+		canonical, err := CanonicalDashboardOrigin(cfg.UnifiedDashboard.URL)
+		if err != nil {
+			return Config{}, errors.New("invalid unified dashboard metadata")
+		}
+		if canonical != cfg.UnifiedDashboard.URL {
+			cfg.UnifiedDashboard.URL = canonical
+			needsSave = true
+		}
+	}
 	if err := validateUnifiedDashboard(cfg.UnifiedDashboard); err != nil {
 		return Config{}, err
+	}
+	if needsSave {
+		if err := saveUnlocked(path, cfg); err != nil {
+			return Config{}, fmt.Errorf("save migrated config: %w", err)
+		}
 	}
 	return cfg, nil
 }
@@ -137,6 +164,13 @@ func saveUnlocked(path string, cfg Config) error {
 			return err
 		}
 		cfg.UnifiedDashboard.DeviceID = deviceID
+	}
+	if cfg.UnifiedDashboard.URL != "" {
+		canonical, err := CanonicalDashboardOrigin(cfg.UnifiedDashboard.URL)
+		if err != nil {
+			return errors.New("invalid unified dashboard metadata")
+		}
+		cfg.UnifiedDashboard.URL = canonical
 	}
 	if err := validateUnifiedDashboard(cfg.UnifiedDashboard); err != nil {
 		return err
@@ -210,19 +244,100 @@ func validateUnifiedDashboard(metadata UnifiedDashboardMetadata) error {
 	if strings.TrimSpace(metadata.DeviceID) == "" || len(metadata.DeviceID) > 256 {
 		return errors.New("invalid unified dashboard metadata")
 	}
-	if metadata.EnrollmentCleanupPending && !metadata.Enrolled {
-		return errors.New("invalid unified dashboard metadata")
+	if metadata.EnrollmentCleanupFingerprint != "" {
+		fingerprint, err := base64.RawURLEncoding.Strict().DecodeString(metadata.EnrollmentCleanupFingerprint)
+		if err != nil || len(fingerprint) != 32 || !metadata.Enrolled {
+			return errors.New("invalid unified dashboard metadata")
+		}
 	}
 	if metadata.URL == "" {
-		if metadata.Enrolled || metadata.EnrollmentCleanupPending {
+		if metadata.Enrolled || metadata.EnrollmentCleanupFingerprint != "" {
 			return errors.New("invalid unified dashboard metadata")
 		}
 		return nil
 	}
-	parsed, err := url.Parse(metadata.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	canonical, err := CanonicalDashboardOrigin(metadata.URL)
+	if err != nil || canonical != metadata.URL {
 		return errors.New("invalid unified dashboard metadata")
 	}
 	return nil
+}
+
+func CanonicalDashboardOrigin(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") ||
+		strings.HasSuffix(parsed.Host, ":") {
+		return "", errors.New("invalid dashboard origin")
+	}
+	host, err := canonicalDashboardHost(parsed.Hostname())
+	if err != nil {
+		return "", err
+	}
+	port := parsed.Port()
+	if port != "" {
+		numericPort, err := strconv.Atoi(port)
+		if err != nil || numericPort < 0 || numericPort > 65535 {
+			return "", errors.New("invalid dashboard origin")
+		}
+		if numericPort == 443 {
+			port = ""
+		} else {
+			port = strconv.Itoa(numericPort)
+		}
+	}
+	authority := host
+	if port != "" {
+		authority = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		authority = "[" + host + "]"
+	}
+	return "https://" + authority, nil
+}
+
+func canonicalDashboardHost(host string) (string, error) {
+	if host == "" || len(host) > 253 || strings.Contains(host, "%") {
+		return "", errors.New("invalid dashboard origin")
+	}
+	for index := 0; index < len(host); index++ {
+		if host[index] < 0x21 || host[index] > 0x7e {
+			return "", errors.New("invalid dashboard origin")
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if strings.Contains(host, ":") {
+			if ip.To4() != nil {
+				return "", errors.New("invalid dashboard origin")
+			}
+			return strings.ToLower(ip.String()), nil
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4.String(), nil
+		}
+		return "", errors.New("invalid dashboard origin")
+	}
+	if strings.Contains(host, ":") {
+		return "", errors.New("invalid dashboard origin")
+	}
+	normalized := strings.ToLower(host)
+	labels := strings.Split(strings.TrimSuffix(normalized, "."), ".")
+	if len(labels) == 0 {
+		return "", errors.New("invalid dashboard origin")
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", errors.New("invalid dashboard origin")
+		}
+		for index := 0; index < len(label); index++ {
+			character := label[index]
+			if character != '-' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return "", errors.New("invalid dashboard origin")
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" {
+		return "", errors.New("invalid dashboard origin")
+	}
+	return normalized, nil
 }

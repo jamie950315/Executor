@@ -173,10 +173,14 @@ func (b *backend) EnrollDashboard(ctx context.Context, options cli.DashboardEnro
 	if err != nil {
 		return cli.DashboardEnrollResult{}, err
 	}
-	if cfg.UnifiedDashboard.URL != options.URL {
-		cfg.UnifiedDashboard.URL = options.URL
+	canonicalURL, err := config.CanonicalDashboardOrigin(options.URL)
+	if err != nil {
+		return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
+	}
+	if cfg.UnifiedDashboard.URL != canonicalURL {
+		cfg.UnifiedDashboard.URL = canonicalURL
 		cfg.UnifiedDashboard.Enrolled = false
-		cfg.UnifiedDashboard.EnrollmentCleanupPending = false
+		cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
 		if err := config.Save(b.configPath(), cfg); err != nil {
 			return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
 		}

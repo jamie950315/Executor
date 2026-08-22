@@ -3,16 +3,17 @@ package relayclient
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/jamie950315/executor/internal/config"
@@ -60,23 +61,16 @@ func enrollWithOperations(ctx context.Context, options EnrollOptions, operations
 	if err != nil || cfg.UnifiedDashboard.URL == "" || cfg.UnifiedDashboard.DeviceID == "" {
 		return errors.New("dashboard enrollment is not configured")
 	}
-	if cfg.UnifiedDashboard.EnrollmentCleanupPending {
-		if err := cleanupEnrollmentToken(options.TokenFile, operations.RemoveToken); err != nil {
-			return err
+	if cfg.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+		if _, err := os.Stat(options.TokenFile); errors.Is(err, os.ErrNotExist) {
+			cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
+			if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
+				return errors.New("dashboard enrollment state save failed")
+			}
+			return nil
+		} else if err != nil {
+			return errors.New("dashboard enrollment token file is invalid")
 		}
-		cfg.UnifiedDashboard.EnrollmentCleanupPending = false
-		if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
-			return errors.New("dashboard enrollment state save failed")
-		}
-		return nil
-	}
-	endpoint, err := enrollmentEndpoint(cfg.UnifiedDashboard.URL)
-	if err != nil {
-		return errors.New("dashboard enrollment is not configured")
-	}
-	origin, err := dashboardOrigin(cfg.UnifiedDashboard.URL)
-	if err != nil {
-		return errors.New("dashboard enrollment is not configured")
 	}
 	values, err := secrets.Load(cfg.StateDir)
 	if err != nil {
@@ -86,7 +80,47 @@ func enrollWithOperations(ctx context.Context, options EnrollOptions, operations
 	if err != nil {
 		return errors.New("dashboard enrollment credentials unavailable")
 	}
-	token, err := readEnrollmentToken(options.TokenFile)
+	var token []byte
+	if cfg.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+		token, err = readEnrollmentToken(options.TokenFile)
+		if err != nil {
+			return err
+		}
+		fingerprint, err := enrollmentCleanupFingerprint(identity, token)
+		if err != nil {
+			clear(token)
+			return errors.New("dashboard enrollment credentials unavailable")
+		}
+		if hmac.Equal([]byte(fingerprint), []byte(cfg.UnifiedDashboard.EnrollmentCleanupFingerprint)) {
+			clear(token)
+			if err := cleanupEnrollmentToken(options.TokenFile, operations.RemoveToken); err != nil {
+				return err
+			}
+			cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
+			if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
+				return errors.New("dashboard enrollment state save failed")
+			}
+			return nil
+		}
+		cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
+		if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
+			clear(token)
+			return errors.New("dashboard enrollment state save failed")
+		}
+	}
+	endpoint, err := enrollmentEndpoint(cfg.UnifiedDashboard.URL)
+	if err != nil {
+		clear(token)
+		return errors.New("dashboard enrollment is not configured")
+	}
+	origin, err := dashboardOrigin(cfg.UnifiedDashboard.URL)
+	if err != nil {
+		clear(token)
+		return errors.New("dashboard enrollment is not configured")
+	}
+	if token == nil {
+		token, err = readEnrollmentToken(options.TokenFile)
+	}
 	if err != nil {
 		return err
 	}
@@ -123,15 +157,19 @@ func enrollWithOperations(ctx context.Context, options EnrollOptions, operations
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
 		return errors.New("dashboard enrollment rejected")
 	}
+	fingerprint, err := enrollmentCleanupFingerprint(identity, token)
+	if err != nil {
+		return errors.New("dashboard enrollment credentials unavailable")
+	}
 	cfg.UnifiedDashboard.Enrolled = true
-	cfg.UnifiedDashboard.EnrollmentCleanupPending = true
+	cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = fingerprint
 	if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
 		return errors.New("dashboard enrollment state save failed")
 	}
 	if err := cleanupEnrollmentToken(options.TokenFile, operations.RemoveToken); err != nil {
 		return err
 	}
-	cfg.UnifiedDashboard.EnrollmentCleanupPending = false
+	cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
 	if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
 		return errors.New("dashboard enrollment state save failed")
 	}
@@ -189,81 +227,18 @@ func enrollmentEndpoint(base string) (string, error) {
 }
 
 func dashboardOrigin(base string) (string, error) {
-	parsed, err := url.Parse(base)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" || strings.HasSuffix(parsed.Host, ":") {
-		return "", errors.New("invalid dashboard origin")
-	}
-	host, err := canonicalOriginHost(parsed.Hostname())
+	return config.CanonicalDashboardOrigin(base)
+}
+
+func enrollmentCleanupFingerprint(identity *relay.DeviceIdentity, token []byte) (string, error) {
+	key, err := identity.MarshalPrivateJWK()
 	if err != nil {
 		return "", err
 	}
-	port := parsed.Port()
-	if port != "" {
-		numericPort, err := strconv.Atoi(port)
-		if err != nil || numericPort < 0 || numericPort > 65535 {
-			return "", errors.New("invalid dashboard origin")
-		}
-		if numericPort == 443 {
-			port = ""
-		} else {
-			port = strconv.Itoa(numericPort)
-		}
-	}
-	authority := host
-	if port != "" {
-		authority = net.JoinHostPort(host, port)
-	} else if strings.Contains(host, ":") {
-		authority = "[" + host + "]"
-	}
-	return "https://" + authority, nil
-}
-
-func canonicalOriginHost(host string) (string, error) {
-	if host == "" || len(host) > 253 || strings.Contains(host, "%") {
-		return "", errors.New("invalid dashboard origin")
-	}
-	for index := 0; index < len(host); index++ {
-		if host[index] < 0x21 || host[index] > 0x7e {
-			return "", errors.New("invalid dashboard origin")
-		}
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		if strings.Contains(host, ":") {
-			if ip.To4() != nil {
-				return "", errors.New("invalid dashboard origin")
-			}
-			return strings.ToLower(ip.String()), nil
-		}
-		if ipv4 := ip.To4(); ipv4 != nil {
-			return ipv4.String(), nil
-		}
-		return "", errors.New("invalid dashboard origin")
-	}
-	if strings.Contains(host, ":") {
-		return "", errors.New("invalid dashboard origin")
-	}
-	normalized := strings.ToLower(host)
-	labels := strings.Split(strings.TrimSuffix(normalized, "."), ".")
-	if len(labels) == 0 {
-		return "", errors.New("invalid dashboard origin")
-	}
-	for _, label := range labels {
-		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return "", errors.New("invalid dashboard origin")
-		}
-		for index := 0; index < len(label); index++ {
-			value := label[index]
-			if value != '-' && (value < 'a' || value > 'z') && (value < '0' || value > '9') {
-				return "", errors.New("invalid dashboard origin")
-			}
-		}
-	}
-	last := labels[len(labels)-1]
-	if strings.Trim(last, "0123456789") == "" {
-		return "", errors.New("invalid dashboard origin")
-	}
-	return normalized, nil
+	defer clear(key)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(token)
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
 }
 
 func configuredMCPURL(domain string) string {
