@@ -195,6 +195,9 @@ func (c *connection) run(ctx context.Context) error {
 }
 
 func (c *connection) handshake(ctx context.Context) error {
+	if err := c.negotiateVersion(ctx); err != nil {
+		return err
+	}
 	message, err := c.socket.Read(ctx)
 	if err != nil || len(message) > maximumRelayMessageBytes {
 		return errors.New("device challenge unavailable")
@@ -233,6 +236,50 @@ func (c *connection) handshake(ctx context.Context) error {
 	ack, err := c.socket.Read(ctx)
 	if err != nil || !isDeviceRefreshed(ack, values.Generation) {
 		return errors.New("device refresh failed")
+	}
+	return nil
+}
+
+func (c *connection) negotiateVersion(ctx context.Context) error {
+	message, err := c.socket.Read(ctx)
+	if err != nil || len(message) > maximumRelayMessageBytes {
+		return errors.New("version negotiation failed")
+	}
+	offer, err := relay.DecodeEnvelope(message)
+	if err != nil || offer.Type != relay.MessageTypeVersionNegotiation {
+		return errors.New("version negotiation failed")
+	}
+	payload, err := relay.DecodePayload[relay.VersionNegotiationPayload](offer)
+	if err != nil || len(payload.SupportedVersions) == 0 || len(payload.SupportedVersions) > 16 {
+		return errors.New("version negotiation failed")
+	}
+	selected := false
+	seen := make(map[uint16]struct{}, len(payload.SupportedVersions))
+	for _, version := range payload.SupportedVersions {
+		if version == 0 {
+			return errors.New("version negotiation failed")
+		}
+		if _, duplicate := seen[version]; duplicate {
+			return errors.New("version negotiation failed")
+		}
+		seen[version] = struct{}{}
+		if version == relay.ProtocolVersion {
+			selected = true
+		}
+	}
+	if !selected {
+		return errors.New("version negotiation failed")
+	}
+	response, err := relay.NewEnvelope(
+		relay.MessageTypeVersionNegotiation,
+		offer.MessageID,
+		relay.VersionNegotiationPayload{SupportedVersions: []uint16{relay.ProtocolVersion}},
+	)
+	if err != nil {
+		return errors.New("version negotiation failed")
+	}
+	if err := c.writeEnvelope(ctx, response); err != nil {
+		return errors.New("version negotiation failed")
 	}
 	return nil
 }

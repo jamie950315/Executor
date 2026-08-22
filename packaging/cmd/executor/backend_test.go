@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jamie950315/executor/internal/cli"
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/control"
 	"github.com/jamie950315/executor/internal/desktop"
@@ -21,6 +22,44 @@ import (
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestDashboardEnrollmentRetryFinishesCleanupWithoutPostingAgain(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := secrets.Create(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	posted := make(chan struct{}, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posted <- struct{}{}
+		http.Error(writer, "unexpected POST", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = server.URL
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(filepath.Join(stateDir, "config.json"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+	b.remoteHTTPClient = server.Client()
+	if _, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+		URL: server.URL, TokenFile: tokenPath,
+	}); err != nil {
+		t.Fatalf("cleanup retry: %v", err)
+	}
+	select {
+	case <-posted:
+		t.Fatal("cleanup retry performed another enrollment POST")
+	default:
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup retry left token: %v", err)
+	}
+}
 
 func TestBackendPermissionsUsesConfiguredActiveUserDesktopIPC(t *testing.T) {
 	stateDir := t.TempDir()

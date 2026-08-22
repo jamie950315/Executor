@@ -173,13 +173,15 @@ func (b *backend) EnrollDashboard(ctx context.Context, options cli.DashboardEnro
 	if err != nil {
 		return cli.DashboardEnrollResult{}, err
 	}
-	cfg.UnifiedDashboard.URL = options.URL
-	cfg.UnifiedDashboard.Enrolled = false
-	if err := config.Save(b.configPath(), cfg); err != nil {
-		return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
+	if cfg.UnifiedDashboard.URL != options.URL || !cfg.UnifiedDashboard.Enrolled {
+		cfg.UnifiedDashboard.URL = options.URL
+		cfg.UnifiedDashboard.Enrolled = false
+		if err := config.Save(b.configPath(), cfg); err != nil {
+			return cli.DashboardEnrollResult{}, errors.New("invalid Unified Dashboard configuration")
+		}
 	}
 	if err := relayclient.Enroll(ctx, relayclient.EnrollOptions{
-		ConfigPath: b.configPath(), TokenFile: options.TokenFile, ExecutorVersion: "dev",
+		ConfigPath: b.configPath(), TokenFile: options.TokenFile, ExecutorVersion: "dev", HTTPClient: b.remoteHTTPClient,
 	}); err != nil {
 		return cli.DashboardEnrollResult{}, err
 	}

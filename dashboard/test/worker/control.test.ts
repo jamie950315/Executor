@@ -5,7 +5,9 @@ import vectors from "../../../internal/relay/testdata/wire-vectors.json";
 
 import {
   canonicalDeviceChallenge,
+  canonicalDeviceRefresh,
   encodeBase64URL,
+  type DeviceRefresh,
   type GrantClaims,
 } from "../../src/shared/crypto";
 import { decodeEnvelope, makeEnvelope, type RecoveryEnvelope } from "../../src/shared/wire";
@@ -361,6 +363,16 @@ async function enrolledAuthenticatedSocket(): Promise<WebSocket> {
   expect(response.status).toBe(101);
   const socket = response.webSocket as WebSocket;
   socket.accept();
+  const offer = decodeEnvelope(await nextMessage(socket));
+  expect(offer.type).toBe("version_negotiation");
+  if (offer.type !== "version_negotiation") {
+    throw new Error("expected version negotiation");
+  }
+  socket.send(
+    JSON.stringify(
+      makeEnvelope("version_negotiation", offer.message_id, { supported_versions: [1] }),
+    ),
+  );
   const challenge = JSON.parse(await nextMessage(socket)) as { nonce: string; issued_at: number };
   const signature = new Uint8Array(
     await crypto.subtle.sign(
@@ -378,7 +390,37 @@ async function enrolledAuthenticatedSocket(): Promise<WebSocket> {
       signature: encodeBase64URL(signature),
     }),
   );
-  await nextMessage(socket);
+  expect(JSON.parse(await nextMessage(socket))).toEqual({ version: 1, type: "device_authenticated" });
+  const refresh: DeviceRefresh = {
+    device_id: deviceID,
+    generation: 7,
+    name: "Vector Device",
+    platform: "darwin",
+    arch: "arm64",
+    executor_version: "dev",
+    mcp_url: "https://device.example/mcp",
+    issued_at: Math.floor(Date.now() / 1000) - 5,
+  };
+  const refreshSignature = new Uint8Array(
+    await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      devicePrivateKey,
+      new TextEncoder().encode(canonicalDeviceRefresh(refresh)),
+    ),
+  );
+  socket.send(
+    JSON.stringify({
+      version: 1,
+      type: "device_refresh",
+      ...refresh,
+      signature: encodeBase64URL(refreshSignature),
+    }),
+  );
+  expect(JSON.parse(await nextMessage(socket))).toEqual({
+    version: 1,
+    type: "device_refreshed",
+    generation: 7,
+  });
   return socket;
 }
 

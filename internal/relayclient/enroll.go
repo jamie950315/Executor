@@ -25,6 +25,11 @@ type EnrollOptions struct {
 	ExecutorVersion string
 }
 
+type enrollmentOperations struct {
+	SaveConfig  func(string, config.Config) error
+	RemoveToken func(string) error
+}
+
 type enrollmentRequest struct {
 	DeviceID   string             `json:"device_id"`
 	Name       string             `json:"name"`
@@ -37,12 +42,24 @@ type enrollmentRequest struct {
 }
 
 func Enroll(ctx context.Context, options EnrollOptions) error {
+	return enrollWithOperations(ctx, options, enrollmentOperations{
+		SaveConfig: config.Save, RemoveToken: os.Remove,
+	})
+}
+
+func enrollWithOperations(ctx context.Context, options EnrollOptions, operations enrollmentOperations) error {
 	if ctx == nil || options.ConfigPath == "" || options.TokenFile == "" || strings.TrimSpace(options.ExecutorVersion) == "" {
+		return errors.New("invalid dashboard enrollment options")
+	}
+	if operations.SaveConfig == nil || operations.RemoveToken == nil {
 		return errors.New("invalid dashboard enrollment options")
 	}
 	cfg, err := config.Load(options.ConfigPath)
 	if err != nil || cfg.UnifiedDashboard.URL == "" || cfg.UnifiedDashboard.DeviceID == "" {
 		return errors.New("dashboard enrollment is not configured")
+	}
+	if cfg.UnifiedDashboard.Enrolled {
+		return cleanupEnrollmentToken(options.TokenFile, operations.RemoveToken)
 	}
 	values, err := secrets.Load(cfg.StateDir)
 	if err != nil {
@@ -79,6 +96,7 @@ func Enroll(ctx context.Context, options EnrollOptions) error {
 	}
 	request.Header.Set("Authorization", "Bearer "+string(token))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", dashboardOrigin(cfg.UnifiedDashboard.URL))
 	client := options.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -92,12 +110,28 @@ func Enroll(ctx context.Context, options EnrollOptions) error {
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
 		return errors.New("dashboard enrollment rejected")
 	}
-	if err := os.Remove(options.TokenFile); err != nil {
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
+		return errors.New("dashboard enrollment state save failed")
+	}
+	if err := operations.RemoveToken(options.TokenFile); err != nil {
 		return errors.New("dashboard enrollment token cleanup failed")
 	}
-	cfg.UnifiedDashboard.Enrolled = true
-	if err := config.Save(options.ConfigPath, cfg); err != nil {
-		return errors.New("dashboard enrollment state save failed")
+	return nil
+}
+
+func cleanupEnrollmentToken(path string, remove func(string) error) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return errors.New("dashboard enrollment token cleanup failed")
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("dashboard enrollment token cleanup failed")
+	}
+	if err := remove(path); err != nil {
+		return errors.New("dashboard enrollment token cleanup failed")
 	}
 	return nil
 }
@@ -134,6 +168,14 @@ func enrollmentEndpoint(base string) (string, error) {
 	}
 	parsed.Path = "/api/device/enroll"
 	return parsed.String(), nil
+}
+
+func dashboardOrigin(base string) string {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()
 }
 
 func configuredMCPURL(domain string) string {

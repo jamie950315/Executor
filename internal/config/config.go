@@ -78,6 +78,15 @@ func defaultEndpoints(goos, stateDir string) (string, string) {
 }
 
 func Load(path string) (Config, error) {
+	release, err := acquireConfigLock(path)
+	if err != nil {
+		return Config{}, err
+	}
+	defer release()
+	return loadUnlocked(path)
+}
+
+func loadUnlocked(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
@@ -90,7 +99,7 @@ func Load(path string) (Config, error) {
 		if err := migrateV1ToV2(&cfg); err != nil {
 			return Config{}, err
 		}
-		if err := Save(path, cfg); err != nil {
+		if err := saveUnlocked(path, cfg); err != nil {
 			return Config{}, fmt.Errorf("save migrated config: %w", err)
 		}
 	} else if cfg.Version != CurrentVersion {
@@ -103,6 +112,18 @@ func Load(path string) (Config, error) {
 }
 
 func Save(path string, cfg Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	release, err := acquireConfigLock(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return saveUnlocked(path, cfg)
+}
+
+func saveUnlocked(path string, cfg Config) error {
 	if cfg.Version == 0 {
 		cfg.Version = CurrentVersion
 	}
@@ -123,19 +144,41 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	existing, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	tmp := tmpFile.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = tmpFile.Close()
+		}
 		_ = os.Remove(tmp)
+	}()
+	if _, err := tmpFile.Write(append(data, '\n')); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmpFile.Chmod(0o600); err != nil {
+		return err
+	}
+	if existing != nil {
+		if err := preserveFileOwnership(tmpFile, existing); err != nil {
+			return err
+		}
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := replaceFileDurable(tmp, path); err != nil {
 		return err
 	}
 	return nil

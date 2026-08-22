@@ -1,13 +1,109 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestConcurrentProcessesMigrateOnceWithOneDeviceID(t *testing.T) {
+	if os.Getenv("EXECUTOR_CONFIG_MIGRATION_HELPER") == "1" {
+		startPath := os.Getenv("EXECUTOR_CONFIG_MIGRATION_START")
+		for {
+			if _, err := os.Stat(startPath); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		cfg, err := Load(os.Getenv("EXECUTOR_CONFIG_MIGRATION_PATH"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("EXECUTOR_CONFIG_MIGRATION_RESULT"), []byte(cfg.UnifiedDashboard.DeviceID), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	legacy := map[string]any{
+		"version": 1, "state_dir": dir, "agent_address": "127.0.0.1:8787",
+		"dashboard_address": "127.0.0.1:8788", "broker_endpoint": filepath.Join(dir, "broker.sock"),
+		"desktop_endpoint": filepath.Join(dir, "desktop.sock"), "audit_retention_hours": 168,
+	}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	startPath := filepath.Join(dir, "start")
+	const processCount = 16
+	commands := make([]*exec.Cmd, 0, processCount)
+	outputs := make([]bytes.Buffer, processCount)
+	results := make([]string, 0, processCount)
+	for index := 0; index < processCount; index++ {
+		resultPath := filepath.Join(dir, "result-"+string(rune('a'+index)))
+		command := exec.Command(executable, "-test.run=^TestConcurrentProcessesMigrateOnceWithOneDeviceID$")
+		command.Stdout = &outputs[index]
+		command.Stderr = &outputs[index]
+		command.Env = append(os.Environ(),
+			"EXECUTOR_CONFIG_MIGRATION_HELPER=1",
+			"EXECUTOR_CONFIG_MIGRATION_START="+startPath,
+			"EXECUTOR_CONFIG_MIGRATION_PATH="+path,
+			"EXECUTOR_CONFIG_MIGRATION_RESULT="+resultPath,
+		)
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		commands = append(commands, command)
+		results = append(results, resultPath)
+	}
+	if err := os.WriteFile(startPath, []byte("start\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, command := range commands {
+		if err := command.Wait(); err != nil {
+			t.Fatalf("migration helper failed: %v: %s", err, outputs[index].String())
+		}
+	}
+	deviceID := ""
+	for _, resultPath := range results {
+		data, err := os.ReadFile(resultPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deviceID == "" {
+			deviceID = string(data)
+		} else if string(data) != deviceID {
+			t.Fatalf("concurrent migration device IDs differ: %q != %q", data, deviceID)
+		}
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != CurrentVersion || loaded.UnifiedDashboard.DeviceID != deviceID {
+		t.Fatalf("persisted migration = %#v, helper device ID = %q", loaded, deviceID)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, ".config.json.*.tmp")); err != nil || len(matches) != 0 {
+		t.Fatalf("migration left temporary files %v: %v", matches, err)
+	}
+}
 
 func TestLoadMigratesVersionOneToVersionTwoWithStableDashboardDeviceID(t *testing.T) {
 	t.Parallel()

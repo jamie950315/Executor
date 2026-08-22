@@ -9,7 +9,7 @@ import {
   verifyDeviceRefresh,
   type DeviceRefresh,
 } from "./shared/crypto";
-import { canonicalEnvelope, decodeEnvelope, type RelayEnvelope } from "./shared/wire";
+import { canonicalEnvelope, decodeEnvelope, makeEnvelope, type RelayEnvelope } from "./shared/wire";
 
 const relayTimeoutMilliseconds = 10_000;
 const challengeLifetimeSeconds = 30;
@@ -42,24 +42,40 @@ export type RelayStreamResult =
 
 export type RelayFailureCode = "offline" | "duplicate" | "message_too_large" | "timeout" | "protocol";
 
+interface NegotiatingAttachment {
+  version: 1;
+  deviceID: string;
+  generation: number;
+  phase: "negotiating";
+  negotiationMessageID: string;
+}
+
 interface ChallengeAttachment {
   version: 1;
   deviceID: string;
   generation: number;
-  authenticated: false;
+  phase: "challenged";
   nonce: string;
   issuedAt: number;
 }
 
-interface AuthenticatedAttachment {
+interface RefreshingAttachment {
   version: 1;
   deviceID: string;
   generation: number;
-  authenticated: true;
+  phase: "refreshing";
   lastRefreshIssuedAt: number;
 }
 
-type RelayAttachment = ChallengeAttachment | AuthenticatedAttachment;
+interface ReadyAttachment {
+  version: 1;
+  deviceID: string;
+  generation: number;
+  phase: "ready";
+  lastRefreshIssuedAt: number;
+}
+
+type RelayAttachment = NegotiatingAttachment | ChallengeAttachment | RefreshingAttachment | ReadyAttachment;
 
 export class DeviceRelay extends DurableObject<Env> {
   private readonly pending = new Map<string, PendingRelay>();
@@ -77,25 +93,19 @@ export class DeviceRelay extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    const nonce = encodeBase64URL(crypto.getRandomValues(new Uint8Array(32)));
-    const issuedAt = Math.floor(Date.now() / 1000);
+    const negotiationMessageID = crypto.randomUUID();
     server.serializeAttachment({
       version: 1,
       deviceID,
       generation: device.generation,
-      authenticated: false,
-      nonce,
-      issuedAt,
-    } satisfies ChallengeAttachment);
+      phase: "negotiating",
+      negotiationMessageID,
+    } satisfies NegotiatingAttachment);
     this.ctx.acceptWebSocket(server, ["device"]);
     server.send(
-      JSON.stringify({
-        version: 1,
-        type: "device_challenge",
-        device_id: deviceID,
-        nonce,
-        issued_at: issuedAt,
-      }),
+      canonicalEnvelope(
+        makeEnvelope("version_negotiation", negotiationMessageID, { supported_versions: [1] }),
+      ),
     );
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -201,7 +211,11 @@ export class DeviceRelay extends DurableObject<Env> {
       return;
     }
     const wire = typeof message === "string" ? message : new TextDecoder().decode(message);
-    if (!attachment.authenticated) {
+    if (attachment.phase === "negotiating") {
+      this.negotiateSocket(socket, attachment, wire);
+      return;
+    }
+    if (attachment.phase === "challenged") {
       await this.authenticateSocket(socket, attachment, wire);
       return;
     }
@@ -210,24 +224,64 @@ export class DeviceRelay extends DurableObject<Env> {
 
   override async webSocketClose(socket: WebSocket): Promise<void> {
     const attachment = relayAttachment(socket);
-    if (attachment?.authenticated !== true) {
+    if (attachment?.phase !== "ready") {
       return;
     }
     this.failPendingForSocket(socket, "offline");
-    if (!this.hasOtherAuthenticatedSocket(socket, attachment.generation)) {
+    if (!this.hasOtherReadySocket(socket, attachment.generation)) {
       await this.setDeviceOffline(attachment.deviceID, attachment.generation);
     }
   }
 
   override async webSocketError(socket: WebSocket): Promise<void> {
     const attachment = relayAttachment(socket);
-    if (attachment?.authenticated !== true) {
+    if (attachment?.phase !== "ready") {
       return;
     }
     this.failPendingForSocket(socket, "offline");
-    if (!this.hasOtherAuthenticatedSocket(socket, attachment.generation)) {
+    if (!this.hasOtherReadySocket(socket, attachment.generation)) {
       await this.setDeviceOffline(attachment.deviceID, attachment.generation);
     }
+  }
+
+  private negotiateSocket(
+    socket: WebSocket,
+    attachment: NegotiatingAttachment,
+    message: string,
+  ): void {
+    try {
+      const selection = decodeEnvelope(message);
+      if (
+        selection.type !== "version_negotiation" ||
+        selection.message_id !== attachment.negotiationMessageID ||
+        selection.payload.supported_versions.length !== 1 ||
+        selection.payload.supported_versions[0] !== 1
+      ) {
+        throw new Error("invalid version selection");
+      }
+    } catch {
+      socket.close(1008, "version negotiation failed");
+      return;
+    }
+    const nonce = encodeBase64URL(crypto.getRandomValues(new Uint8Array(32)));
+    const issuedAt = Math.floor(Date.now() / 1000);
+    socket.serializeAttachment({
+      version: 1,
+      deviceID: attachment.deviceID,
+      generation: attachment.generation,
+      phase: "challenged",
+      nonce,
+      issuedAt,
+    } satisfies ChallengeAttachment);
+    socket.send(
+      JSON.stringify({
+        version: 1,
+        type: "device_challenge",
+        device_id: attachment.deviceID,
+        nonce,
+        issued_at: issuedAt,
+      }),
+    );
   }
 
   private async authenticateSocket(
@@ -263,40 +317,28 @@ export class DeviceRelay extends DurableObject<Env> {
       return;
     }
 
-    const updatedAt = Date.now();
-    const updated = await this.env.DB.prepare(
-      `UPDATE devices SET state = 'online', last_seen_at = ?, updated_at = ?
-      WHERE device_id = ? AND generation = ?`,
-    )
-      .bind(updatedAt, updatedAt, attachment.deviceID, attachment.generation)
-      .run();
-    if (updated.meta.changes !== 1) {
-      socket.close(1008, "device authentication failed");
-      return;
-    }
     socket.serializeAttachment({
       version: 1,
       deviceID: attachment.deviceID,
       generation: attachment.generation,
-      authenticated: true,
+      phase: "refreshing",
       lastRefreshIssuedAt: 0,
-    } satisfies AuthenticatedAttachment);
-    for (const existing of this.ctx.getWebSockets("device")) {
-      if (existing !== socket && relayAttachment(existing)?.authenticated === true) {
-        existing.close(1000, "connection replaced");
-      }
-    }
+    } satisfies RefreshingAttachment);
     socket.send(JSON.stringify({ version: 1, type: "device_authenticated" }));
   }
 
   private async handleAuthenticatedMessage(
     socket: WebSocket,
-    attachment: AuthenticatedAttachment,
+    attachment: RefreshingAttachment | ReadyAttachment,
     message: string,
   ): Promise<void> {
     const refresh = parseDeviceRefresh(message);
     if (refresh !== null) {
       await this.handleDeviceRefresh(socket, attachment, refresh);
+      return;
+    }
+    if (attachment.phase !== "ready") {
+      socket.close(1008, "device refresh required");
       return;
     }
     let envelope: RelayEnvelope;
@@ -356,7 +398,7 @@ export class DeviceRelay extends DurableObject<Env> {
 
   private async handleDeviceRefresh(
     socket: WebSocket,
-    attachment: AuthenticatedAttachment,
+    attachment: RefreshingAttachment | ReadyAttachment,
     message: ParsedDeviceRefresh,
   ): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
@@ -401,9 +443,15 @@ export class DeviceRelay extends DurableObject<Env> {
       version: 1,
       deviceID: attachment.deviceID,
       generation: message.refresh.generation,
-      authenticated: true,
+      phase: "ready",
       lastRefreshIssuedAt: message.refresh.issued_at,
-    } satisfies AuthenticatedAttachment);
+    } satisfies ReadyAttachment);
+    for (const existing of this.ctx.getWebSockets("device")) {
+      if (existing !== socket && relayAttachment(existing)?.phase === "ready") {
+        this.failPendingForSocket(existing, "offline");
+        existing.close(1000, "connection replaced");
+      }
+    }
     socket.send(
       JSON.stringify({ version: 1, type: "device_refreshed", generation: message.refresh.generation }),
     );
@@ -411,21 +459,21 @@ export class DeviceRelay extends DurableObject<Env> {
 
   private authenticatedSocket(): WebSocket | null {
     for (const socket of this.ctx.getWebSockets("device")) {
-      if (relayAttachment(socket)?.authenticated === true && socket.readyState === WebSocket.OPEN) {
+      if (relayAttachment(socket)?.phase === "ready" && socket.readyState === WebSocket.OPEN) {
         return socket;
       }
     }
     return null;
   }
 
-  private hasOtherAuthenticatedSocket(excluded: WebSocket, generation: number): boolean {
+  private hasOtherReadySocket(excluded: WebSocket, generation: number): boolean {
     return this.ctx
       .getWebSockets("device")
       .some(
         (socket) =>
           socket !== excluded &&
           socket.readyState === WebSocket.OPEN &&
-          relayAttachment(socket)?.authenticated === true &&
+          relayAttachment(socket)?.phase === "ready" &&
           relayAttachment(socket)?.generation === generation,
       );
   }
@@ -582,11 +630,25 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
     typeof record.generation !== "number" ||
     !Number.isSafeInteger(record.generation) ||
     record.generation <= 0 ||
-    typeof record.authenticated !== "boolean"
+    typeof record.phase !== "string"
   ) {
     return null;
   }
-  if (record.authenticated) {
+  if (record.phase === "negotiating") {
+    return Object.keys(record).length === 5 &&
+      typeof record.negotiationMessageID === "string" &&
+      record.negotiationMessageID.length > 0 &&
+      record.negotiationMessageID.length <= 256
+      ? {
+          version: 1,
+          deviceID: record.deviceID,
+          generation: record.generation,
+          phase: "negotiating",
+          negotiationMessageID: record.negotiationMessageID,
+        }
+      : null;
+  }
+  if (record.phase === "refreshing" || record.phase === "ready") {
     return Object.keys(record).length === 5 &&
       typeof record.lastRefreshIssuedAt === "number" &&
       Number.isSafeInteger(record.lastRefreshIssuedAt) &&
@@ -595,12 +657,13 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
           version: 1,
           deviceID: record.deviceID,
           generation: record.generation,
-          authenticated: true,
+          phase: record.phase,
           lastRefreshIssuedAt: record.lastRefreshIssuedAt,
         }
       : null;
   }
   if (
+    record.phase !== "challenged" ||
     Object.keys(record).length !== 6 ||
     typeof record.nonce !== "string" ||
     typeof record.issuedAt !== "number" ||
@@ -612,7 +675,7 @@ function relayAttachment(socket: WebSocket): RelayAttachment | null {
     version: 1,
     deviceID: record.deviceID,
     generation: record.generation,
-    authenticated: false,
+    phase: "challenged",
     nonce: record.nonce,
     issuedAt: record.issuedAt,
   };

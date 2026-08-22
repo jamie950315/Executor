@@ -25,10 +25,47 @@ beforeEach(async () => {
 });
 
 describe("DeviceRelay WebSocket", () => {
+  it("negotiates version one before challenge and rejects a replay", async () => {
+    await enroll();
+    const socket = await connectSocket();
+    const offer = decodeEnvelope(await nextMessage(socket));
+    expect(offer.type).toBe("version_negotiation");
+    if (offer.type !== "version_negotiation") {
+      throw new Error("expected version negotiation");
+    }
+    expect(offer.payload.supported_versions).toEqual([1]);
+    const selection = makeEnvelope("version_negotiation", offer.message_id, {
+      supported_versions: [1],
+    });
+    socket.send(JSON.stringify(selection));
+    parseChallenge(await nextMessage(socket));
+
+    socket.send(JSON.stringify(selection));
+    expect((await nextClose(socket)).code).toBe(1008);
+    await expect(deviceState()).resolves.toBe("offline");
+  });
+
+  it("rejects malformed or non-overlapping version selections", async () => {
+    await enroll();
+    for (const supportedVersions of [[1, 1], [2]]) {
+      const socket = await connectSocket();
+      const offer = decodeEnvelope(await nextMessage(socket));
+      socket.send(
+        JSON.stringify(
+          makeEnvelope("version_negotiation", offer.message_id, {
+            supported_versions: supportedVersions,
+          }),
+        ),
+      );
+      expect((await nextClose(socket)).code).toBe(1008);
+    }
+    await expect(deviceState()).resolves.toBe("offline");
+  });
+
   it("keeps a device offline until its canonical P-256 challenge is verified", async () => {
     await enroll();
     const socket = await connectSocket();
-    const challenge = parseChallenge(await nextMessage(socket));
+    const challenge = await negotiateVersion(socket);
 
     socket.send(
       JSON.stringify({
@@ -43,6 +80,33 @@ describe("DeviceRelay WebSocket", () => {
     const close = await nextClose(socket);
     expect(close.code).toBe(1008);
     await expect(deviceState()).resolves.toBe("offline");
+  });
+
+  it("keeps an authenticated socket offline and relay-ineligible until refresh acknowledgement", async () => {
+    await enroll();
+    const socket = await connectAuthenticatedWithoutRefresh();
+    const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+    const request = makeEnvelope("request", "message-before-refresh", {
+      request_id: "request-before-refresh",
+      method: "device.status",
+      arguments: {},
+    });
+
+    await expect(deviceState()).resolves.toBe("offline");
+    await expect(stub.relayOnce(request)).resolves.toEqual({ ok: false, error: "offline" });
+    await expect(noMessage(socket, 20)).resolves.toBe(true);
+
+    await refreshAuthenticatedSocket(socket, 7);
+    await expect(deviceState()).resolves.toBe("online");
+    const responsePromise = stub.relayOnce(request);
+    expect(decodeEnvelope(await nextMessage(socket))).toEqual(request);
+    const response = makeEnvelope("response", "response-after-refresh", {
+      request_id: "request-before-refresh",
+      result: { ready: true },
+    });
+    socket.send(JSON.stringify(response));
+    await expect(responsePromise).resolves.toEqual({ ok: true, response: JSON.stringify(response) });
+    socket.close(1000, "test complete");
   });
 
   it("marks an authenticated device online and immediately offline on disconnect", async () => {
@@ -377,8 +441,14 @@ async function connectSocket(): Promise<WebSocket> {
 }
 
 async function connectAuthenticated(generation = 7): Promise<WebSocket> {
+  const socket = await connectAuthenticatedWithoutRefresh(generation);
+  await refreshAuthenticatedSocket(socket, generation);
+  return socket;
+}
+
+async function connectAuthenticatedWithoutRefresh(generation = 7): Promise<WebSocket> {
   const socket = await connectSocket();
-  const challenge = parseChallenge(await nextMessage(socket));
+  const challenge = await negotiateVersion(socket);
   const privateKey = await crypto.subtle.importKey(
     "jwk",
     {
@@ -411,18 +481,48 @@ async function connectAuthenticated(generation = 7): Promise<WebSocket> {
     }),
   );
   expect(JSON.parse(await nextMessage(socket))).toEqual({ version: 1, type: "device_authenticated" });
-  if (generation !== 7) {
-    socket.send(
-      JSON.stringify(
-        makeEnvelope("heartbeat", `generation-${generation}-heartbeat`, {
-          device_id: "device-vector-1",
-          generation,
-          sent_at: Math.floor(Date.now() / 1000),
-        }),
-      ),
-    );
-  }
   return socket;
+}
+
+async function negotiateVersion(socket: WebSocket): Promise<{ nonce: string; issued_at: number }> {
+  const offer = decodeEnvelope(await nextMessage(socket));
+  expect(offer.type).toBe("version_negotiation");
+  if (offer.type !== "version_negotiation") {
+    throw new Error("expected version negotiation");
+  }
+  expect(offer.payload.supported_versions).toEqual([1]);
+  socket.send(
+    JSON.stringify(
+      makeEnvelope("version_negotiation", offer.message_id, { supported_versions: [1] }),
+    ),
+  );
+  return parseChallenge(await nextMessage(socket));
+}
+
+async function refreshAuthenticatedSocket(socket: WebSocket, generation: number): Promise<void> {
+  const refresh: DeviceRefresh = {
+    device_id: "device-vector-1",
+    generation,
+    name: "Vector Device",
+    platform: "darwin",
+    arch: "arm64",
+    executor_version: "dev",
+    mcp_url: "https://device.example/mcp",
+    issued_at: Math.floor(Date.now() / 1000) - 5,
+  };
+  socket.send(
+    JSON.stringify({
+      version: 1,
+      type: "device_refresh",
+      ...refresh,
+      signature: await signDeviceRefresh(refresh),
+    }),
+  );
+  expect(JSON.parse(await nextMessage(socket))).toEqual({
+    version: 1,
+    type: "device_refreshed",
+    generation,
+  });
 }
 
 async function signDeviceRefresh(refresh: DeviceRefresh): Promise<string> {

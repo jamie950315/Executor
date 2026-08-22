@@ -297,6 +297,45 @@ func TestClientAuthenticatesRefreshesDispatchesHeartbeatsAndStopsOnContext(t *te
 	}
 }
 
+func TestClientNegotiatesOneBeforeSendingDeviceAuthentication(t *testing.T) {
+	configPath, _, _ := connectedRelayFixture(t)
+	socket := newFakeSocket()
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", HeartbeatInterval: time.Hour,
+		Dial: func(context.Context, string, *http.Client) (relaySocket, error) { return socket, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	offer, err := relay.NewEnvelope(relay.MessageTypeVersionNegotiation, "negotiation-offer", relay.VersionNegotiationPayload{
+		SupportedVersions: []uint16{1, 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket.reads <- mustJSON(t, offer)
+	response := decodeEnvelopeForTest(t, nextFakeWrite(t, socket))
+	if response.Type != relay.MessageTypeVersionNegotiation || response.MessageID != offer.MessageID {
+		t.Fatalf("version negotiation response = %#v", response)
+	}
+	payload, err := relay.DecodePayload[relay.VersionNegotiationPayload](response)
+	if err != nil || len(payload.SupportedVersions) != 1 || payload.SupportedVersions[0] != relay.ProtocolVersion {
+		t.Fatalf("version selection = %#v err=%v", payload, err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client did not stop")
+	}
+}
+
 func TestClientUsesRealTLSWebSocketTransportForHandshakeRefreshAndHeartbeat(t *testing.T) {
 	configPath, cfg, values := connectedRelayFixture(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -307,6 +346,14 @@ func TestClientUsesRealTLSWebSocketTransportForHandshakeRefreshAndHeartbeat(t *t
 			return
 		}
 		defer connection.CloseNow()
+		if err := connection.Write(request.Context(), websocket.MessageText, []byte(`{"version":1,"type":"version_negotiation","message_id":"tls-negotiation","payload":{"supported_versions":[1]}}`)); err != nil {
+			return
+		}
+		if _, selection, err := connection.Read(request.Context()); err != nil {
+			return
+		} else if envelope, decodeErr := relay.DecodeEnvelope(selection); decodeErr != nil || envelope.Type != relay.MessageTypeVersionNegotiation || envelope.MessageID != "tls-negotiation" {
+			return
+		}
 		nonce := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 		challenge := []byte(`{"version":1,"type":"device_challenge","device_id":"` + cfg.UnifiedDashboard.DeviceID + `","nonce":"` + nonce + `","issued_at":` + strconv.FormatInt(now.Unix(), 10) + `}`)
 		if err := connection.Write(request.Context(), websocket.MessageText, challenge); err != nil {
@@ -598,6 +645,39 @@ func TestClientWaitsForEnrollmentAndConnectsWithoutServiceRestart(t *testing.T) 
 }
 
 func TestClientRejectsProtocolMismatchBeforeSendingDeviceProof(t *testing.T) {
+	for name, versions := range map[string][]uint16{
+		"no overlap": {2}, "empty": {}, "duplicate": {1, 1}, "zero": {0, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configPath, _, _ := connectedRelayFixture(t)
+			socket := newFakeSocket()
+			client, err := NewClient(ClientOptions{
+				ConfigPath: configPath, ExecutorVersion: "test-version", HeartbeatInterval: time.Hour,
+				Dial: func(context.Context, string, *http.Client) (relaySocket, error) { return socket, nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = client.Run(ctx) }()
+			offer, err := relay.NewEnvelope(relay.MessageTypeVersionNegotiation, "invalid-offer", relay.VersionNegotiationPayload{SupportedVersions: versions})
+			if err != nil {
+				t.Fatal(err)
+			}
+			socket.reads <- mustJSON(t, offer)
+			select {
+			case message := <-socket.writes:
+				t.Fatalf("invalid negotiation received a device proof: %s", message)
+			case <-socket.closed:
+			case <-time.After(time.Second):
+				t.Fatal("invalid negotiation did not close the relay")
+			}
+		})
+	}
+}
+
+func TestClientRejectsVersionNegotiationReplayBeforeChallenge(t *testing.T) {
 	configPath, _, _ := connectedRelayFixture(t)
 	socket := newFakeSocket()
 	client, err := NewClient(ClientOptions{
@@ -610,13 +690,19 @@ func TestClientRejectsProtocolMismatchBeforeSendingDeviceProof(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = client.Run(ctx) }()
-	socket.reads <- []byte(`{"version":2,"type":"device_challenge","device_id":"wrong","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","issued_at":1700000000}`)
+	offer, err := relay.NewEnvelope(relay.MessageTypeVersionNegotiation, "replayed-offer", relay.VersionNegotiationPayload{SupportedVersions: []uint16{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket.reads <- mustJSON(t, offer)
+	_ = nextFakeWrite(t, socket)
+	socket.reads <- mustJSON(t, offer)
 	select {
-	case message := <-socket.writes:
-		t.Fatalf("protocol mismatch received a device proof: %s", message)
+	case unexpected := <-socket.writes:
+		t.Fatalf("negotiation replay received another response: %s", unexpected)
 	case <-socket.closed:
 	case <-time.After(time.Second):
-		t.Fatal("protocol mismatch did not close the relay")
+		t.Fatal("negotiation replay did not close the relay")
 	}
 }
 
@@ -699,6 +785,19 @@ func connectedRelayFixture(t *testing.T) (string, config.Config, secrets.Values)
 
 func completeFakeHandshake(t *testing.T, socket *fakeSocket, cfg config.Config, values secrets.Values, now time.Time) {
 	t.Helper()
+	offer, err := relay.NewEnvelope(relay.MessageTypeVersionNegotiation, "negotiation-fixture", relay.VersionNegotiationPayload{
+		SupportedVersions: []uint16{relay.ProtocolVersion},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket.reads <- mustJSON(t, offer)
+	selection := decodeEnvelopeForTest(t, nextFakeWrite(t, socket))
+	selected, err := relay.DecodePayload[relay.VersionNegotiationPayload](selection)
+	if err != nil || selection.Type != relay.MessageTypeVersionNegotiation || selection.MessageID != offer.MessageID ||
+		len(selected.SupportedVersions) != 1 || selected.SupportedVersions[0] != relay.ProtocolVersion {
+		t.Fatalf("version selection = %#v payload=%#v err=%v", selection, selected, err)
+	}
 	nonce := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	socket.reads <- []byte(`{"version":1,"type":"device_challenge","device_id":"` + cfg.UnifiedDashboard.DeviceID + `","nonce":"` + nonce + `","issued_at":` + strconv.FormatInt(now.Unix(), 10) + `}`)
 	var challengeResponse struct {

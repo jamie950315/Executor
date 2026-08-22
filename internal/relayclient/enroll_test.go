@@ -3,12 +3,14 @@ package relayclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jamie950315/executor/internal/config"
@@ -23,9 +25,14 @@ func TestEnrollPostsExactWorkerBodyAndDeletesTokenOnlyAfterSuccess(t *testing.T)
 	if err := os.WriteFile(tokenPath, []byte("test-only-enrollment-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	expectedOrigin := ""
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/api/device/enroll" {
 			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Origin") != expectedOrigin {
+			http.Error(writer, "cross-origin request rejected", http.StatusForbidden)
+			return
 		}
 		if request.Header.Get("Authorization") != "Bearer test-only-enrollment-token" {
 			t.Fatal("enrollment bearer was not read from the token file")
@@ -50,6 +57,7 @@ func TestEnrollPostsExactWorkerBodyAndDeletesTokenOnlyAfterSuccess(t *testing.T)
 		_, _ = writer.Write([]byte(`{"device":{"device_id":"ok"}}`))
 	}))
 	defer server.Close()
+	expectedOrigin = server.URL
 	cfg.UnifiedDashboard.URL = server.URL
 	if err := config.Save(configPath, cfg); err != nil {
 		t.Fatal(err)
@@ -107,6 +115,131 @@ func TestEnrollPreservesTokenFileWhenPostFailsAndDoesNotEchoCredential(t *testin
 	}
 	if loaded.UnifiedDashboard.Enrolled {
 		t.Fatal("failed enrollment was recorded as enrolled")
+	}
+}
+
+func TestEnrollSaveFailurePreservesRetryToken(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := enrollWithOperations(context.Background(), EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}, enrollmentOperations{
+		SaveConfig:  func(string, config.Config) error { return errors.New("forced save failure") },
+		RemoveToken: os.Remove,
+	})
+	if err == nil || containsSensitive(err.Error(), tokenPath, "test-only-enrollment-token") {
+		t.Fatalf("save failure error = %v", err)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("enrollment POST count = %d, want 1", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("save failure removed retry token: %v", err)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UnifiedDashboard.Enrolled {
+		t.Fatal("save failure persisted enrollment")
+	}
+}
+
+func TestEnrollCleanupFailureCanRetryWithoutAnotherPost(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	options := EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}
+	err := enrollWithOperations(context.Background(), options, enrollmentOperations{
+		SaveConfig:  config.Save,
+		RemoveToken: func(string) error { return errors.New("forced cleanup failure") },
+	})
+	if err == nil || containsSensitive(err.Error(), tokenPath, "test-only-enrollment-token") {
+		t.Fatalf("cleanup failure error = %v", err)
+	}
+	loaded, loadErr := config.Load(configPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !loaded.UnifiedDashboard.Enrolled {
+		t.Fatal("cleanup failure lost durable enrollment state")
+	}
+	if _, statErr := os.Stat(tokenPath); statErr != nil {
+		t.Fatalf("cleanup failure unexpectedly removed token: %v", statErr)
+	}
+
+	if err := enrollWithOperations(context.Background(), options, enrollmentOperations{
+		SaveConfig: config.Save, RemoveToken: os.Remove,
+	}); err != nil {
+		t.Fatalf("cleanup retry: %v", err)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("cleanup retry POST count = %d, want 1", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup retry left token: %v", err)
+	}
+}
+
+func TestEnrolledCleanupDoesNotReadTokenOrPostAgain(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("invalid token contents with spaces"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		http.Error(writer, "unexpected POST", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Enroll(context.Background(), EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}); err != nil {
+		t.Fatalf("cleanup-only enrollment: %v", err)
+	}
+	if posts.Load() != 0 {
+		t.Fatalf("cleanup-only enrollment POST count = %d, want 0", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup-only enrollment left token: %v", err)
 	}
 }
 
