@@ -1,27 +1,38 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
-const CurrentVersion = 1
+const CurrentVersion = 2
 
 type Config struct {
-	Version          int                `json:"version"`
-	StateDir         string             `json:"state_dir"`
-	Domain           string             `json:"domain,omitempty"`
-	AgentAddress     string             `json:"agent_address"`
-	DashboardAddress string             `json:"dashboard_address"`
-	BrokerEndpoint   string             `json:"broker_endpoint"`
-	DesktopEndpoint  string             `json:"desktop_endpoint"`
-	AuditRetentionH  int                `json:"audit_retention_hours"`
-	URLSecretEnabled bool               `json:"url_secret_enabled,omitempty"`
-	Cloudflare       CloudflareMetadata `json:"cloudflare,omitempty"`
+	Version          int                      `json:"version"`
+	StateDir         string                   `json:"state_dir"`
+	Domain           string                   `json:"domain,omitempty"`
+	AgentAddress     string                   `json:"agent_address"`
+	DashboardAddress string                   `json:"dashboard_address"`
+	BrokerEndpoint   string                   `json:"broker_endpoint"`
+	DesktopEndpoint  string                   `json:"desktop_endpoint"`
+	AuditRetentionH  int                      `json:"audit_retention_hours"`
+	URLSecretEnabled bool                     `json:"url_secret_enabled,omitempty"`
+	Cloudflare       CloudflareMetadata       `json:"cloudflare,omitempty"`
+	UnifiedDashboard UnifiedDashboardMetadata `json:"unified_dashboard"`
+}
+
+type UnifiedDashboardMetadata struct {
+	URL      string `json:"url,omitempty"`
+	DeviceID string `json:"device_id"`
+	Enrolled bool   `json:"enrolled,omitempty"`
 }
 
 type CloudflareMetadata struct {
@@ -46,6 +57,7 @@ func (m CloudflareMetadata) Complete() bool {
 
 func Default(stateDir string) Config {
 	brokerEndpoint, desktopEndpoint := defaultEndpoints(runtime.GOOS, stateDir)
+	deviceID, _ := randomDeviceID()
 	return Config{
 		Version:          CurrentVersion,
 		StateDir:         stateDir,
@@ -54,6 +66,7 @@ func Default(stateDir string) Config {
 		BrokerEndpoint:   brokerEndpoint,
 		DesktopEndpoint:  desktopEndpoint,
 		AuditRetentionH:  7 * 24,
+		UnifiedDashboard: UnifiedDashboardMetadata{DeviceID: deviceID},
 	}
 }
 
@@ -73,8 +86,18 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
-	if cfg.Version != CurrentVersion {
+	if cfg.Version == 1 {
+		if err := migrateV1ToV2(&cfg); err != nil {
+			return Config{}, err
+		}
+		if err := Save(path, cfg); err != nil {
+			return Config{}, fmt.Errorf("save migrated config: %w", err)
+		}
+	} else if cfg.Version != CurrentVersion {
 		return Config{}, fmt.Errorf("unsupported config version %d", cfg.Version)
+	}
+	if err := validateUnifiedDashboard(cfg.UnifiedDashboard); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
@@ -85,6 +108,16 @@ func Save(path string, cfg Config) error {
 	}
 	if cfg.Version != CurrentVersion {
 		return errors.New("cannot save unsupported config version")
+	}
+	if cfg.UnifiedDashboard.DeviceID == "" {
+		deviceID, err := randomDeviceID()
+		if err != nil {
+			return err
+		}
+		cfg.UnifiedDashboard.DeviceID = deviceID
+	}
+	if err := validateUnifiedDashboard(cfg.UnifiedDashboard); err != nil {
+		return err
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -104,6 +137,45 @@ func Save(path string, cfg Config) error {
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	return nil
+}
+
+func migrateV1ToV2(cfg *Config) error {
+	if cfg == nil || cfg.Version != 1 {
+		return errors.New("invalid config migration")
+	}
+	deviceID, err := randomDeviceID()
+	if err != nil {
+		return err
+	}
+	cfg.Version = CurrentVersion
+	cfg.UnifiedDashboard = UnifiedDashboardMetadata{DeviceID: deviceID}
+	return nil
+}
+
+func randomDeviceID() (string, error) {
+	var value [24]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", errors.New("generate dashboard device identity")
+	}
+	return "device-" + base64.RawURLEncoding.EncodeToString(value[:]), nil
+}
+
+func validateUnifiedDashboard(metadata UnifiedDashboardMetadata) error {
+	if strings.TrimSpace(metadata.DeviceID) == "" || len(metadata.DeviceID) > 256 {
+		return errors.New("invalid unified dashboard metadata")
+	}
+	if metadata.URL == "" {
+		if metadata.Enrolled {
+			return errors.New("invalid unified dashboard metadata")
+		}
+		return nil
+	}
+	parsed, err := url.Parse(metadata.URL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return errors.New("invalid unified dashboard metadata")
 	}
 	return nil
 }

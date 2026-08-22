@@ -1,12 +1,95 @@
 package secrets
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
 )
+
+func TestCreatePersistsP256RelayIdentityAndRotatePreservesIt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	created, err := Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var private map[string]string
+	if err := json.Unmarshal(created.RelayPrivateJWK, &private); err != nil {
+		t.Fatalf("decode relay identity: %v", err)
+	}
+	if len(private) != 5 || private["kty"] != "EC" || private["crv"] != "P-256" || len(private["x"]) != 43 || len(private["y"]) != 43 || len(private["d"]) != 43 {
+		t.Fatalf("relay private JWK = %#v", private)
+	}
+	rotated, err := Rotate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decodeRelayJWKForTest(t, rotated.RelayPrivateJWK), private) {
+		t.Fatal("Rotate changed the relay device identity")
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decodeRelayJWKForTest(t, loaded.RelayPrivateJWK), private) {
+		t.Fatal("persisted relay identity changed after Rotate")
+	}
+}
+
+func TestLoadBackfillsMissingRelayIdentityAndDurablySavesIt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	created, err := Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, secretsFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "relay_private_jwk")
+	data, err = json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load legacy secrets: %v", err)
+	}
+	firstIdentity := decodeRelayJWKForTest(t, first.RelayPrivateJWK)
+	if len(first.RelayPrivateJWK) == 0 || reflect.DeepEqual(firstIdentity, decodeRelayJWKForTest(t, created.RelayPrivateJWK)) {
+		t.Fatal("legacy secret store did not receive a fresh relay identity")
+	}
+	second, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decodeRelayJWKForTest(t, second.RelayPrivateJWK), firstIdentity) {
+		t.Fatal("backfilled relay identity was not durably saved")
+	}
+}
+
+func decodeRelayJWKForTest(t *testing.T, data json.RawMessage) map[string]string {
+	t.Helper()
+	var value map[string]string
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
 
 func TestCreatePersistsOnlyCredentialHashesAndReturnsRecoveryOnce(t *testing.T) {
 	dir := t.TempDir()
