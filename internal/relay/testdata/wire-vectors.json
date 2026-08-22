@@ -13,6 +13,119 @@
     "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
     "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"
   },
+  "messages": {
+    "version_negotiation": {
+      "version": 1,
+      "type": "version_negotiation",
+      "message_id": "message-vector-version-negotiation",
+      "payload": {
+        "supported_versions": [1]
+      }
+    },
+    "enrollment": {
+      "version": 1,
+      "type": "enrollment",
+      "message_id": "message-vector-enrollment",
+      "payload": {
+        "device_id": "device-vector-1",
+        "access_subject": "access-vector-1",
+        "browser_id": "browser-vector-1",
+        "generation": 7,
+        "device_public_key": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+          "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"
+        }
+      }
+    },
+    "heartbeat": {
+      "version": 1,
+      "type": "heartbeat",
+      "message_id": "message-vector-heartbeat",
+      "payload": {
+        "device_id": "device-vector-1",
+        "generation": 7,
+        "sent_at": 1700000000
+      }
+    },
+    "request": {
+      "version": 1,
+      "type": "request",
+      "message_id": "message-vector-request",
+      "payload": {
+        "request_id": "request-vector-1",
+        "method": "device.status",
+        "arguments": {
+          "verbose": true,
+          "limit": 3
+        }
+      }
+    },
+    "response": {
+      "version": 1,
+      "type": "response",
+      "message_id": "message-vector-response",
+      "payload": {
+        "request_id": "request-vector-1",
+        "result": {
+          "ready": true,
+          "generation": 7
+        }
+      }
+    },
+    "stream_chunk": {
+      "version": 1,
+      "type": "stream_chunk",
+      "message_id": "message-vector-stream-chunk",
+      "payload": {
+        "request_id": "request-vector-1",
+        "sequence": 2,
+        "data": "c3RyZWFtLXZlY3Rvcg==",
+        "final": true
+      }
+    },
+    "cancellation": {
+      "version": 1,
+      "type": "cancellation",
+      "message_id": "message-vector-cancellation",
+      "payload": {
+        "request_id": "request-vector-1"
+      }
+    },
+    "recovery_unlock": {
+      "version": 1,
+      "type": "recovery_unlock",
+      "message_id": "message-vector-recovery-unlock",
+      "payload": {
+        "envelope": {
+          "version": 1,
+          "algorithm": "ECDH-P256+HKDF-SHA256+A256GCM",
+          "device_id": "device-vector-1",
+          "access_subject": "access-vector-1",
+          "browser_id": "browser-vector-1",
+          "generation": 7,
+          "ephemeral_public_key": {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "fPJ7GI0DT36KUjgDBLUaw8CJaeJ38hs1pgtI_EdmmXg",
+            "y": "B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E"
+          },
+          "salt": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+          "nonce": "oKGio6Slpqeoqaqr",
+          "ciphertext": "wW9CKKY5ygXvxapRavR5JfoddZXjbgWjG_eVD1ZdPWKGFbay_QrLWIo"
+        }
+      }
+    },
+    "grant_verification": {
+      "version": 1,
+      "type": "grant_verification",
+      "message_id": "message-vector-grant-verification",
+      "payload": {
+        "grant": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImV4ZWN1dG9yLWRldmljZS1ncmFudCtqd3QiLCJ2ZXJzaW9uIjoxfQ.eyJ2ZXJzaW9uIjoxLCJkZXZpY2VfaWQiOiJkZXZpY2UtdmVjdG9yLTEiLCJhY2Nlc3Nfc3ViamVjdCI6ImFjY2Vzcy12ZWN0b3ItMSIsImJyb3dzZXJfaWQiOiJicm93c2VyLXZlY3Rvci0xIiwiZ2VuZXJhdGlvbiI6NywiaXNzdWVkX2F0IjoxNzAwMDAwMDAwLCJleHBpcmVzX2F0IjoxNzAwMDg2NDAwLCJqdGkiOiJncmFudC12ZWN0b3ItMSJ9.Wl0gYqh_-Q1867s53JFtpPJkH7RpgnGsxFF6_qh5_dvCTI-Y-C4GZPfUnK94BJBKE6jLUJc5S8MdooT51I2Wiw"
+      }
+    }
+  },
   "recovery": {
     "context": {
       "device_id": "device-vector-1",

@@ -63,8 +63,13 @@ func TestEnvelopeWireShapes(t *testing.T) {
 		{
 			name:        "recovery unlock",
 			messageType: MessageTypeRecoveryUnlock,
-			payload:     RecoveryUnlockPayload{Envelope: json.RawMessage(`{"version":1,"ciphertext":"fixture"}`)},
-			want:        `{"version":1,"type":"recovery_unlock","message_id":"msg-1","payload":{"envelope":{"version":1,"ciphertext":"fixture"}}}`,
+			payload: RecoveryUnlockPayload{Envelope: RecoveryEnvelope{
+				Version: ProtocolVersion, Algorithm: RecoveryEnvelopeAlgorithm,
+				DeviceID: "device-1", AccessSubject: "access-1", BrowserID: "browser-1", Generation: 7,
+				EphemeralPublicKey: PublicKeyJWK{KeyType: "EC", Curve: "P-256", X: "eA", Y: "eQ"},
+				Salt:               "salt", Nonce: "nonce", Ciphertext: "fixture",
+			}},
+			want: `{"version":1,"type":"recovery_unlock","message_id":"msg-1","payload":{"envelope":{"version":1,"algorithm":"ECDH-P256+HKDF-SHA256+A256GCM","device_id":"device-1","access_subject":"access-1","browser_id":"browser-1","generation":7,"ephemeral_public_key":{"kty":"EC","crv":"P-256","x":"eA","y":"eQ"},"salt":"salt","nonce":"nonce","ciphertext":"fixture"}}}`,
 		},
 		{
 			name:        "grant verification",

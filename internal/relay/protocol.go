@@ -85,7 +85,7 @@ type CancellationPayload struct {
 }
 
 type RecoveryUnlockPayload struct {
-	Envelope json.RawMessage `json:"envelope"`
+	Envelope RecoveryEnvelope `json:"envelope"`
 }
 
 type GrantVerificationPayload struct {

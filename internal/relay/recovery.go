@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -44,6 +45,8 @@ type RecoveryEnvelope struct {
 	Ciphertext         string       `json:"ciphertext"`
 }
 
+type recoveryEnvelopeWire RecoveryEnvelope
+
 type recoveryAAD struct {
 	Version       uint16 `json:"version"`
 	Algorithm     string `json:"algorithm"`
@@ -77,12 +80,41 @@ func SealRecoveryEnvelope(devicePublicKey PublicKeyJWK, context RecoveryContext,
 	return sealRecoveryEnvelopeWithMaterial(devicePublicKey, context, recoveryKey, ephemeralPrivate, salt, nonce)
 }
 
+func ParseRecoveryEnvelope(data []byte) (RecoveryEnvelope, error) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return RecoveryEnvelope{}, ErrInvalidRecoveryEnvelope
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var wire recoveryEnvelopeWire
+	if err := decoder.Decode(&wire); err != nil {
+		return RecoveryEnvelope{}, ErrInvalidRecoveryEnvelope
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return RecoveryEnvelope{}, ErrInvalidRecoveryEnvelope
+	}
+	envelope := RecoveryEnvelope(wire)
+	if err := validateRecoveryEnvelope(envelope); err != nil {
+		return RecoveryEnvelope{}, err
+	}
+	return envelope, nil
+}
+
+func (envelope *RecoveryEnvelope) UnmarshalJSON(data []byte) error {
+	parsed, err := ParseRecoveryEnvelope(data)
+	if err != nil {
+		return err
+	}
+	*envelope = parsed
+	return nil
+}
+
 func VerifyRecoveryEnvelope(identity *DeviceIdentity, envelope RecoveryEnvelope, expected RecoveryContext, verifier func(string) bool) error {
 	if !validPrivateKey(identity) || verifier == nil || !validRecoveryContext(expected) {
 		return ErrInvalidRecoveryEnvelope
 	}
-	if envelope.Version != ProtocolVersion || envelope.Algorithm != RecoveryEnvelopeAlgorithm || !validRecoveryContext(envelope.context()) {
-		return ErrInvalidRecoveryEnvelope
+	if err := validateRecoveryEnvelope(envelope); err != nil {
+		return err
 	}
 	if envelope.context() != expected {
 		return ErrRecoveryContextMismatch
@@ -198,6 +230,31 @@ func (envelope RecoveryEnvelope) context() RecoveryContext {
 
 func validRecoveryContext(context RecoveryContext) bool {
 	return context.DeviceID != "" && context.AccessSubject != "" && context.BrowserID != "" && context.Generation != 0
+}
+
+func validateRecoveryEnvelope(envelope RecoveryEnvelope) error {
+	if envelope.Version != ProtocolVersion || envelope.Algorithm != RecoveryEnvelopeAlgorithm || !validRecoveryContext(envelope.context()) {
+		return ErrInvalidRecoveryEnvelope
+	}
+	if _, err := ParsePublicKeyJWK(envelope.EphemeralPublicKey); err != nil {
+		return ErrInvalidRecoveryEnvelope
+	}
+	salt, err := decodeRecoveryField(envelope.Salt, 32)
+	if err != nil {
+		return ErrInvalidRecoveryEnvelope
+	}
+	clear(salt)
+	nonce, err := decodeRecoveryField(envelope.Nonce, 12)
+	if err != nil {
+		return ErrInvalidRecoveryEnvelope
+	}
+	clear(nonce)
+	ciphertext, err := decodeRecoveryFieldAtLeast(envelope.Ciphertext, 16)
+	if err != nil {
+		return ErrInvalidRecoveryEnvelope
+	}
+	clear(ciphertext)
+	return nil
 }
 
 func recoveryAdditionalData(context RecoveryContext) []byte {

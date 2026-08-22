@@ -3,11 +3,123 @@ package relay
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestParseRecoveryEnvelopeStrictWireRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	identity, err := GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := recoveryContextFixture()
+	want, err := SealRecoveryEnvelope(identity.PublicJWK(), context, "test-only-recovery-material")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseRecoveryEnvelope(encoded)
+	if err != nil {
+		t.Fatalf("ParseRecoveryEnvelope: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parsed envelope = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseRecoveryEnvelopeRejectsUnknownTrailingNullAndMissingFields(t *testing.T) {
+	t.Parallel()
+
+	identity, err := GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := SealRecoveryEnvelope(identity.PublicJWK(), recoveryContextFixture(), "test-only-recovery-material")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secretMarker := "test-only-sensitive-marker"
+	inputs := [][]byte{
+		[]byte("null"),
+		append(append([]byte(nil), validJSON...), []byte(` {"extra":"`+secretMarker+`"}`)...),
+	}
+	var object map[string]any
+	if err := json.Unmarshal(validJSON, &object); err != nil {
+		t.Fatal(err)
+	}
+	withUnknown := cloneJSONMap(t, object)
+	withUnknown["unexpected"] = secretMarker
+	inputs = append(inputs, marshalJSONForTest(t, withUnknown))
+	withNestedUnknown := cloneJSONMap(t, object)
+	publicKey := withNestedUnknown["ephemeral_public_key"].(map[string]any)
+	publicKey["unexpected"] = secretMarker
+	inputs = append(inputs, marshalJSONForTest(t, withNestedUnknown))
+
+	for _, required := range []string{
+		"version", "algorithm", "device_id", "access_subject", "browser_id", "generation",
+		"ephemeral_public_key", "salt", "nonce", "ciphertext",
+	} {
+		missing := cloneJSONMap(t, object)
+		delete(missing, required)
+		inputs = append(inputs, marshalJSONForTest(t, missing))
+	}
+
+	for _, input := range inputs {
+		if _, err := ParseRecoveryEnvelope(input); err == nil {
+			t.Fatalf("ParseRecoveryEnvelope accepted invalid JSON: %s", input)
+		} else if strings.Contains(err.Error(), secretMarker) || strings.Contains(err.Error(), want.Ciphertext) {
+			t.Fatalf("error exposed recovery envelope content: %v", err)
+		}
+	}
+}
+
+func TestDecodeRecoveryUnlockPayloadAppliesNestedStrictParser(t *testing.T) {
+	t.Parallel()
+
+	identity, err := GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryEnvelope, err := SealRecoveryEnvelope(identity.PublicJWK(), recoveryContextFixture(), "test-only-recovery-material")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validJSON, err := json.Marshal(recoveryEnvelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretMarker := "test-only-sensitive-marker"
+	nestedUnknown := strings.TrimSuffix(string(validJSON), "}") + `,"unexpected":"` + secretMarker + `"}`
+
+	for _, payload := range []string{
+		`{"envelope":null}`,
+		`{"envelope":{"version":1}}`,
+		`{"envelope":` + nestedUnknown + `}`,
+	} {
+		envelope, err := NewEnvelope(MessageTypeRecoveryUnlock, "msg-1", json.RawMessage(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecodePayload[RecoveryUnlockPayload](envelope); err == nil {
+			t.Fatalf("DecodePayload accepted invalid nested recovery envelope: %s", payload)
+		} else if strings.Contains(err.Error(), secretMarker) {
+			t.Fatalf("error exposed nested input: %v", err)
+		}
+	}
+}
 
 func TestRecoveryEnvelopeRoundTripUsesConstantTimeStoreVerifier(t *testing.T) {
 	t.Parallel()
@@ -153,6 +265,35 @@ func TestRecoveryEnvelopeRejectsWrongExpectedContextBeforeDecrypting(t *testing.
 	}
 }
 
+func TestRecoveryEnvelopeRejectsDifferentDevicePrivateKeyBeforeVerification(t *testing.T) {
+	t.Parallel()
+
+	identity, err := GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherIdentity, err := GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := recoveryContextFixture()
+	envelope, err := SealRecoveryEnvelope(identity.PublicJWK(), context, "test-only-recovery-material")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = VerifyRecoveryEnvelope(otherIdentity, envelope, context, func(string) bool {
+		called = true
+		return true
+	})
+	if !errors.Is(err, ErrInvalidRecoveryEnvelope) {
+		t.Fatalf("wrong device identity error = %v, want ErrInvalidRecoveryEnvelope", err)
+	}
+	if called {
+		t.Fatal("verifier called after decryption with the wrong device identity")
+	}
+}
+
 func TestRecoveryEnvelopeRejectsTamperingAndMalformedFieldsWithoutLeakingContent(t *testing.T) {
 	t.Parallel()
 
@@ -211,4 +352,23 @@ func flipBase64URLCharacter(value string) string {
 		return "B" + value[1:]
 	}
 	return "A" + value[1:]
+}
+
+func cloneJSONMap(t *testing.T, source map[string]any) map[string]any {
+	t.Helper()
+	encoded := marshalJSONForTest(t, source)
+	var clone map[string]any
+	if err := json.Unmarshal(encoded, &clone); err != nil {
+		t.Fatal(err)
+	}
+	return clone
+}
+
+func marshalJSONForTest(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
