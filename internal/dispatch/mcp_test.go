@@ -97,6 +97,24 @@ func TestMCPFilesystemEncodingWritesDecodedBytesAndReturnsMetadata(t *testing.T)
 	}
 }
 
+func TestMCPFilesystemEncodingPreservesLegacyWriteResult(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]any{"legacy": true}
+	caller := &recordingCaller{responses: map[string]any{"filesystem.write": want}}
+	result, err := NewMCP(nil, caller).Dispatch(context.Background(), mcp.ToolCall{
+		Name: "filesystem_write", Arguments: map[string]any{
+			"action": "write_file", "path": "/tmp/text", "content": "hello",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("legacy write result = %#v, want %#v", result, want)
+	}
+}
+
 func TestMCPRoutesOwnerAndAdminTerminalToSeparateHelpers(t *testing.T) {
 	t.Parallel()
 

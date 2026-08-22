@@ -281,13 +281,14 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 		if err != nil {
 			return nil, err
 		}
-		if _, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)}); err != nil {
+		result, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)})
+		if err != nil {
 			return nil, err
 		}
 		if encoded {
 			return map[string]any{"encoding": encoding, "size": len(data)}, nil
 		}
-		return nil, nil
+		return result, nil
 	case "move":
 		destination, err := requiredString(arguments, "destination")
 		if err != nil {
@@ -302,13 +303,14 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 		if err != nil {
 			return nil, err
 		}
-		if _, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)}); err != nil {
+		result, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)})
+		if err != nil {
 			return nil, err
 		}
 		if encoded {
 			return map[string]any{"encoding": encoding, "size": len(data)}, nil
 		}
-		return nil, nil
+		return result, nil
 	case "mkdir":
 		return d.call(ctx, caller, method, desktop.RPCFilesystemMkdirParams{Path: path, Perm: fs.FileMode(0o755)})
 	default:
