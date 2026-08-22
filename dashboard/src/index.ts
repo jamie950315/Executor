@@ -1,4 +1,5 @@
 import { verifyAccess } from "./access";
+import { handleControlRoute, matchControlRoute } from "./control";
 import { enrollDevice, getDevice, listDevices, writeAudit, type EnrollmentInput } from "./db";
 import { browserIdentity, errorResponse, jsonResponse, readBoundedJSON, rejectCrossOrigin, requireStateChangingRequest } from "./http";
 import type { PublicKeyJWK } from "./shared/wire";
@@ -9,39 +10,51 @@ const maximumEnrollmentBytes = 64 * 1024;
 
 export default {
   async fetch(request, env): Promise<Response> {
-    const crossOrigin = rejectCrossOrigin(request);
-    if (crossOrigin !== null) {
-      return crossOrigin;
+    try {
+      return await routeRequest(request, env);
+    } catch {
+      return errorResponse("internal error", 500);
     }
-    const url = new URL(request.url);
-
-    if (request.method === "POST" && url.pathname === "/api/device/enroll") {
-      return handleEnrollment(request, env);
-    }
-    const connectDeviceID = deviceConnectID(request, url);
-    if (connectDeviceID !== null) {
-      return handleDeviceConnect(request, env, connectDeviceID);
-    }
-
-    if (url.pathname.startsWith("/api/")) {
-      const access = await verifyAccess(request, env);
-      if (access === null) {
-        return errorResponse("unauthorized", 401);
-      }
-      const browser = browserIdentity(request);
-      if (request.method === "GET" && url.pathname === "/api/devices") {
-        const headers = new Headers();
-        if (browser.setCookie !== null) {
-          headers.append("set-cookie", browser.setCookie);
-        }
-        return jsonResponse({ devices: await listDevices(env.DB) }, 200, headers);
-      }
-      return errorResponse("not found", 404);
-    }
-
-    return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;
+
+async function routeRequest(request: Request, env: Env): Promise<Response> {
+  const crossOrigin = rejectCrossOrigin(request);
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+  const url = new URL(request.url);
+
+  if (request.method === "POST" && url.pathname === "/api/device/enroll") {
+    return handleEnrollment(request, env);
+  }
+  const connectDeviceID = deviceConnectID(request, url);
+  if (connectDeviceID !== null) {
+    return handleDeviceConnect(request, env, connectDeviceID);
+  }
+
+  if (url.pathname.startsWith("/api/")) {
+    const access = await verifyAccess(request, env);
+    if (access === null) {
+      return errorResponse("unauthorized", 401);
+    }
+    const browser = browserIdentity(request);
+    const controlRoute = matchControlRoute(request, url);
+    if (controlRoute !== null) {
+      return handleControlRoute(request, env, access, controlRoute);
+    }
+    if (request.method === "GET" && url.pathname === "/api/devices") {
+      const headers = new Headers();
+      if (browser.setCookie !== null) {
+        headers.append("set-cookie", browser.setCookie);
+      }
+      return jsonResponse({ devices: await listDevices(env.DB) }, 200, headers);
+    }
+    return errorResponse("not found", 404);
+  }
+
+  return env.ASSETS.fetch(request);
+}
 
 async function handleEnrollment(request: Request, env: Env): Promise<Response> {
   const requestError = requireStateChangingRequest(request);

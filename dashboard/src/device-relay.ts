@@ -1,21 +1,38 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { getDevice } from "./db";
+import { boundedResponseTotal, MAXIMUM_RELAY_MESSAGE_BYTES } from "./limits";
 import { decodeBase64URL, encodeBase64URL, verifyDeviceChallenge } from "./shared/crypto";
 import { canonicalEnvelope, decodeEnvelope, type RelayEnvelope } from "./shared/wire";
 
-const maximumMessageBytes = 16 * 1024 * 1024;
 const relayTimeoutMilliseconds = 10_000;
 const challengeLifetimeSeconds = 30;
 
-interface PendingRelay {
+interface PendingOnce {
+  mode: "once";
   resolve: (value: RelayOnceResult) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface PendingStream {
+  mode: "stream";
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  nextSequence: number;
+  totalBytes: number;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+type PendingRelay = PendingOnce | PendingStream;
+
 export type RelayOnceResult =
   | { ok: true; response: string }
-  | { ok: false; error: "offline" | "duplicate" | "message_too_large" | "timeout" };
+  | { ok: false; error: RelayFailureCode };
+
+export type RelayStreamResult =
+  | { ok: true; stream: ReadableStream<Uint8Array> }
+  | { ok: false; error: RelayFailureCode };
+
+export type RelayFailureCode = "offline" | "duplicate" | "message_too_large" | "timeout" | "protocol";
 
 interface ChallengeAttachment {
   version: 1;
@@ -80,7 +97,7 @@ export class DeviceRelay extends DurableObject<Env> {
       return { ok: false, error: "duplicate" };
     }
     const wire = canonicalEnvelope(envelope);
-    if (new TextEncoder().encode(wire).byteLength > maximumMessageBytes) {
+    if (new TextEncoder().encode(wire).byteLength > MAXIMUM_RELAY_MESSAGE_BYTES) {
       return { ok: false, error: "message_too_large" };
     }
 
@@ -91,13 +108,58 @@ export class DeviceRelay extends DurableObject<Env> {
           resolve({ ok: false, error: "timeout" });
         }
       }, relayTimeoutMilliseconds);
-      this.pending.set(requestID, { resolve, timeout });
+      this.pending.set(requestID, { mode: "once", resolve, timeout });
       try {
         socket.send(wire);
       } catch {
         this.failPending(requestID, "offline");
       }
     });
+  }
+
+  relayStream(envelope: RelayEnvelope<"request">): RelayStreamResult {
+    const requestID = envelope.payload.request_id;
+    const socket = this.authenticatedSocket();
+    if (socket === null) {
+      return { ok: false, error: "offline" };
+    }
+    if (this.pending.has(requestID)) {
+      return { ok: false, error: "duplicate" };
+    }
+    const wire = canonicalEnvelope(envelope);
+    if (new TextEncoder().encode(wire).byteLength > MAXIMUM_RELAY_MESSAGE_BYTES) {
+      return { ok: false, error: "message_too_large" };
+    }
+
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+      cancel: () => {
+        if (this.pending.delete(requestID)) {
+          this.sendCancellation(socket, requestID);
+        }
+      },
+    });
+    if (streamController === null) {
+      return { ok: false, error: "offline" };
+    }
+    const timeout = this.streamTimeout(requestID, socket);
+    this.pending.set(requestID, {
+      mode: "stream",
+      controller: streamController,
+      nextSequence: 0,
+      totalBytes: 0,
+      timeout,
+    });
+    try {
+      socket.send(wire);
+    } catch {
+      this.failPending(requestID, "offline");
+      return { ok: false, error: "offline" };
+    }
+    return { ok: true, stream };
   }
 
   async disconnect(): Promise<void> {
@@ -110,7 +172,7 @@ export class DeviceRelay extends DurableObject<Env> {
 
   override async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const size = typeof message === "string" ? new TextEncoder().encode(message).byteLength : message.byteLength;
-    if (size > maximumMessageBytes) {
+    if (size > MAXIMUM_RELAY_MESSAGE_BYTES) {
       socket.close(1009, "message too large");
       return;
     }
@@ -224,6 +286,10 @@ export class DeviceRelay extends DurableObject<Env> {
         .run();
       return;
     }
+    if (envelope.type === "stream_chunk") {
+      this.handleStreamChunk(socket, envelope);
+      return;
+    }
     if (envelope.type !== "response") {
       return;
     }
@@ -233,7 +299,19 @@ export class DeviceRelay extends DurableObject<Env> {
     }
     clearTimeout(pending.timeout);
     this.pending.delete(envelope.payload.request_id);
-    pending.resolve({ ok: true, response: canonicalEnvelope(envelope) });
+    const wire = `${canonicalEnvelope(envelope)}\n`;
+    if (pending.mode === "once") {
+      pending.resolve({ ok: true, response: wire.trimEnd() });
+      return;
+    }
+    const bytes = new TextEncoder().encode(wire);
+    if (boundedResponseTotal(pending.totalBytes, bytes.byteLength) === null) {
+      this.sendCancellation(socket, envelope.payload.request_id);
+      pending.controller.error(new Error("relay response too large"));
+      return;
+    }
+    pending.controller.enqueue(bytes);
+    pending.controller.close();
   }
 
   private authenticatedSocket(): WebSocket | null {
@@ -258,7 +336,7 @@ export class DeviceRelay extends DurableObject<Env> {
 
   private failPending(
     requestID: string,
-    error: Extract<RelayOnceResult, { ok: false }>["error"],
+    error: RelayFailureCode,
   ): void {
     const pending = this.pending.get(requestID);
     if (pending === undefined) {
@@ -266,10 +344,14 @@ export class DeviceRelay extends DurableObject<Env> {
     }
     clearTimeout(pending.timeout);
     this.pending.delete(requestID);
-    pending.resolve({ ok: false, error });
+    if (pending.mode === "once") {
+      pending.resolve({ ok: false, error });
+    } else {
+      pending.controller.error(new Error(relayFailureMessage(error)));
+    }
   }
 
-  private failAllPending(error: Extract<RelayOnceResult, { ok: false }>["error"]): void {
+  private failAllPending(error: RelayFailureCode): void {
     for (const requestID of this.pending.keys()) {
       this.failPending(requestID, error);
     }
@@ -290,6 +372,45 @@ export class DeviceRelay extends DurableObject<Env> {
     }
   }
 
+  private handleStreamChunk(socket: WebSocket, envelope: RelayEnvelope<"stream_chunk">): void {
+    const requestID = envelope.payload.request_id;
+    const pending = this.pending.get(requestID);
+    if (pending === undefined || pending.mode !== "stream") {
+      return;
+    }
+    if (envelope.payload.sequence !== pending.nextSequence) {
+      this.sendCancellation(socket, requestID);
+      this.failPending(requestID, "protocol");
+      return;
+    }
+    const bytes = new TextEncoder().encode(`${canonicalEnvelope(envelope)}\n`);
+    const total = boundedResponseTotal(pending.totalBytes, bytes.byteLength);
+    if (total === null) {
+      this.sendCancellation(socket, requestID);
+      this.failPending(requestID, "message_too_large");
+      return;
+    }
+    pending.controller.enqueue(bytes);
+    pending.totalBytes = total;
+    pending.nextSequence += 1;
+    clearTimeout(pending.timeout);
+    if (envelope.payload.final) {
+      this.pending.delete(requestID);
+      pending.controller.close();
+    } else {
+      pending.timeout = this.streamTimeout(requestID, socket);
+    }
+  }
+
+  private streamTimeout(requestID: string, socket: WebSocket): ReturnType<typeof setTimeout> {
+    return setTimeout(() => {
+      if (this.pending.has(requestID)) {
+        this.sendCancellation(socket, requestID);
+        this.failPending(requestID, "timeout");
+      }
+    }, relayTimeoutMilliseconds);
+  }
+
   private async setDeviceOffline(knownDeviceID: string | null = null): Promise<void> {
     const deviceID = knownDeviceID ?? this.deviceIDFromAnyAttachment();
     if (deviceID === null) {
@@ -308,6 +429,21 @@ export class DeviceRelay extends DurableObject<Env> {
       }
     }
     return null;
+  }
+}
+
+function relayFailureMessage(error: RelayFailureCode): string {
+  switch (error) {
+    case "offline":
+      return "device offline";
+    case "duplicate":
+      return "duplicate relay request";
+    case "message_too_large":
+      return "relay response too large";
+    case "timeout":
+      return "relay timeout";
+    case "protocol":
+      return "invalid relay response";
   }
 }
 

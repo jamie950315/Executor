@@ -108,6 +108,16 @@ describe("dashboard HTTP control plane", () => {
     });
     expect(future.status).toBe(401);
 
+    const missingNotBefore = await SELF.fetch(`${dashboardOrigin}/api/devices`, {
+      headers: { "cf-access-jwt-assertion": await accessToken({ omitNotBefore: true }) },
+    });
+    expect(missingNotBefore.status).toBe(401);
+
+    const wrongIssuer = await SELF.fetch(`${dashboardOrigin}/api/devices`, {
+      headers: { "cf-access-jwt-assertion": await accessToken({ issuer: "https://other.cloudflareaccess.com" }) },
+    });
+    expect(wrongIssuer.status).toBe(401);
+
     const noSubject = await SELF.fetch(`${dashboardOrigin}/api/devices`, {
       headers: { "cf-access-jwt-assertion": await accessToken({ subject: "" }) },
     });
@@ -209,6 +219,22 @@ describe("dashboard HTTP control plane", () => {
       }),
     ]);
   });
+
+  it("returns a fixed internal error without echoing corrupted registry data", async () => {
+    await enrollRequest(deviceFixture(), enrollmentToken);
+    const marker = "CORRUPTED-REGISTRY-SENSITIVE-MARKER";
+    await env.DB.prepare("UPDATE devices SET public_jwk = ? WHERE device_id = ?")
+      .bind(marker, "device-vector-1")
+      .run();
+
+    const response = await SELF.fetch(`${dashboardOrigin}/api/devices`, {
+      headers: { "cf-access-jwt-assertion": await accessToken() },
+    });
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(body).toBe('{"error":"internal error"}');
+    expect(body).not.toContain(marker);
+  });
 });
 
 function deviceFixture() {
@@ -241,17 +267,20 @@ async function accessToken(
     audience?: string;
     expiresAt?: number;
     notBefore?: number;
+    omitNotBefore?: boolean;
+    issuer?: string;
     subject?: string;
   } = {},
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({})
+  let token = new SignJWT({})
     .setProtectedHeader({ alg: "RS256", kid: "access-test-key" })
-    .setIssuer(accessIssuer)
+    .setIssuer(overrides.issuer ?? accessIssuer)
     .setAudience(overrides.audience ?? accessAudience)
     .setSubject(overrides.subject ?? "access-user-1")
-    .setIssuedAt(now)
-    .setNotBefore(overrides.notBefore ?? now - 1)
-    .setExpirationTime(overrides.expiresAt ?? now + 300)
-    .sign(accessPrivateKey);
+    .setIssuedAt(now);
+  if (!overrides.omitNotBefore) {
+    token = token.setNotBefore(overrides.notBefore ?? now - 1);
+  }
+  return token.setExpirationTime(overrides.expiresAt ?? now + 300).sign(accessPrivateKey);
 }

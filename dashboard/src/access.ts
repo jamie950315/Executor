@@ -28,7 +28,9 @@ export async function verifyAccess(request: Request, env: Env): Promise<AccessId
       payload.sub.length > 512 ||
       typeof payload.exp !== "number" ||
       !Number.isSafeInteger(payload.exp) ||
-      (payload.nbf !== undefined && (!Number.isSafeInteger(payload.nbf) || payload.nbf > Date.now() / 1000))
+      typeof payload.nbf !== "number" ||
+      !Number.isSafeInteger(payload.nbf) ||
+      payload.nbf > Date.now() / 1000
     ) {
       return null;
     }

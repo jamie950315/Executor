@@ -1,4 +1,4 @@
-import { decodeBase64URL, encodeBase64URL } from "./shared/crypto";
+import { decodeBase64URL, encodeBase64URL, sha256Hex } from "./shared/crypto";
 
 const browserCookieName = "__Host-executor-browser";
 
@@ -102,6 +102,16 @@ export function cookieValue(request: Request, name: string): string | null {
     }
   }
   return null;
+}
+
+export async function deviceGrantCookieName(deviceID: string): Promise<string> {
+  const digest = await sha256Hex(deviceID);
+  return `__Host-executor-grant-${digest.slice(0, 16)}`;
+}
+
+export async function deviceGrantSetCookie(deviceID: string, grant: string): Promise<string> {
+  const name = await deviceGrantCookieName(deviceID);
+  return `${name}=${grant}; Path=/api/devices/${encodeURIComponent(deviceID)}/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict`;
 }
 
 function validBrowserID(value: string): boolean {

@@ -176,7 +176,7 @@ function validatePayload(type: MessageType, payload: unknown): void {
       if (
         !nonEmptyString(value.request_id, 256) ||
         !unsignedInteger(value.sequence, Number.MAX_SAFE_INTEGER) ||
-        typeof value.data !== "string" ||
+        !standardBase64(value.data) ||
         typeof value.final !== "boolean"
       ) {
         throw invalidEnvelope();
@@ -359,6 +359,17 @@ function base64URLString(value: unknown, minimumLength: number, maximumLength: n
     value.length <= maximumLength &&
     /^[A-Za-z0-9_-]+$/.test(value)
   );
+}
+
+function standardBase64(value: unknown): value is string {
+  if (typeof value !== "string" || value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) {
+    return false;
+  }
+  try {
+    return btoa(atob(value)) === value;
+  } catch {
+    return false;
+  }
 }
 
 function invalidEnvelope(): Error {

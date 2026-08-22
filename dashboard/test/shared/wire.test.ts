@@ -45,4 +45,16 @@ describe("Go relay wire vectors", () => {
       "invalid relay envelope",
     );
   });
+
+  it("rejects stream bytes that Go cannot decode from standard Base64", () => {
+    const fixture = vectors.messages.stream_chunk;
+    expect(() =>
+      decodeEnvelope(
+        JSON.stringify({
+          ...fixture,
+          payload: { ...fixture.payload, data: "not-standard-base64_" },
+        }),
+      ),
+    ).toThrow("invalid relay envelope");
+  });
 });
