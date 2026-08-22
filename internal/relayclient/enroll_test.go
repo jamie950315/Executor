@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,6 +195,9 @@ func TestEnrollCleanupFailureCanRetryWithoutAnotherPost(t *testing.T) {
 	if !loaded.UnifiedDashboard.Enrolled {
 		t.Fatal("cleanup failure lost durable enrollment state")
 	}
+	if !loaded.UnifiedDashboard.EnrollmentCleanupPending {
+		t.Fatal("cleanup failure lost durable cleanup-pending state")
+	}
 	if _, statErr := os.Stat(tokenPath); statErr != nil {
 		t.Fatalf("cleanup failure unexpectedly removed token: %v", statErr)
 	}
@@ -209,9 +213,16 @@ func TestEnrollCleanupFailureCanRetryWithoutAnotherPost(t *testing.T) {
 	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleanup retry left token: %v", err)
 	}
+	loaded, err = config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UnifiedDashboard.EnrollmentCleanupPending {
+		t.Fatal("cleanup retry left cleanup-pending state set")
+	}
 }
 
-func TestEnrolledCleanupDoesNotReadTokenOrPostAgain(t *testing.T) {
+func TestCleanupPendingEnrollmentDoesNotReadTokenOrPostAgain(t *testing.T) {
 	t.Parallel()
 	configPath, cfg, _ := relayFixture(t)
 	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
@@ -226,6 +237,7 @@ func TestEnrolledCleanupDoesNotReadTokenOrPostAgain(t *testing.T) {
 	defer server.Close()
 	cfg.UnifiedDashboard.URL = server.URL
 	cfg.UnifiedDashboard.Enrolled = true
+	cfg.UnifiedDashboard.EnrollmentCleanupPending = true
 	if err := config.Save(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +252,117 @@ func TestEnrolledCleanupDoesNotReadTokenOrPostAgain(t *testing.T) {
 	}
 	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleanup-only enrollment left token: %v", err)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UnifiedDashboard.EnrollmentCleanupPending {
+		t.Fatal("cleanup-only enrollment left cleanup-pending state set")
+	}
+}
+
+func TestEnrolledDevicePostsAgainForExplicitSameOriginToken(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-reenrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		posts.Add(1)
+		if request.Header.Get("Authorization") != "Bearer test-only-reenrollment-token" {
+			t.Fatal("re-enrollment bearer was not read from the explicit token file")
+		}
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Enroll(context.Background(), EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	}); err != nil {
+		t.Fatalf("explicit same-origin re-enrollment: %v", err)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("explicit same-origin re-enrollment POST count = %d, want 1", posts.Load())
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicit same-origin re-enrollment left token: %v", err)
+	}
+}
+
+func TestEnrollSendsCanonicalWHATWGOriginHeader(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "explicit default port", url: "https://DASHBOARD.EXAMPLE.test:443", want: "https://dashboard.example.test"},
+		{name: "non-default port", url: "https://DASHBOARD.EXAMPLE.test:8443", want: "https://dashboard.example.test:8443"},
+		{name: "IPv6 default port", url: "https://[2001:DB8::1]:443", want: "https://[2001:db8::1]"},
+		{name: "IPv6 non-default port", url: "https://[2001:DB8::1]:8443", want: "https://[2001:db8::1]:8443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configPath, cfg, _ := relayFixture(t)
+			tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+			if err := os.WriteFile(tokenPath, []byte("test-only-origin-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.UnifiedDashboard.URL = test.url
+			if err := config.Save(configPath, cfg); err != nil {
+				t.Fatal(err)
+			}
+			client := &http.Client{Transport: enrollmentRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if got := request.Header.Get("Origin"); got != test.want {
+					t.Fatalf("Origin = %q, want %q", got, test.want)
+				}
+				return &http.Response{
+					StatusCode: http.StatusCreated,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"device":{"device_id":"ok"}}`)),
+				}, nil
+			})}
+			if err := Enroll(context.Background(), EnrollOptions{
+				ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: client, ExecutorVersion: "test-version",
+			}); err != nil {
+				t.Fatalf("Enroll: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnrollRejectsNonASCIIOriginHostBeforeRequest(t *testing.T) {
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-origin-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.UnifiedDashboard.URL = "https://d\u00e4shboard.example.test"
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	requested := false
+	client := &http.Client{Transport: enrollmentRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requested = true
+		return nil, errors.New("unexpected request")
+	})}
+	err := Enroll(context.Background(), EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: client, ExecutorVersion: "test-version",
+	})
+	if err == nil {
+		t.Fatal("Enroll accepted a non-ASCII origin host")
+	}
+	if requested {
+		t.Fatal("non-ASCII origin reached the HTTP transport")
+	}
+	if _, statErr := os.Stat(tokenPath); statErr != nil {
+		t.Fatalf("rejected origin removed enrollment token: %v", statErr)
 	}
 }
 
@@ -270,4 +393,10 @@ func containsSensitive(value string, markers ...string) bool {
 		}
 	}
 	return false
+}
+
+type enrollmentRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f enrollmentRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }

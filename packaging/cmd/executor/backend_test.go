@@ -41,6 +41,7 @@ func TestDashboardEnrollmentRetryFinishesCleanupWithoutPostingAgain(t *testing.T
 	cfg := config.Default(stateDir)
 	cfg.UnifiedDashboard.URL = server.URL
 	cfg.UnifiedDashboard.Enrolled = true
+	cfg.UnifiedDashboard.EnrollmentCleanupPending = true
 	if err := config.Save(filepath.Join(stateDir, "config.json"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +59,39 @@ func TestDashboardEnrollmentRetryFinishesCleanupWithoutPostingAgain(t *testing.T
 	}
 	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleanup retry left token: %v", err)
+	}
+}
+
+func TestDashboardExplicitSameOriginEnrollmentPostsAgainAfterCleanup(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := secrets.Create(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-reenrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts++
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = server.URL
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(filepath.Join(stateDir, "config.json"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+	b.remoteHTTPClient = server.Client()
+	if _, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+		URL: server.URL, TokenFile: tokenPath,
+	}); err != nil {
+		t.Fatalf("same-origin re-enrollment: %v", err)
+	}
+	if posts != 1 {
+		t.Fatalf("same-origin re-enrollment POST count = %d, want 1", posts)
 	}
 }
 

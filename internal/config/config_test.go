@@ -152,6 +152,7 @@ func TestUnifiedDashboardMetadataPersistsWithoutEnrollmentCredential(t *testing.
 	cfg := Default(dir)
 	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
 	cfg.UnifiedDashboard.Enrolled = true
+	cfg.UnifiedDashboard.EnrollmentCleanupPending = true
 	if err := Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,8 @@ func TestUnifiedDashboardMetadataPersistsWithoutEnrollmentCredential(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.UnifiedDashboard.URL != cfg.UnifiedDashboard.URL || !loaded.UnifiedDashboard.Enrolled || loaded.UnifiedDashboard.DeviceID == "" {
+	if loaded.UnifiedDashboard.URL != cfg.UnifiedDashboard.URL || !loaded.UnifiedDashboard.Enrolled ||
+		!loaded.UnifiedDashboard.EnrollmentCleanupPending || loaded.UnifiedDashboard.DeviceID == "" {
 		t.Fatalf("unified dashboard metadata = %#v", loaded.UnifiedDashboard)
 	}
 	data, err := os.ReadFile(path)

@@ -30,9 +30,10 @@ type Config struct {
 }
 
 type UnifiedDashboardMetadata struct {
-	URL      string `json:"url,omitempty"`
-	DeviceID string `json:"device_id"`
-	Enrolled bool   `json:"enrolled,omitempty"`
+	URL                      string `json:"url,omitempty"`
+	DeviceID                 string `json:"device_id"`
+	Enrolled                 bool   `json:"enrolled,omitempty"`
+	EnrollmentCleanupPending bool   `json:"enrollment_cleanup_pending,omitempty"`
 }
 
 type CloudflareMetadata struct {
@@ -209,8 +210,11 @@ func validateUnifiedDashboard(metadata UnifiedDashboardMetadata) error {
 	if strings.TrimSpace(metadata.DeviceID) == "" || len(metadata.DeviceID) > 256 {
 		return errors.New("invalid unified dashboard metadata")
 	}
+	if metadata.EnrollmentCleanupPending && !metadata.Enrolled {
+		return errors.New("invalid unified dashboard metadata")
+	}
 	if metadata.URL == "" {
-		if metadata.Enrolled {
+		if metadata.Enrolled || metadata.EnrollmentCleanupPending {
 			return errors.New("invalid unified dashboard metadata")
 		}
 		return nil

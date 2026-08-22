@@ -149,9 +149,15 @@ type connection struct {
 	requestWG         sync.WaitGroup
 	refreshMu         sync.Mutex
 	refreshWaitMu     sync.Mutex
-	refreshWait       chan uint64
+	refreshWait       *refreshWaiter
 	lifecycleInFlight atomic.Int32
 	authenticated     bool
+}
+
+type refreshWaiter struct {
+	generation uint64
+	result     chan uint64
+	ctx        context.Context
 }
 
 func newConnection(client *Client, socket relaySocket, cfg config.Config) *connection {
@@ -328,11 +334,11 @@ func (c *connection) handleMessage(ctx context.Context, message []byte) error {
 		c.refreshWaitMu.Lock()
 		waiter := c.refreshWait
 		c.refreshWaitMu.Unlock()
-		if waiter == nil {
-			return errors.New("unexpected device refresh acknowledgement")
+		if waiter == nil || waiter.generation != generation || waiter.ctx.Err() != nil {
+			return nil
 		}
 		select {
-		case waiter <- generation:
+		case waiter.result <- generation:
 		default:
 		}
 		return nil
@@ -400,8 +406,12 @@ func (c *connection) startRequest(ctx context.Context, requestID, method string,
 			return
 		}
 		if result.RefreshGeneration > 0 {
-			if err := c.refresh(ctx, result.RefreshGeneration); err != nil {
-				_ = c.writeFailure(ctx, requestID, "refresh_failed")
+			if err := c.refresh(requestCtx, result.RefreshGeneration); err != nil {
+				code := "refresh_failed"
+				if requestCtx.Err() != nil {
+					code = "cancelled"
+				}
+				_ = c.writeFailure(ctx, requestID, code)
 				return
 			}
 		}
@@ -429,7 +439,7 @@ func (c *connection) refresh(ctx context.Context, expectedGeneration uint64) err
 	if err != nil {
 		return err
 	}
-	waiter := make(chan uint64, 1)
+	waiter := &refreshWaiter{generation: expectedGeneration, result: make(chan uint64, 1), ctx: ctx}
 	c.refreshWaitMu.Lock()
 	c.refreshWait = waiter
 	c.refreshWaitMu.Unlock()
@@ -442,7 +452,10 @@ func (c *connection) refresh(ctx context.Context, expectedGeneration uint64) err
 		return err
 	}
 	select {
-	case generation := <-waiter:
+	case generation := <-waiter.result:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if generation != expectedGeneration {
 			return errors.New("device refresh failed")
 		}

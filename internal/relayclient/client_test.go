@@ -547,6 +547,126 @@ func TestClientRefreshesBeforeEncryptedRotateOrKillResponseAndKillDisconnects(t 
 	}
 }
 
+func TestRequestCancellationReleasesLifecycleRefreshAndRequestState(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return &rotatingLifecycle{stateDir: cfg.StateDir}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", Adapter: adapter,
+		HeartbeatInterval: time.Hour, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := newFakeSocket()
+	connection := newConnection(client, socket, cfg)
+	browser, err := relay.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{
+		"response_public_key": browser.PublicJWK(),
+	})
+	connection.startRequest(context.Background(), "request-cancel-refresh", "control.rotate", arguments, nil)
+	refreshWire := nextFakeWrite(t, socket)
+	var refresh signedDeviceRefresh
+	if err := json.Unmarshal(refreshWire, &refresh); err != nil || refresh.Generation != values.Generation+1 {
+		t.Fatalf("lifecycle refresh = %s err=%v", refreshWire, err)
+	}
+	cancellation, err := relay.NewEnvelope(
+		relay.MessageTypeCancellation,
+		"cancel-lifecycle-refresh",
+		relay.CancellationPayload{RequestID: "request-cancel-refresh"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.handleMessage(context.Background(), mustJSON(t, cancellation)); err != nil {
+		t.Fatalf("handle cancellation: %v", err)
+	}
+	response := nextEnvelopeOfType(t, socket, relay.MessageTypeResponse)
+	payload, err := relay.DecodePayload[relay.ResponsePayload](response)
+	if err != nil || payload.Failure == nil || payload.Failure.Code != "cancelled" {
+		t.Fatalf("cancelled lifecycle response = %#v err=%v", payload, err)
+	}
+	waitForRequests(t, connection)
+	if connection.lifecycleInFlight.Load() != 0 {
+		t.Fatalf("lifecycle in-flight count = %d, want 0", connection.lifecycleInFlight.Load())
+	}
+	if connection.requests.Cancel("request-cancel-refresh") {
+		t.Fatal("cancelled lifecycle request remained registered")
+	}
+}
+
+func TestLateRefreshAcknowledgementCannotSatisfyUnrelatedRefresh(t *testing.T) {
+	configPath, cfg, _ := connectedRelayFixture(t)
+	client, err := NewClient(ClientOptions{ConfigPath: configPath, ExecutorVersion: "test-version"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := newFakeSocket()
+	connection := newConnection(client, socket, cfg)
+	firstValues, err := secrets.Rotate(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- connection.refresh(firstCtx, firstValues.Generation) }()
+	_ = nextFakeWrite(t, socket)
+	cancelFirst()
+	select {
+	case err := <-firstResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled refresh error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled refresh did not return")
+	}
+
+	secondValues, err := secrets.Rotate(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResult := make(chan error, 1)
+	go func() { secondResult <- connection.refresh(context.Background(), secondValues.Generation) }()
+	_ = nextFakeWrite(t, socket)
+	lateAck := []byte(`{"version":1,"type":"device_refreshed","generation":` + strconv.FormatUint(firstValues.Generation, 10) + `}`)
+	if err := connection.handleMessage(context.Background(), lateAck); err != nil {
+		t.Fatalf("late acknowledgement: %v", err)
+	}
+	select {
+	case err := <-secondResult:
+		t.Fatalf("late acknowledgement completed unrelated refresh: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	currentAck := []byte(`{"version":1,"type":"device_refreshed","generation":` + strconv.FormatUint(secondValues.Generation, 10) + `}`)
+	if err := connection.handleMessage(context.Background(), currentAck); err != nil {
+		t.Fatalf("current acknowledgement: %v", err)
+	}
+	select {
+	case err := <-secondResult:
+		if err != nil {
+			t.Fatalf("current acknowledgement result: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("current acknowledgement did not release refresh")
+	}
+	if err := connection.handleMessage(context.Background(), lateAck); err != nil {
+		t.Fatalf("late acknowledgement after refresh completion: %v", err)
+	}
+}
+
 func TestClientDoesNotReconnectWhileDisabled(t *testing.T) {
 	configPath, cfg, _ := connectedRelayFixture(t)
 	if err := os.WriteFile(filepath.Join(cfg.StateDir, "disabled"), []byte("quiesced\n"), 0o600); err != nil {
@@ -865,6 +985,20 @@ func nextEnvelopeOfType(t *testing.T, socket *fakeSocket, messageType relay.Mess
 	}
 	t.Fatalf("no %s envelope received", messageType)
 	return relay.Envelope{}
+}
+
+func waitForRequests(t *testing.T, connection *connection) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		connection.requestWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("relay request did not finish")
+	}
 }
 
 func mustJSON(t *testing.T, value any) []byte {
