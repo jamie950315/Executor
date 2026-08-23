@@ -4,7 +4,9 @@ param(
   [string]$Path,
   [switch]$Initialize,
   [switch]$Directory,
-  [switch]$AncestorsOnly
+  [switch]$AncestorsOnly,
+  [switch]$EmitIdentity,
+  [string]$DeleteIfIdentity = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,127 @@ function Resolve-Sid {
     return $Identity.Translate([System.Security.Principal.SecurityIdentifier]).Value
   } catch {
     return ""
+  }
+}
+
+if (($EmitIdentity -or -not [string]::IsNullOrWhiteSpace($DeleteIfIdentity)) -and $Directory) { exit 1 }
+if ($EmitIdentity -or -not [string]::IsNullOrWhiteSpace($DeleteIfIdentity)) {
+  if (-not ("ExecutorProtectedFile.NativeFile" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace ExecutorProtectedFile {
+  public static class NativeFile {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation {
+      public uint FileAttributes;
+      public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+      public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+      public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+      public uint VolumeSerialNumber;
+      public uint FileSizeHigh;
+      public uint FileSizeLow;
+      public uint NumberOfLinks;
+      public uint FileIndexHigh;
+      public uint FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileDispositionInformation {
+      [MarshalAs(UnmanagedType.U1)] public bool DeleteFile;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+      string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+      uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+      SafeFileHandle file, out ByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(
+      SafeFileHandle file, int informationClass, ref FileDispositionInformation information, uint bufferSize);
+
+    public static string Identity(string path) {
+      const uint FileReadAttributes = 0x80;
+      const uint ShareRead = 0x1;
+      const uint ShareWrite = 0x2;
+      const uint ShareDelete = 0x4;
+      const uint OpenExisting = 3;
+      const uint OpenReparsePoint = 0x00200000;
+      SafeFileHandle handle = CreateFileW(
+        path,
+        FileReadAttributes,
+        ShareRead | ShareWrite | ShareDelete,
+        IntPtr.Zero,
+        OpenExisting,
+        OpenReparsePoint,
+        IntPtr.Zero);
+      if (handle.IsInvalid) {
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      }
+      try {
+        ByHandleFileInformation information;
+        if (!GetFileInformationByHandle(handle, out information)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        ulong fileIndex = ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow;
+        string identity = information.VolumeSerialNumber.ToString("X8") + ":" + fileIndex.ToString("X16");
+        return identity;
+      } finally {
+        handle.Dispose();
+      }
+    }
+
+    public static bool DeleteIfIdentity(string path, string expectedIdentity) {
+      const uint FileReadAttributes = 0x80;
+      const uint Delete = 0x10000;
+      const uint ShareRead = 0x1;
+      const uint ShareWrite = 0x2;
+      const uint ShareDelete = 0x4;
+      const uint OpenExisting = 3;
+      const uint OpenReparsePoint = 0x00200000;
+      SafeFileHandle handle = CreateFileW(
+        path,
+        FileReadAttributes | Delete,
+        ShareRead | ShareWrite | ShareDelete,
+        IntPtr.Zero,
+        OpenExisting,
+        OpenReparsePoint,
+        IntPtr.Zero);
+      if (handle.IsInvalid) {
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      }
+      try {
+        ByHandleFileInformation information;
+        if (!GetFileInformationByHandle(handle, out information)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        ulong fileIndex = ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow;
+        string identity = information.VolumeSerialNumber.ToString("X8") + ":" + fileIndex.ToString("X16");
+        if (!String.Equals(identity, expectedIdentity, StringComparison.Ordinal)) {
+          return false;
+        }
+        FileDispositionInformation disposition = new FileDispositionInformation { DeleteFile = true };
+        uint size = (uint)Marshal.SizeOf(typeof(FileDispositionInformation));
+        if (!SetFileInformationByHandle(handle, 4, ref disposition, size)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        return true;
+      } finally {
+        handle.Dispose();
+      }
+    }
+  }
+}
+"@
   }
 }
 
@@ -95,6 +218,20 @@ foreach ($Rule in $Acl.Access) {
   }
   $RuleSid = Resolve-Sid -Identity $Rule.IdentityReference
   if (-not $AllowedSids.Contains($RuleSid)) {
+    exit 1
+  }
+}
+if ($EmitIdentity) {
+  try {
+    Write-Output ([ExecutorProtectedFile.NativeFile]::Identity($FullPath))
+  } catch {
+    exit 1
+  }
+}
+if (-not [string]::IsNullOrWhiteSpace($DeleteIfIdentity)) {
+  try {
+    if (-not [ExecutorProtectedFile.NativeFile]::DeleteIfIdentity($FullPath, $DeleteIfIdentity)) { exit 1 }
+  } catch {
     exit 1
   }
 }

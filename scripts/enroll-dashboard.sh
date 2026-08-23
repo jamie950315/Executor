@@ -32,7 +32,7 @@ if [[ ! "${DASHBOARD_URL}" =~ ^https://[^/?#]+/?$ ]]; then
   printf 'Unified Dashboard URL must be an HTTPS origin.\n' >&2
   exit 2
 fi
-if [[ ! "${WAIT_ATTEMPTS}" =~ ^[1-9][0-9]*$ || "${WAIT_ATTEMPTS}" -gt 300 ]] ||
+if [[ ! "${WAIT_ATTEMPTS}" =~ ^[1-9][0-9]{0,8}$ ]] ||
    [[ ! "${WAIT_DELAY}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   printf 'Dashboard relay wait settings are invalid.\n' >&2
   exit 2
@@ -40,6 +40,23 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
   printf 'Python 3 is required to validate Dashboard enrollment token paths.\n' >&2
   exit 1
+fi
+if ! WAIT_ATTEMPTS="${WAIT_ATTEMPTS}" WAIT_DELAY="${WAIT_DELAY}" python3 - <<'PY'
+from decimal import Decimal, InvalidOperation
+import os
+import sys
+
+try:
+    attempts = int(os.environ["WAIT_ATTEMPTS"])
+    delay = Decimal(os.environ["WAIT_DELAY"])
+except (InvalidOperation, ValueError):
+    raise SystemExit(1)
+if attempts < 1 or attempts > 300 or not delay.is_finite() or delay <= 0 or Decimal(attempts) * delay > Decimal(300):
+    raise SystemExit(1)
+PY
+then
+  printf 'Dashboard relay wait settings must be positive and must not exceed 300 seconds total.\n' >&2
+  exit 2
 fi
 
 if ! python3 - "${TOKEN_FILE}" <<'PY'
@@ -88,6 +105,21 @@ if [[ ! -f "${TOKEN_FILE}" || -L "${TOKEN_FILE}" ]] || ! protected_mode "${TOKEN
   exit 1
 fi
 
+if ! ORIGINAL_TOKEN_IDENTITY="$(python3 - "${TOKEN_FILE}" <<'PY'
+import os
+import stat
+import sys
+
+info = os.lstat(os.path.abspath(sys.argv[1]))
+if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+    raise SystemExit(1)
+print(f"{info.st_dev}:{info.st_ino}")
+PY
+)" || [[ ! "${ORIGINAL_TOKEN_IDENTITY}" =~ ^[0-9]+:[0-9]+$ ]]; then
+  printf 'Dashboard enrollment token file identity could not be captured safely.\n' >&2
+  exit 1
+fi
+
 cleanup() {
   if [[ -n "${OWNED_COPY}" && -e "${OWNED_COPY}" ]]; then
     rm -f -- "${OWNED_COPY}"
@@ -131,6 +163,62 @@ if [[ "${relay_ready}" != "1" ]]; then
   exit 1
 fi
 if [[ "${TEMPORARY_TOKEN}" == "1" ]]; then
-  rm -f -- "${TOKEN_FILE}"
+  if ! python3 - "${TOKEN_FILE}" "${ORIGINAL_TOKEN_IDENTITY}" <<'PY'
+import os
+import platform
+import secrets
+import stat
+import sys
+
+path = os.path.abspath(sys.argv[1])
+expected_dev, expected_ino = (int(value) for value in sys.argv[2].split(":"))
+parts = path.split(os.sep)
+current = os.sep
+known_darwin_links = {
+    "/etc": "private/etc",
+    "/tmp": "private/tmp",
+    "/var": "private/var",
+}
+for part in parts[1:]:
+    current = os.path.join(current, part)
+    info = os.lstat(current)
+    if stat.S_ISLNK(info.st_mode):
+        if platform.system() == "Darwin" and current in known_darwin_links and os.readlink(current) == known_darwin_links[current]:
+            continue
+        raise SystemExit(1)
+    if current != path and not stat.S_ISDIR(info.st_mode):
+        raise SystemExit(1)
+
+parent = os.path.dirname(path)
+name = os.path.basename(path)
+parent_info = os.lstat(parent)
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+parent_fd = os.open(parent, flags)
+try:
+    opened_parent = os.fstat(parent_fd)
+    if (opened_parent.st_dev, opened_parent.st_ino) != (parent_info.st_dev, parent_info.st_ino):
+        raise SystemExit(1)
+    current_info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISREG(current_info.st_mode) or stat.S_IMODE(current_info.st_mode) != 0o600:
+        raise SystemExit(1)
+    if (current_info.st_dev, current_info.st_ino) != (expected_dev, expected_ino):
+        raise SystemExit(1)
+    tombstone = f".executor-enrollment-delete-{os.getpid()}-{secrets.token_hex(8)}"
+    os.rename(name, tombstone, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    moved_info = os.stat(tombstone, dir_fd=parent_fd, follow_symlinks=False)
+    if (moved_info.st_dev, moved_info.st_ino) != (expected_dev, expected_ino):
+        try:
+            os.rename(tombstone, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except OSError:
+            pass
+        raise SystemExit(1)
+    os.unlink(tombstone, dir_fd=parent_fd)
+finally:
+    os.close(parent_fd)
+PY
+  then
+    printf 'Designated Dashboard enrollment token was missing or replaced; refusing deletion.\n' >&2
+    exit 1
+  fi
 fi
 printf 'Executor is enrolled with Unified Dashboard %s; local services remain healthy.\n' "${DASHBOARD_URL}"

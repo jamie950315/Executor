@@ -1,16 +1,19 @@
 import { createHash, randomBytes as cryptoRandomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
+  open as fsOpen,
   readFile,
+  readdir,
   readlink,
   rename,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, parse, resolve } from "node:path";
+import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const deploymentStateVersion = 1;
@@ -80,6 +83,52 @@ export async function assertProtectedFile(path, options = {}) {
   }
   if ((info.mode & 0o777) !== 0o600) {
     throw new Error("The credential file must have Unix mode 0600.");
+  }
+}
+
+export async function readProtectedCredential(path, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const openFile = options.openFile ?? fsOpen;
+  await assertSafePathAncestors(path, options);
+  const noFollow = platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW ?? 0);
+  let handle;
+  try {
+    handle = await openFile(path, fsConstants.O_RDONLY | noFollow);
+  } catch (error) {
+    throw new Error("The credential must be supplied in a regular protected file.", { cause: error });
+  }
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.size < 1n || opened.size > 4096n) {
+      throw new Error("The Cloudflare API token file is invalid.");
+    }
+    await assertProtectedFile(path, options);
+    await assertSafePathAncestors(path, options);
+    const current = await lstat(path, { bigint: true });
+    if (!current.isFile() || current.isSymbolicLink() ||
+        current.dev !== opened.dev || current.ino !== opened.ino ||
+        (platform === "win32" && current.ino === 0n)) {
+      throw new Error("The Cloudflare API token file identity changed during validation.");
+    }
+    await options.afterIdentityVerified?.();
+    const data = await handle.readFile();
+    if (data.length < 1 || data.length > 4096) {
+      data.fill(0);
+      throw new Error("The Cloudflare API token file is invalid.");
+    }
+    let start = 0;
+    let end = data.length;
+    while (start < end && (data[start] === 0x20 || data[start] === 0x0a || data[start] === 0x0d || data[start] === 0x09)) start += 1;
+    while (end > start && (data[end - 1] === 0x20 || data[end - 1] === 0x0a || data[end - 1] === 0x0d || data[end - 1] === 0x09)) end -= 1;
+    const token = Buffer.from(data.subarray(start, end));
+    data.fill(0);
+    if (token.length === 0 || token.some((byte) => byte <= 0x20 || byte === 0x7f)) {
+      token.fill(0);
+      throw new Error("The Cloudflare API token file is invalid.");
+    }
+    return token;
+  } finally {
+    await handle.close();
   }
 }
 
@@ -204,6 +253,96 @@ export async function writeTemporaryWranglerConfig(dashboardRoot, body) {
   };
 }
 
+export async function deployWorkerWithSecret(options) {
+  const {
+    runCommand,
+    nodePath,
+    wranglerPath,
+    dashboardRoot,
+    configPath,
+    enrollmentHash,
+    environment,
+    marker,
+    workerExists = true,
+    secretDirectory,
+    platform = process.platform,
+  } = options;
+  if (typeof runCommand !== "function" || typeof marker !== "string" || marker === "") {
+    throw new Error("Worker deployment inputs are invalid.");
+  }
+  const argumentsList = [wranglerPath, "deploy", "--config", configPath, "--keep-vars", "--strict", "--message", `Executor deployment ${marker}`];
+  let temporarySecrets;
+  try {
+    if (typeof enrollmentHash === "string") {
+      if (!/^[0-9a-f]{64}$/u.test(enrollmentHash)) {
+        throw new Error("Enrollment secret hash is invalid.");
+      }
+      if (workerExists) {
+        await runCommand(nodePath, [wranglerPath, "secret", "put", "ENROLLMENT_TOKEN_HASH", "--config", configPath], {
+          cwd: dashboardRoot,
+          environment,
+          input: `${enrollmentHash}\n`,
+        });
+      } else {
+        temporarySecrets = await writeExternalWorkerSecretsFile(secretDirectory, dashboardRoot, enrollmentHash, { platform });
+        argumentsList.push("--secrets-file", temporarySecrets.path);
+      }
+    }
+    await runCommand(nodePath, argumentsList, { cwd: dashboardRoot, environment });
+  } finally {
+    await temporarySecrets?.cleanup();
+  }
+}
+
+async function writeExternalWorkerSecretsFile(directory, dashboardRoot, hash, options = {}) {
+  if (typeof directory !== "string" || directory === "") {
+    throw new Error("A protected external Worker secret directory is required for first deployment.");
+  }
+  const root = resolve(dashboardRoot);
+  const targetDirectory = resolve(directory);
+  const relation = relative(root, targetDirectory);
+  if (relation === "" || (!relation.startsWith("..") && !isAbsolute(relation))) {
+    throw new Error("Worker secret material must remain outside the repository.");
+  }
+  await ensureOwnedPrivateDirectory(targetDirectory, options);
+  await cleanupStaleWorkerSecrets(targetDirectory, options);
+  const path = resolve(targetDirectory, `.executor-worker-secret-${process.pid}-${cryptoRandomBytes(12).toString("hex")}.json`);
+  try {
+    await writeFile(path, `${JSON.stringify({ ENROLLMENT_TOKEN_HASH: hash })}\n`, { mode: 0o600, flag: "wx" });
+    if ((options.platform ?? process.platform) === "win32") {
+      await protectWindowsFile(path);
+    } else {
+      await chmod(path, 0o600);
+    }
+  } catch (error) {
+    await rm(path, { force: true });
+    throw error;
+  }
+  return { path, cleanup: async () => rm(path, { force: true }) };
+}
+
+async function cleanupStaleWorkerSecrets(directory, options = {}) {
+  const processExists = options.processExists ?? ((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === "EPERM";
+    }
+  });
+  for (const name of await readdir(directory)) {
+    const match = /^\.executor-worker-secret-([1-9][0-9]*)-[0-9a-f]{24}\.json$/u.exec(name);
+    if (match === null || processExists(Number(match[1]))) continue;
+    const path = resolve(directory, name);
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error("A stale Worker secret path is unsafe.");
+    }
+    await assertProtectedFile(path, options);
+    await rm(path);
+  }
+}
+
 export async function ensureEnrollmentToken(path, options = {}) {
   const platform = options.platform ?? process.platform;
   const rotate = options.rotate === true;
@@ -260,6 +399,36 @@ export async function prepareEnrollmentDeployment(state, path, options = {}) {
     state.enrollment_enabled = enrollment.enabled;
   }
   return enrollment;
+}
+
+export async function prepareEnrollmentRotation(client, state, workerName, path, persist, options = {}) {
+  const hadPendingWorker = state.worker_creation_pending === true;
+  const pendingOperation = state.worker_pending_operation;
+  const pendingRotationHash = state.enrollment_rotation_pending_hash;
+  if (hadPendingWorker) {
+    const workerPlan = await ensureWorkerOwnership(client, state, workerName, persist, { operation: "rotate-enrollment" });
+    const isPendingRotation = pendingOperation === "rotate-enrollment" ||
+      (pendingOperation === undefined && typeof pendingRotationHash === "string");
+    if (isPendingRotation) {
+      if (!/^[0-9a-f]{64}$/u.test(pendingRotationHash)) {
+        throw new Error("Pending enrollment rotation state is incomplete; refusing to generate a replacement bearer.");
+      }
+      const enrollment = await prepareEnrollmentDeployment(state, path, { ...options, rotate: false, enabled: true });
+      if (enrollment.hash !== pendingRotationHash) {
+        throw new Error("The protected enrollment bearer does not match the pending Worker deployment.");
+      }
+      return { enrollment, workerPlan, resumed: true };
+    }
+    if (!workerPlan.skipDeploy) {
+      throw new Error("A different pending Worker deployment must be recovered before enrollment rotation.");
+    }
+  }
+
+  const enrollment = await prepareEnrollmentDeployment(state, path, { ...options, rotate: true });
+  state.enrollment_rotation_pending_hash = enrollment.hash;
+  await persist();
+  const workerPlan = await ensureWorkerOwnership(client, state, workerName, persist, { operation: "rotate-enrollment" });
+  return { enrollment, workerPlan, resumed: false };
 }
 
 export async function removeProtectedFileIfOwned(path, ownedPath, options = {}) {
@@ -523,24 +692,47 @@ export async function ensureD1Database(client, state, name, persist) {
     }
     return owned.uuid;
   }
+  if (state.d1_creation_pending === true) {
+    if (state.d1_database_name !== name) {
+      throw new Error("Pending D1 creation names an incompatible database.");
+    }
+    const pendingUUID = state.d1_pending_create_response_uuid;
+    if (typeof pendingUUID !== "string" || pendingUUID === "") {
+      throw new Error("Pending D1 creation has no persisted create-response UUID; refusing automatic adoption. Verify ownership in Cloudflare and recover the protected deployment state manually.");
+    }
+    const created = exact.find((database) => database?.uuid === pendingUUID);
+    if (created === undefined) {
+      throw new Error("Pending D1 creation does not match the exact create-response UUID; refusing automatic adoption. Verify ownership in Cloudflare and recover the protected deployment state manually.");
+    }
+    state.d1_database_id = pendingUUID;
+    state.d1_owned_by_executor = true;
+    state.d1_creation_pending = false;
+    delete state.d1_pending_create_response_uuid;
+    await persist();
+    return pendingUUID;
+  }
   if (exact.length === 1) {
     state.d1_database_name = name;
     state.d1_database_id = exact[0].uuid;
-    state.d1_owned_by_executor = state.d1_creation_pending === true;
+    state.d1_owned_by_executor = false;
     state.d1_creation_pending = false;
     await persist();
     return exact[0].uuid;
   }
   state.d1_database_name = name;
-  state.d1_owned_by_executor = true;
+  state.d1_owned_by_executor = false;
   state.d1_creation_pending = true;
   await persist();
   const created = await client.createD1Database(name);
   if (created?.name !== name || typeof created?.uuid !== "string" || created.uuid === "") {
     throw new Error("Cloudflare returned invalid D1 creation metadata.");
   }
+  state.d1_pending_create_response_uuid = created.uuid;
+  await persist();
   state.d1_database_id = created.uuid;
+  state.d1_owned_by_executor = true;
   state.d1_creation_pending = false;
+  delete state.d1_pending_create_response_uuid;
   await persist();
   return created.uuid;
 }
@@ -560,18 +752,18 @@ export async function ensureWorkerOwnership(client, state, workerName, persist, 
       if (state.worker_pending_previous_deployment_id !== undefined) {
         throw new Error("The state-owned Worker is missing or has been replaced.");
       }
-      return { marker, skipDeploy: false };
+      return { marker, skipDeploy: false, workerExists: false };
     }
     const current = await currentWorkerDeployment(client, workerName);
     if (current.id === state.worker_pending_previous_deployment_id) {
-      return { marker, skipDeploy: false };
+      return { marker, skipDeploy: false, workerExists: true };
     }
     if (deploymentMessage(current) !== `Executor deployment ${marker}`) {
       throw new Error("Pending Worker ownership cannot be proven from the deployment marker.");
     }
     recordDeploymentIdentity(state, current);
     await persist();
-    return { marker, skipDeploy: true };
+    return { marker, skipDeploy: true, workerExists: true };
   }
   if (state.worker_owned_by_executor === true) {
     if (!exists) {
@@ -582,8 +774,11 @@ export async function ensureWorkerOwnership(client, state, workerName, persist, 
     state.worker_creation_pending = true;
     state.worker_pending_marker = marker;
     state.worker_pending_previous_deployment_id = current.id;
+    if (typeof options.operation === "string" && options.operation !== "") {
+      state.worker_pending_operation = options.operation;
+    }
     await persist();
-    return { marker, skipDeploy: false };
+    return { marker, skipDeploy: false, workerExists: true };
   }
   if (exists) {
     throw new Error("A Worker with the requested name exists but is not owned by Executor state.");
@@ -592,8 +787,11 @@ export async function ensureWorkerOwnership(client, state, workerName, persist, 
   state.worker_name = workerName;
   state.worker_creation_pending = true;
   state.worker_pending_marker = marker;
+  if (typeof options.operation === "string" && options.operation !== "") {
+    state.worker_pending_operation = options.operation;
+  }
   await persist();
-  return { marker, skipDeploy: false };
+  return { marker, skipDeploy: false, workerExists: false };
 }
 
 export async function assertWorkerRemoteIdentity(client, state, workerName) {
@@ -639,6 +837,7 @@ function recordDeploymentIdentity(state, deployment) {
   state.worker_creation_pending = false;
   delete state.worker_pending_marker;
   delete state.worker_pending_previous_deployment_id;
+  delete state.worker_pending_operation;
 }
 
 async function currentWorkerDeployment(client, workerName) {

@@ -10,8 +10,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$WaitAttempts = if ($env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS) { [int]$env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS } else { 30 }
-$WaitDelay = if ($env:EXECUTOR_DASHBOARD_WAIT_DELAY) { [double]$env:EXECUTOR_DASHBOARD_WAIT_DELAY } else { 1 }
+$WaitAttemptsText = if ($env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS) { $env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS } else { "30" }
+$WaitDelayText = if ($env:EXECUTOR_DASHBOARD_WAIT_DELAY) { $env:EXECUTOR_DASHBOARD_WAIT_DELAY } else { "1" }
+[int]$WaitAttempts = 0
+[double]$WaitDelay = 0
+$InvariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
+$IntegerStyle = [System.Globalization.NumberStyles]::None
+$FloatStyle = [System.Globalization.NumberStyles]::AllowDecimalPoint
+$WaitSettingsParsed = [int]::TryParse($WaitAttemptsText, $IntegerStyle, $InvariantCulture, [ref]$WaitAttempts) -and `
+  [double]::TryParse($WaitDelayText, $FloatStyle, $InvariantCulture, [ref]$WaitDelay)
 $ProtectedFileScript = Join-Path (Split-Path $PSScriptRoot -Parent) "dashboard\scripts\protected-file.ps1"
 if (-not (Test-Path -LiteralPath $Executor -PathType Leaf)) { throw "Installed executor binary is unavailable." }
 $ParsedUrl = $null
@@ -23,11 +30,16 @@ if (-not [System.Uri]::TryCreate($Url, [System.UriKind]::Absolute, [ref]$ParsedU
 if (-not (Test-Path -LiteralPath $ProtectedFileScript -PathType Leaf)) {
   throw "Windows protected-file validator is unavailable."
 }
-if ($WaitAttempts -lt 1 -or $WaitAttempts -gt 300 -or $WaitDelay -lt 0) {
-  throw "Dashboard relay wait settings are invalid."
+if (-not $WaitSettingsParsed -or $WaitAttempts -lt 1 -or $WaitAttempts -gt 300 -or $WaitDelay -le 0 -or `
+    [double]::IsNaN($WaitDelay) -or [double]::IsInfinity($WaitDelay) -or ($WaitAttempts * $WaitDelay) -gt 300) {
+  throw "Dashboard relay wait settings must be positive and must not exceed 300 seconds total."
 }
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenFile
 if ($LASTEXITCODE -ne 0) { throw "Dashboard enrollment token file ACL is not protected." }
+$OriginalTokenIdentity = (& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenFile -EmitIdentity | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $OriginalTokenIdentity -notmatch '^[0-9A-F]{8}:[0-9A-F]{16}$') {
+  throw "Dashboard enrollment token file identity could not be captured safely."
+}
 
 $OwnedCopy = ""
 $TokenForEnrollment = $TokenFile
@@ -61,8 +73,12 @@ try {
     if ($Attempt -lt $WaitAttempts -and $WaitDelay -gt 0) { Start-Sleep -Seconds $WaitDelay }
   }
   if (-not $Ready) { throw "Unified Dashboard relay did not become connected while local services were healthy." }
-  if ($TemporaryToken -and (Test-Path -LiteralPath $TokenFile)) {
-    Remove-Item -LiteralPath $TokenFile -Force
+  if ($TemporaryToken) {
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript `
+      -Path $TokenFile -DeleteIfIdentity $OriginalTokenIdentity
+    if ($LASTEXITCODE -ne 0) {
+      throw "Designated Dashboard enrollment token was missing or replaced; refusing deletion."
+    }
   }
   Write-Output "Executor is enrolled with Unified Dashboard $Url; local services remain healthy."
 } finally {

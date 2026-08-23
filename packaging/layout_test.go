@@ -240,6 +240,22 @@ func TestReleaseWorkflowValidatesDashboardPackageBeforeArchives(t *testing.T) {
 	}
 }
 
+func TestDashboardWorkerSecretNamesAreNotHiddenByRepositoryIgnoreRules(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("git", "check-ignore", "--no-index", "dashboard/.executor-secrets-regression.json")
+	command.Dir = root
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("repository ignore rules conceal a Worker secret file: %s", output)
+	}
+	if exitError, ok := err.(*exec.ExitError); !ok || exitError.ExitCode() != 1 {
+		t.Fatalf("git ignore scan failed unexpectedly: %v\n%s", err, output)
+	}
+}
+
 func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("release archive script is covered by Linux and macOS jobs")
@@ -253,6 +269,7 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 		filepath.Join(root, "scripts", ".executor-packaging-test", "runtime.token"),
 		filepath.Join(root, "docs", ".executor-packaging-test", "browser-state.json"),
 		filepath.Join(root, "dashboard", "scripts", ".executor-packaging-test", "deployment-state.json"),
+		filepath.Join(root, "dashboard", ".executor-secrets-packaging.json"),
 	}
 	for _, path := range forbiddenArtifacts {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -266,6 +283,7 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 		_ = os.RemoveAll(filepath.Join(root, "scripts", ".executor-packaging-test"))
 		_ = os.RemoveAll(filepath.Join(root, "docs", ".executor-packaging-test"))
 		_ = os.RemoveAll(filepath.Join(root, "dashboard", "scripts", ".executor-packaging-test"))
+		_ = os.Remove(filepath.Join(root, "dashboard", ".executor-secrets-packaging.json"))
 	})
 	outDir := filepath.Join(t.TempDir(), "release")
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "build-release-artifacts.sh"))
@@ -297,7 +315,7 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	assertArchiveExcludes(t, linuxEntries, "dashboard/node_modules/", "dashboard/dist/", "dashboard/.wrangler/", ".playwright-cli/")
 	assertArchiveExcludes(t, windowsEntries, "dashboard/node_modules/", "dashboard/dist/", "dashboard/.wrangler/", ".playwright-cli/")
 	for _, entries := range [][]string{linuxEntries, windowsEntries} {
-		for _, forbidden := range []string{"runtime.token", "browser-state.json", "deployment-state.json"} {
+		for _, forbidden := range []string{"runtime.token", "browser-state.json", "deployment-state.json", ".executor-secrets-packaging.json"} {
 			for _, entry := range entries {
 				if strings.HasSuffix(entry, "/"+forbidden) || entry == forbidden {
 					t.Fatalf("archive contains untracked runtime artifact %q", entry)

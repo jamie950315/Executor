@@ -14,18 +14,20 @@ import {
   assertMigrationCompatible,
   assertOwnedRollbackVersion,
   assertRemoteMigrationsCompatible,
-  assertProtectedFile,
   assertSupportedNodeVersion,
   assertWranglerV4,
   dashboardD1Name,
   dashboardWorkerName,
   deploymentOwner,
   deploymentStateVersion,
+  deployWorkerWithSecret,
   ensureAccessResources,
   ensureD1Database,
   ensureWorkerOwnership,
   loadDeploymentState,
   prepareEnrollmentDeployment,
+  prepareEnrollmentRotation,
+  readProtectedCredential,
   renderWranglerConfig,
   removeProtectedFileIfOwned,
   recordWorkerDeployment,
@@ -54,54 +56,55 @@ try {
 async function main(options) {
   stage = "local prerequisites";
   assertSupportedNodeVersion();
-  await assertProtectedFile(options.apiTokenFile, { platform: options.platform });
-  await assertPackagePayload();
-  await run(npmBinary, ["--version"], { cwd: dashboardRoot });
-
-  stage = "lockfile installation";
-  await run(npmBinary, ["ci"], { cwd: dashboardRoot });
-  const wranglerVersion = assertWranglerV4((await run(process.execPath, [wranglerPath, "--version"], { cwd: dashboardRoot })).stdout);
-
-  stage = "Dashboard package validation";
-  await run(npmBinary, ["test"], { cwd: dashboardRoot });
-  await run(npmBinary, ["run", "check"], { cwd: dashboardRoot });
-  await run(npmBinary, ["run", "build"], { cwd: dashboardRoot });
-  const template = await readFile(templatePath, "utf8");
-  const localConfig = renderWranglerConfig(template, {
-    accountID: options.accountID,
-    databaseID: "00000000-0000-0000-0000-000000000001",
-    hostname: options.hostname,
-    accessAUD: "local-validation-audience",
-    accessTeamDomain: "local-validation.cloudflareaccess.com",
-  });
-  const localTemporary = await writeTemporaryWranglerConfig(dashboardRoot, localConfig);
+  const apiToken = await readProtectedCredential(options.apiTokenFile, { platform: options.platform });
   try {
-    await run(process.execPath, [wranglerPath, "deploy", "--dry-run", "--config", localTemporary.configPath, "--outdir", "dist/worker-validation"], {
-      cwd: dashboardRoot,
+    await assertPackagePayload();
+    await run(npmBinary, ["--version"], { cwd: dashboardRoot });
+
+    stage = "lockfile installation";
+    await run(npmBinary, ["ci"], { cwd: dashboardRoot });
+    const wranglerVersion = assertWranglerV4((await run(process.execPath, [wranglerPath, "--version"], { cwd: dashboardRoot })).stdout);
+
+    stage = "Dashboard package validation";
+    await run(npmBinary, ["test"], { cwd: dashboardRoot });
+    await run(npmBinary, ["run", "check"], { cwd: dashboardRoot });
+    await run(npmBinary, ["run", "build"], { cwd: dashboardRoot });
+    const template = await readFile(templatePath, "utf8");
+    const localConfig = renderWranglerConfig(template, {
+      accountID: options.accountID,
+      databaseID: "00000000-0000-0000-0000-000000000001",
+      hostname: options.hostname,
+      accessAUD: "local-validation-audience",
+      accessTeamDomain: "local-validation.cloudflareaccess.com",
     });
-  } finally {
-    await localTemporary.cleanup();
-  }
-  if (options.command === "validate") {
-    process.stdout.write(`Dashboard source package validated with Wrangler ${wranglerVersion}; no Cloudflare changes were made.\n`);
-    return;
-  }
+    const localTemporary = await writeTemporaryWranglerConfig(dashboardRoot, localConfig);
+    try {
+      await run(process.execPath, [wranglerPath, "deploy", "--dry-run", "--config", localTemporary.configPath, "--outdir", "dist/worker-validation"], {
+        cwd: dashboardRoot,
+      });
+    } finally {
+      await localTemporary.cleanup();
+    }
+    if (options.command === "validate") {
+      process.stdout.write(`Dashboard source package validated with Wrangler ${wranglerVersion}; no Cloudflare changes were made.\n`);
+      return;
+    }
 
-  stage = "credential loading";
-  const apiToken = await readCredential(options.apiTokenFile);
-  try {
+    stage = "credential loading";
+    const tokenText = apiToken.toString("utf8");
     const wranglerEnvironment = {
       ...process.env,
       CI: "1",
       CLOUDFLARE_ACCOUNT_ID: options.accountID,
-      CLOUDFLARE_API_TOKEN: apiToken.toString("utf8"),
+      CLOUDFLARE_API_TOKEN: tokenText,
     };
+    const client = new CloudflareClient({ accountID: options.accountID, token: tokenText });
+    apiToken.fill(0);
     stage = "Cloudflare authentication";
     await run(process.execPath, [wranglerPath, "whoami", "--account", options.accountID, "--json"], {
       cwd: dashboardRoot,
       environment: wranglerEnvironment,
     });
-    const client = new CloudflareClient({ accountID: options.accountID, token: apiToken });
     await dispatchRemoteCommand(options, client, wranglerEnvironment, template);
   } finally {
     apiToken.fill(0);
@@ -152,13 +155,20 @@ async function dispatchRemoteCommand(options, client, wranglerEnvironment, templ
   try {
     if (options.command === "rotate-enrollment") {
       stage = "enrollment rotation";
-      const enrollment = await prepareEnrollmentDeployment(state, options.enrollmentTokenFile, { platform: options.platform, rotate: true });
-      const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, async () => persistState(options, state));
+      const { enrollment, workerPlan } = await prepareEnrollmentRotation(
+        client,
+        state,
+        dashboardWorkerName,
+        options.enrollmentTokenFile,
+        async () => persistState(options, state),
+        { platform: options.platform },
+      );
       if (!workerPlan.skipDeploy) {
-        await deployWorker(temporary.configPath, enrollment.hash, wranglerEnvironment, workerPlan.marker);
+        await deployWorker(temporary.configPath, enrollment.hash, wranglerEnvironment, workerPlan, dirname(options.stateFile), options.platform);
         await recordWorkerDeployment(client, state, dashboardWorkerName, async () => persistState(options, state));
       }
       state.enrollment_enabled = true;
+      delete state.enrollment_rotation_pending_hash;
       state.last_completed_stage = "enrollment-rotated";
       await persistState(options, state);
       process.stdout.write(`Enrollment bearer rotated. Protected file: ${options.enrollmentTokenFile}\n`);
@@ -169,9 +179,9 @@ async function dispatchRemoteCommand(options, client, wranglerEnvironment, templ
       const unavailableBearer = randomBytes(32);
       const unavailableHash = (await import("node:crypto")).createHash("sha256").update(unavailableBearer).digest("hex");
       unavailableBearer.fill(0);
-      const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, async () => persistState(options, state));
+      const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, async () => persistState(options, state), { operation: "disable-enrollment" });
       if (!workerPlan.skipDeploy) {
-        await deployWorker(temporary.configPath, unavailableHash, wranglerEnvironment, workerPlan.marker);
+        await deployWorker(temporary.configPath, unavailableHash, wranglerEnvironment, workerPlan, dirname(options.stateFile), options.platform);
         await recordWorkerDeployment(client, state, dashboardWorkerName, async () => persistState(options, state));
       }
       await removeProtectedFileIfOwned(options.enrollmentTokenFile, state.enrollment_token_file, { platform: options.platform });
@@ -183,7 +193,7 @@ async function dispatchRemoteCommand(options, client, wranglerEnvironment, templ
     }
     if (options.command === "rollback") {
       assertOwnedRollbackVersion(state, options.versionID);
-      const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, async () => persistState(options, state));
+      const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, async () => persistState(options, state), { operation: "rollback" });
       stage = "Worker rollback";
       if (!workerPlan.skipDeploy) {
         const args = [wranglerPath, "rollback", options.versionID];
@@ -214,7 +224,7 @@ async function deploy(options, client, wranglerEnvironment, template, state, loc
   await assertRemoteMigrationsCompatible(client, state, localMigrationNames);
 
   stage = "Worker ownership check";
-  const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, persist);
+  const workerPlan = await ensureWorkerOwnership(client, state, dashboardWorkerName, persist, { operation: "deploy" });
 
   stage = "Cloudflare Access reconciliation";
   await ensureAccessResources(client, state, { hostname: options.hostname, allowedEmail: options.allowedEmail }, persist);
@@ -239,7 +249,7 @@ async function deploy(options, client, wranglerEnvironment, template, state, loc
 
     stage = "Worker and Static Assets deployment";
     if (!workerPlan.skipDeploy) {
-      await deployWorker(temporary.configPath, enrollment.hash, wranglerEnvironment, workerPlan.marker);
+      await deployWorker(temporary.configPath, enrollment.hash, wranglerEnvironment, workerPlan, dirname(options.stateFile), options.platform);
       await recordWorkerDeployment(client, state, dashboardWorkerName, persist);
     }
     state.last_completed_stage = "worker-deployed";
@@ -264,28 +274,20 @@ async function deploy(options, client, wranglerEnvironment, template, state, loc
   ].join("\n"));
 }
 
-async function deployWorker(configPath, enrollmentHash, environment, marker) {
-  const argumentsList = [wranglerPath, "deploy", "--config", configPath, "--keep-vars", "--strict", "--message", `Executor deployment ${marker}`];
-  let secrets;
-  try {
-    if (typeof enrollmentHash === "string") {
-      secrets = await writeTemporarySecretsFile(enrollmentHash);
-      argumentsList.push("--secrets-file", secrets.path);
-    }
-    await run(process.execPath, argumentsList, { cwd: dashboardRoot, environment });
-  } finally {
-    await secrets?.cleanup();
-  }
-}
-
-async function writeTemporarySecretsFile(hash) {
-  if (!/^[0-9a-f]{64}$/u.test(hash)) throw new Error("Enrollment secret hash is invalid.");
-  const suffix = randomBytes(12).toString("hex");
-  const path = join(dashboardRoot, `.executor-secrets-${process.pid}-${suffix}.json`);
-  const { writeFile, chmod, rm } = await import("node:fs/promises");
-  await writeFile(path, `${JSON.stringify({ ENROLLMENT_TOKEN_HASH: hash })}\n`, { mode: 0o600, flag: "wx" });
-  if (process.platform !== "win32") await chmod(path, 0o600);
-  return { path, cleanup: async () => rm(path, { force: true }) };
+async function deployWorker(configPath, enrollmentHash, environment, workerPlan, secretDirectory, platform) {
+  await deployWorkerWithSecret({
+    runCommand: run,
+    nodePath: process.execPath,
+    wranglerPath,
+    dashboardRoot,
+    configPath,
+    enrollmentHash,
+    environment,
+    marker: workerPlan.marker,
+    workerExists: workerPlan.workerExists,
+    secretDirectory,
+    platform,
+  });
 }
 
 async function renderTemporaryConfig(options, template, state) {
@@ -338,25 +340,6 @@ async function assertPackagePayload() {
       throw new Error("The Dashboard source deployment payload is incomplete.");
     }
   }
-}
-
-async function readCredential(path) {
-  const info = await lstat(path);
-  if (info.size < 1 || info.size > 4096) {
-    throw new Error("The Cloudflare API token file is invalid.");
-  }
-  const data = await readFile(path);
-  let start = 0;
-  let end = data.length;
-  while (start < end && (data[start] === 0x20 || data[start] === 0x0a || data[start] === 0x0d || data[start] === 0x09)) start += 1;
-  while (end > start && (data[end - 1] === 0x20 || data[end - 1] === 0x0a || data[end - 1] === 0x0d || data[end - 1] === 0x09)) end -= 1;
-  const token = Buffer.from(data.subarray(start, end));
-  data.fill(0);
-  if (token.length === 0 || token.some((byte) => byte <= 0x20 || byte === 0x7f)) {
-    token.fill(0);
-    throw new Error("The Cloudflare API token file is invalid.");
-  }
-  return token;
 }
 
 function validTeamDomain(value) {

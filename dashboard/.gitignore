@@ -4,7 +4,6 @@
 dist/
 node_modules/
 .wrangler.executor.generated-*.jsonc
-.executor-secrets-*.json
 dashboard-deployment*.json
 *.token
 *.token.copy

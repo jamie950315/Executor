@@ -30,6 +30,47 @@ try {
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenPath
   if ($LASTEXITCODE -ne 0) { throw "Protected-file validation rejected a protected file." }
 
+  $IdentityBefore = (& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenPath -EmitIdentity | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $IdentityBefore -notmatch '^[0-9A-F]{8}:[0-9A-F]{16}$') {
+    throw "Protected-file stable identity capture failed."
+  }
+  $OriginalTokenPath = "$TokenPath.original"
+  $env:EXECUTOR_DEPLOY_CORE_URI = ([System.Uri]::new((Join-Path $DashboardRoot "scripts\lib\deploy-core.mjs"))).AbsoluteUri
+  $env:EXECUTOR_TEST_TOKEN_PATH = $TokenPath
+  $env:EXECUTOR_TEST_ORIGINAL_TOKEN_PATH = $OriginalTokenPath
+  $HeldCredentialProgram = @'
+const { rename, writeFile } = await import("node:fs/promises");
+const { readProtectedCredential } = await import(process.env.EXECUTOR_DEPLOY_CORE_URI);
+const token = await readProtectedCredential(process.env.EXECUTOR_TEST_TOKEN_PATH, {
+  platform: "win32",
+  afterIdentityVerified: async () => {
+    await rename(process.env.EXECUTOR_TEST_TOKEN_PATH, process.env.EXECUTOR_TEST_ORIGINAL_TOKEN_PATH);
+    await writeFile(process.env.EXECUTOR_TEST_TOKEN_PATH, "test-only-replacement-api-token\n");
+  },
+});
+try {
+  if (token.toString("utf8") !== "test-only-dashboard-api-token") throw new Error("held credential changed after path replacement");
+} finally {
+  token.fill(0);
+}
+'@
+  try {
+    & node.exe --input-type=module --eval $HeldCredentialProgram
+    if ($LASTEXITCODE -ne 0) { throw "Node held-handle credential identity validation failed." }
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenPath -Initialize
+    if ($LASTEXITCODE -ne 0) { throw "Replacement API token ACL initialization failed." }
+    $IdentityAfter = (& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenPath -EmitIdentity | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $IdentityAfter -eq $IdentityBefore) {
+      throw "Protected-file stable identity did not detect pathname replacement."
+    }
+  } finally {
+    Remove-Item -LiteralPath $TokenPath -Force -ErrorAction SilentlyContinue
+    Move-Item -LiteralPath $OriginalTokenPath -Destination $TokenPath -Force
+    Remove-Item Env:EXECUTOR_DEPLOY_CORE_URI -ErrorAction SilentlyContinue
+    Remove-Item Env:EXECUTOR_TEST_TOKEN_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:EXECUTOR_TEST_ORIGINAL_TOKEN_PATH -ErrorAction SilentlyContinue
+  }
+
   $Acl = Get-Acl -LiteralPath $TokenPath
   $UsersSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-545")
   $UnsafeRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
@@ -104,6 +145,12 @@ goto scan
 del /f /q "%~2"
 exit /b 0
 :dashboardstatus
+if not "%REPLACE_TOKEN_PATH%"=="" if not exist "%REPLACE_TOKEN_PATH%.replaced" (
+  move /y "%REPLACE_TOKEN_PATH%" "%REPLACE_TOKEN_PATH%.original" >nul
+  echo test-only-replacement-bearer>"%REPLACE_TOKEN_PATH%"
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%PROTECTED_FILE_SCRIPT%" -Path "%REPLACE_TOKEN_PATH%" -Initialize >nul
+  echo replaced>"%REPLACE_TOKEN_PATH%.replaced"
+)
 if "%RELAY_DOWN%"=="1" (echo {"enrolled":true,"relay":"disconnected"}) else (echo {"enrolled":true,"relay":"connected"})
 exit /b 0
 :localstatus
@@ -137,13 +184,38 @@ exit /b 0
     throw "Windows enrollment helper retained a designated temporary token after success."
   }
 
+  $ReplacedEnrollment = Join-Path $TemporaryRoot "replaced-enrollment.token"
+  [System.IO.File]::WriteAllText($ReplacedEnrollment, "test-only-dashboard-enrollment-bearer`n")
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $ReplacedEnrollment -Initialize
+  if ($LASTEXITCODE -ne 0) { throw "Replacement-race enrollment ACL initialization failed." }
+  $env:REPLACE_TOKEN_PATH = $ReplacedEnrollment
+  $env:PROTECTED_FILE_SCRIPT = $ProtectedFileScript
+  try {
+    $ReplacementRejected = $false
+    try {
+      & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $ReplacedEnrollment -TemporaryToken | Out-Null
+    } catch {
+      $ReplacementRejected = $true
+    }
+    if (-not $ReplacementRejected) { throw "Windows replacement race unexpectedly passed deletion." }
+    if (-not (Test-Path -LiteralPath $ReplacedEnrollment -PathType Leaf)) {
+      throw "Windows enrollment helper deleted the replacement token file."
+    }
+    if ([System.IO.File]::ReadAllText($ReplacedEnrollment) -notmatch "test-only-replacement-bearer") {
+      throw "Windows enrollment helper changed the replacement token file."
+    }
+  } finally {
+    Remove-Item Env:REPLACE_TOKEN_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:PROTECTED_FILE_SCRIPT -ErrorAction SilentlyContinue
+  }
+
   $TimedOutEnrollment = Join-Path $TemporaryRoot "timed-out-enrollment.token"
   [System.IO.File]::WriteAllText($TimedOutEnrollment, "test-only-dashboard-enrollment-bearer`n")
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TimedOutEnrollment -Initialize
   if ($LASTEXITCODE -ne 0) { throw "Timed-out enrollment ACL initialization failed." }
   $env:RELAY_DOWN = "1"
   $env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS = "2"
-  $env:EXECUTOR_DASHBOARD_WAIT_DELAY = "0"
+  $env:EXECUTOR_DASHBOARD_WAIT_DELAY = "0.01"
   try {
     $TimedOut = $false
     try {
@@ -181,6 +253,28 @@ exit /b 0
     Remove-Item Env:FAIL_ENROLL -ErrorAction SilentlyContinue
   }
 
+  foreach ($WaitCase in @(
+    @{ Name = "zero attempts"; Attempts = "0"; Delay = "1" },
+    @{ Name = "negative attempts"; Attempts = "-1"; Delay = "1" },
+    @{ Name = "huge attempts"; Attempts = "999999999999"; Delay = "1" },
+    @{ Name = "zero delay"; Attempts = "2"; Delay = "0" },
+    @{ Name = "negative delay"; Attempts = "2"; Delay = "-1" },
+    @{ Name = "huge delay"; Attempts = "2"; Delay = "999999999999" },
+    @{ Name = "excessive total wait"; Attempts = "300"; Delay = "2" }
+  )) {
+    $env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS = $WaitCase.Attempts
+    $env:EXECUTOR_DASHBOARD_WAIT_DELAY = $WaitCase.Delay
+    $Rejected = $false
+    try {
+      & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $TokenPath | Out-Null
+    } catch {
+      $Rejected = $true
+    }
+    if (-not $Rejected) { throw "Windows accepted invalid relay wait settings: $($WaitCase.Name)." }
+  }
+  Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS -ErrorAction SilentlyContinue
+  Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_DELAY -ErrorAction SilentlyContinue
+
   $ForbiddenPackagingRoot = Join-Path $RepositoryRoot "scripts\.executor-windows-packaging-test"
   New-Item -ItemType Directory -Path $ForbiddenPackagingRoot -Force | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $ForbiddenPackagingRoot "runtime.token"), "test-only runtime artifact`n")
@@ -193,7 +287,9 @@ exit /b 0
   }
 } finally {
   foreach ($Name in @(
-    "EXECUTOR_DASHBOARD_HOSTNAME", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN_FILE", "EXECUTOR_DASHBOARD_ALLOWED_EMAIL"
+    "EXECUTOR_DASHBOARD_HOSTNAME", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN_FILE", "EXECUTOR_DASHBOARD_ALLOWED_EMAIL",
+    "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS", "EXECUTOR_DASHBOARD_WAIT_DELAY", "REPLACE_TOKEN_PATH", "PROTECTED_FILE_SCRIPT",
+    "EXECUTOR_DEPLOY_CORE_URI", "EXECUTOR_TEST_TOKEN_PATH", "EXECUTOR_TEST_ORIGINAL_TOKEN_PATH"
   )) {
     Remove-Item "Env:$Name" -ErrorAction SilentlyContinue
   }

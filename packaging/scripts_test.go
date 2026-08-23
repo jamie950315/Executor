@@ -30,6 +30,12 @@ if [[ "$1" == "dashboard" && "$2" == "enroll" ]]; then
   exit 0
 fi
 if [[ "$1" == "dashboard" && "$2" == "status" ]]; then
+  if [[ -n "${REPLACE_TOKEN_PATH:-}" && ! -e "${REPLACE_TOKEN_PATH}.replaced" ]]; then
+    mv -- "$REPLACE_TOKEN_PATH" "${REPLACE_TOKEN_PATH}.original"
+    printf 'test-only-replacement-bearer\n' > "$REPLACE_TOKEN_PATH"
+    chmod 0600 "$REPLACE_TOKEN_PATH"
+    : > "${REPLACE_TOKEN_PATH}.replaced"
+  fi
   if [[ "${RELAY_DOWN:-}" == "1" ]]; then printf '{"enrolled":true,"relay":"disconnected"}\n'; else printf '{"enrolled":true,"relay":"connected"}\n'; fi
   exit 0
 fi
@@ -115,6 +121,25 @@ exit 2
 		t.Fatal("helper passed the designated original temporary token to enrollment")
 	}
 
+	replacedToken := filepath.Join(tmp, "replaced-temporary-enrollment.token")
+	if err := os.WriteFile(replacedToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", replacedToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "REPLACE_TOKEN_PATH="+replacedToken)
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("replacement race unexpectedly deleted by enrollment helper: %s", output)
+	}
+	if got := readFile(t, replacedToken); got != "test-only-replacement-bearer\n" {
+		t.Fatalf("enrollment helper changed or deleted replacement file: %q", got)
+	}
+	assertFileExists(t, replacedToken+".original")
+
 	timedOutToken := filepath.Join(tmp, "timed-out-temporary-enrollment.token")
 	if err := os.WriteFile(timedOutToken, []byte(tokenValue+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -125,9 +150,12 @@ exit 2
 		"--token-file", timedOutToken,
 		"--temporary-token",
 	)
-	command.Env = append(environment, "RELAY_DOWN=1", "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=0")
+	command.Env = append(environment, "RELAY_DOWN=1", "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=0.001")
 	if output, err = command.CombinedOutput(); err == nil {
 		t.Fatalf("disconnected relay unexpectedly passed enrollment verification: %s", output)
+	}
+	if !strings.Contains(string(output), "relay did not become connected") {
+		t.Fatalf("normal bounded timeout did not reach relay verification: %s", output)
 	}
 	assertFileExists(t, timedOutToken)
 
@@ -148,6 +176,28 @@ exit 2
 	assertFileExists(t, failedToken)
 	if strings.Contains(readFile(t, commandLog), "rollback") {
 		t.Fatal("failed optional enrollment rolled back a healthy local install")
+	}
+
+	for name, settings := range map[string][]string{
+		"zero attempts":        {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=0", "EXECUTOR_DASHBOARD_WAIT_DELAY=1"},
+		"negative attempts":    {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=-1", "EXECUTOR_DASHBOARD_WAIT_DELAY=1"},
+		"huge attempts":        {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=999999999999", "EXECUTOR_DASHBOARD_WAIT_DELAY=1"},
+		"zero delay":           {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=0"},
+		"negative delay":       {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=-1"},
+		"huge delay":           {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=999999999999"},
+		"excessive total wait": {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=300", "EXECUTOR_DASHBOARD_WAIT_DELAY=2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			command := exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+				"--executor", executorPath,
+				"--url", "https://dashboard.example.test",
+				"--token-file", sourceToken,
+			)
+			command.Env = append(environment, settings...)
+			if output, err := command.CombinedOutput(); err == nil {
+				t.Fatalf("invalid wall-clock wait settings were accepted: %s", output)
+			}
+		})
 	}
 }
 
