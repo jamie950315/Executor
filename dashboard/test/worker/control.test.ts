@@ -226,12 +226,25 @@ describe("unlocked device control", () => {
     await expect(response.json()).resolves.toEqual({ error: "device offline" });
   });
 
-  it("deletes only under a valid grant, disconnects, and leaves no registry row", async () => {
+  it("rejects DELETE without the canonical trailing slash", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+
+    const response = await controlRequest("delete-no-slash", unlocked, {}, "DELETE");
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "not found" });
+    await expect(
+      env.DB.prepare("SELECT device_id FROM devices WHERE device_id = ?").bind(deviceID).first(),
+    ).resolves.toEqual(expect.objectContaining({ device_id: deviceID }));
+    socket.close(1000, "test complete");
+  });
+
+  it("accepts canonical trailing-slash DELETE under a valid grant and leaves no registry row", async () => {
     const socket = await enrolledAuthenticatedSocket();
     const unlocked = await unlock(socket);
 
     const closed = nextClose(socket);
-    const response = await controlRequest("exact-delete", unlocked, {}, "DELETE");
+    const response = await controlRequest("delete", unlocked, {}, "DELETE");
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ deleted: true });
     await expect(
@@ -248,7 +261,7 @@ describe("unlocked device control", () => {
     const socket = await enrolledAuthenticatedSocket();
     const unlocked = await unlock(socket);
     const closed = nextClose(socket);
-    const deleted = await controlRequest("exact-delete", unlocked, {}, "DELETE");
+    const deleted = await controlRequest("delete", unlocked, {}, "DELETE");
     expect(deleted.status).toBe(200);
     await closed;
 
@@ -330,9 +343,9 @@ async function controlRequest(
   method = "POST",
 ): Promise<Response> {
   const path =
-    suffix === ""
+    suffix === "delete"
       ? `/api/devices/${deviceID}/`
-      : suffix === "exact-delete"
+      : suffix === "delete-no-slash"
         ? `/api/devices/${deviceID}`
         : `/api/devices/${deviceID}/${suffix}`;
   return SELF.fetch(`${dashboardOrigin}${path}`, {

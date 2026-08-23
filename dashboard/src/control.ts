@@ -55,7 +55,7 @@ export function matchControlRoute(request: Request, url: URL): ControlRoute | nu
     if (!validText(deviceID, 256)) {
       return null;
     }
-    if (request.method === "DELETE" && (match[2] === undefined || match[2] === "")) {
+    if (request.method === "DELETE" && (match[2] === undefined || match[2] === "") && url.pathname.endsWith("/")) {
       return { deviceID, action: "delete" };
     }
     if (request.method === "POST" && (match[2] === "unlock" || match[2] === "call")) {

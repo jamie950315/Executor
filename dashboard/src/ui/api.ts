@@ -49,10 +49,11 @@ export class DeviceActionError extends Error {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export async function fetchSession(fetcher: Fetcher = fetch): Promise<SessionContext> {
+export async function fetchSession(signal?: AbortSignal, fetcher: Fetcher = fetch): Promise<SessionContext> {
   const response = await fetcher("/api/session", {
     credentials: "same-origin",
     headers: { accept: "application/json" },
+    signal,
   });
   const value = await strictJSONResponse(response);
   if (!isRecord(value) || !validText(value.access_subject, 512) || !validText(value.browser_id, 256)) {
@@ -61,10 +62,11 @@ export async function fetchSession(fetcher: Fetcher = fetch): Promise<SessionCon
   return { access_subject: value.access_subject, browser_id: value.browser_id };
 }
 
-export async function fetchDevices(fetcher: Fetcher = fetch): Promise<DeviceRecord[]> {
+export async function fetchDevices(signal?: AbortSignal, fetcher: Fetcher = fetch): Promise<DeviceRecord[]> {
   const response = await fetcher("/api/devices", {
     credentials: "same-origin",
     headers: { accept: "application/json" },
+    signal,
   });
   const value = await strictJSONResponse(response);
   if (!isRecord(value) || !Array.isArray(value.devices)) {

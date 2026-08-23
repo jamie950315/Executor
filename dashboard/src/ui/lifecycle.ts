@@ -7,9 +7,13 @@ export async function runSensitiveLifecycle(
   device: DeviceRecord,
   session: SessionContext,
   call: DeviceCall,
+  signal: AbortSignal,
 ): Promise<SensitiveResult> {
+  throwIfAborted(signal);
   const responseKey = await generateSensitiveResponseKey();
-  const response = await call(method, { response_public_key: responseKey.publicJWK }, new AbortController().signal);
+  throwIfAborted(signal);
+  const response = await call(method, { response_public_key: responseKey.publicJWK }, signal);
+  throwIfAborted(signal);
   const result = record(response.result);
   const envelope = result?.sensitive_result;
   const expected: SensitiveResultContext = {
@@ -21,6 +25,10 @@ export async function runSensitiveLifecycle(
     method,
   };
   return openSensitiveResultEnvelope(responseKey.privateKey, envelope, expected);
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException("Operation aborted", "AbortError");
 }
 
 function record(value: unknown): Record<string, unknown> | null {

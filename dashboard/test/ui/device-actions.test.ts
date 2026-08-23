@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from "vitest";
 import vectors from "../../../internal/relay/testdata/wire-vectors.json";
 
@@ -6,7 +8,10 @@ import { performUnlock } from "../../src/ui/device-actions";
 describe("recovery unlock", () => {
   it("sends only an encrypted envelope and never touches browser storage", async () => {
     const marker = "SENSITIVE_BROWSER_RECOVERY_MARKER";
-    const localSpy = vi.spyOn(Storage.prototype, "setItem");
+    const localSetItem = vi.fn();
+    const sessionSetItem = vi.fn();
+    vi.stubGlobal("localStorage", { setItem: localSetItem });
+    vi.stubGlobal("sessionStorage", { setItem: sessionSetItem });
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = String(init?.body);
       expect(body).not.toContain(marker);
@@ -30,7 +35,8 @@ describe("recovery unlock", () => {
     );
 
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(localSpy).not.toHaveBeenCalled();
-    localSpy.mockRestore();
+    expect(localSetItem).not.toHaveBeenCalled();
+    expect(sessionSetItem).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

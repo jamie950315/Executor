@@ -93,4 +93,28 @@ describe("Dashboard call client", () => {
     ).rejects.toBeInstanceOf(DeviceLockedError);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("cancels active streaming response consumption through the caller-owned fetch signal", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let fetchSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      fetchSignal = init?.signal;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          controller.enqueue(encoder.encode('{"version":1'));
+        },
+      });
+      fetchSignal?.addEventListener("abort", () => streamController?.error(fetchSignal?.reason), { once: true });
+      return new Response(stream, { headers: { "content-type": "application/x-ndjson; charset=utf-8" } });
+    });
+    const controller = new AbortController();
+    const pending = callDevice("device-1", "control.rotate", {}, controller.signal, fetchMock);
+
+    await vi.waitFor(() => expect(fetchSignal).toBe(controller.signal));
+    controller.abort();
+
+    expect(fetchSignal?.aborted).toBe(true);
+    await expect(pending).rejects.toThrow("Invalid device response");
+  });
 });
