@@ -8,11 +8,12 @@
   },
   "scripts": {
     "dev": "vite",
+    "deploy:source": "node scripts/deploy.mjs",
     "build": "npm run build:client && npm run build:worker",
     "build:client": "vite build",
     "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
     "check": "npm run typecheck && npm run lint",
-    "lint": "eslint src test vite.config.ts vitest.config.ts vitest.unit.config.ts vitest.ui.config.ts",
+    "lint": "eslint src test scripts vite.config.ts vitest.config.ts vitest.unit.config.ts vitest.ui.config.ts",
     "test": "npm run test:unit && npm run test:ui && npm run test:worker",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:ui": "vitest run --config vitest.ui.config.ts",

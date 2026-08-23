@@ -8,6 +8,12 @@ export default [
   },
   eslint.configs.recommended,
   {
+    files: ["scripts/**/*.mjs", "test/deploy/**/*.mjs"],
+    rules: {
+      "no-undef": "off",
+    },
+  },
+  {
     files: ["src/**/*.{ts,tsx}", "test/**/*.{ts,tsx}", "vite.config.ts", "vitest*.ts"],
     languageOptions: {
       parser,

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -23,6 +24,8 @@ func TestPackagingScaffoldExists(t *testing.T) {
 	checks := []string{
 		filepath.Join(root, "scripts", "deploy-from-source.sh"),
 		filepath.Join(root, "scripts", "deploy-from-source.ps1"),
+		filepath.Join(root, "scripts", "deploy-dashboard-from-source.sh"),
+		filepath.Join(root, "scripts", "deploy-dashboard-from-source.ps1"),
 		filepath.Join(root, "scripts", "bootstrap.sh"),
 		filepath.Join(root, "scripts", "bootstrap.ps1"),
 		filepath.Join(root, "scripts", "rollback.sh"),
@@ -52,7 +55,7 @@ func TestUnixDeploymentEntrypointsAreExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"deploy-from-source.sh", "bootstrap.sh", "rollback.sh", "uninstall.sh"} {
+	for _, name := range []string{"deploy-from-source.sh", "deploy-dashboard-from-source.sh", "bootstrap.sh", "rollback.sh", "uninstall.sh"} {
 		info, err := os.Stat(filepath.Join(root, "scripts", name))
 		if err != nil {
 			t.Fatal(err)
@@ -61,6 +64,61 @@ func TestUnixDeploymentEntrypointsAreExecutable(t *testing.T) {
 			t.Fatalf("scripts/%s is not executable: %s", name, info.Mode().Perm())
 		}
 	}
+}
+
+func TestDashboardSourceDeploymentLocalValidationDoesNotMutateCloudflare(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the PowerShell entrypoint is validated on Windows runners")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	versionOutput, err := exec.Command(node, "--version").Output()
+	if err != nil || !dashboardNodeVersionSupported(strings.TrimSpace(string(versionOutput))) {
+		t.Skipf("Dashboard requires Node 20.19+, 22.13+, or 24+; current Node is %q", strings.TrimSpace(string(versionOutput)))
+	}
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateHome := t.TempDir()
+	tokenPath := filepath.Join(t.TempDir(), "cloudflare.token")
+	const tokenValue = "test-only-dashboard-api-token"
+	if err := os.WriteFile(tokenPath, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", filepath.Join(root, "scripts", "deploy-dashboard-from-source.sh"),
+		"validate",
+		"--hostname", "dashboard.example.test",
+		"--account-id", "0123456789abcdef0123456789abcdef",
+		"--api-token-file", tokenPath,
+		"--allowed-email", "owner@example.test",
+	)
+	command.Dir = t.TempDir()
+	command.Env = append(os.Environ(), "XDG_STATE_HOME="+stateHome)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Dashboard local source validation failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), tokenValue) {
+		t.Fatalf("Dashboard validation exposed token material: %s", output)
+	}
+	if !strings.Contains(string(output), "no Cloudflare changes were made") {
+		t.Fatalf("Dashboard validation did not identify its non-mutating result: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(stateHome, "executor", "dashboard-deployment.json")); !os.IsNotExist(err) {
+		t.Fatalf("local validation created deployment state: %v", err)
+	}
+}
+
+func dashboardNodeVersionSupported(version string) bool {
+	version = strings.TrimPrefix(version, "v")
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	return major == 20 && minor >= 19 || major == 22 && minor >= 13 || major >= 24
 }
 
 func TestDeployFromSourcePreparesNativeBundle(t *testing.T) {
