@@ -145,6 +145,7 @@ goto scan
 del /f /q "%~2"
 exit /b 0
 :dashboardstatus
+if "%STALL_STATUS%"=="1" ping 127.0.0.1 -n 30 >nul
 if not "%REPLACE_TOKEN_PATH%"=="" if not exist "%REPLACE_TOKEN_PATH%.replaced" (
   move /y "%REPLACE_TOKEN_PATH%" "%REPLACE_TOKEN_PATH%.original" >nul
   echo test-only-replacement-bearer>"%REPLACE_TOKEN_PATH%"
@@ -233,6 +234,24 @@ exit /b 0
     Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_DELAY -ErrorAction SilentlyContinue
   }
 
+  $HungEnrollment = Join-Path $TemporaryRoot "hung-status-enrollment.token"
+  [System.IO.File]::WriteAllText($HungEnrollment, "test-only-dashboard-enrollment-bearer`n")
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $HungEnrollment -Initialize
+  $env:STALL_STATUS = "1"
+  $env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS = "1"
+  $env:EXECUTOR_DASHBOARD_WAIT_DELAY = "0.01"
+  $env:EXECUTOR_DASHBOARD_COMMAND_TIMEOUT = "1"
+  try {
+    $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $HungRejected = $false
+    try { & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $HungEnrollment -TemporaryToken | Out-Null } catch { $HungRejected = $true }
+    $Stopwatch.Stop()
+    if (-not $HungRejected -or $Stopwatch.Elapsed.TotalSeconds -gt 10) { throw "Windows hung status command was not bounded." }
+    if (-not (Test-Path -LiteralPath $HungEnrollment)) { throw "Windows hung status deleted the designated token." }
+  } finally {
+    Remove-Item Env:STALL_STATUS, Env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS, Env:EXECUTOR_DASHBOARD_WAIT_DELAY, Env:EXECUTOR_DASHBOARD_COMMAND_TIMEOUT -ErrorAction SilentlyContinue
+  }
+
   $FailedEnrollment = Join-Path $TemporaryRoot "failed-enrollment.token"
   [System.IO.File]::WriteAllText($FailedEnrollment, "test-only-dashboard-enrollment-bearer`n")
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $FailedEnrollment -Initialize
@@ -260,10 +279,12 @@ exit /b 0
     @{ Name = "zero delay"; Attempts = "2"; Delay = "0" },
     @{ Name = "negative delay"; Attempts = "2"; Delay = "-1" },
     @{ Name = "huge delay"; Attempts = "2"; Delay = "999999999999" },
-    @{ Name = "excessive total wait"; Attempts = "300"; Delay = "2" }
+    @{ Name = "excessive total wait"; Attempts = "300"; Delay = "2" },
+    @{ Name = "huge command timeout"; Attempts = "1"; Delay = "1"; CommandTimeout = "999999" }
   )) {
     $env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS = $WaitCase.Attempts
     $env:EXECUTOR_DASHBOARD_WAIT_DELAY = $WaitCase.Delay
+    if ($WaitCase.CommandTimeout) { $env:EXECUTOR_DASHBOARD_COMMAND_TIMEOUT = $WaitCase.CommandTimeout }
     $Rejected = $false
     try {
       & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $TokenPath | Out-Null
@@ -274,6 +295,7 @@ exit /b 0
   }
   Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS -ErrorAction SilentlyContinue
   Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_DELAY -ErrorAction SilentlyContinue
+  Remove-Item Env:EXECUTOR_DASHBOARD_COMMAND_TIMEOUT -ErrorAction SilentlyContinue
 
   $ForbiddenPackagingRoot = Join-Path $RepositoryRoot "scripts\.executor-windows-packaging-test"
   New-Item -ItemType Directory -Path $ForbiddenPackagingRoot -Force | Out-Null
@@ -288,7 +310,7 @@ exit /b 0
 } finally {
   foreach ($Name in @(
     "EXECUTOR_DASHBOARD_HOSTNAME", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN_FILE", "EXECUTOR_DASHBOARD_ALLOWED_EMAIL",
-    "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS", "EXECUTOR_DASHBOARD_WAIT_DELAY", "REPLACE_TOKEN_PATH", "PROTECTED_FILE_SCRIPT",
+    "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS", "EXECUTOR_DASHBOARD_WAIT_DELAY", "EXECUTOR_DASHBOARD_COMMAND_TIMEOUT", "STALL_STATUS", "REPLACE_TOKEN_PATH", "PROTECTED_FILE_SCRIPT",
     "EXECUTOR_DEPLOY_CORE_URI", "EXECUTOR_TEST_TOKEN_PATH", "EXECUTOR_TEST_ORIGINAL_TOKEN_PATH"
   )) {
     Remove-Item "Env:$Name" -ErrorAction SilentlyContinue

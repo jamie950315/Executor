@@ -30,6 +30,7 @@ if [[ "$1" == "dashboard" && "$2" == "enroll" ]]; then
   exit 0
 fi
 if [[ "$1" == "dashboard" && "$2" == "status" ]]; then
+  if [[ "${STALL_STATUS:-}" == "1" ]]; then sleep 30; fi
   if [[ -n "${REPLACE_TOKEN_PATH:-}" && ! -e "${REPLACE_TOKEN_PATH}.replaced" ]]; then
     mv -- "$REPLACE_TOKEN_PATH" "${REPLACE_TOKEN_PATH}.original"
     printf 'test-only-replacement-bearer\n' > "$REPLACE_TOKEN_PATH"
@@ -159,6 +160,22 @@ exit 2
 	}
 	assertFileExists(t, timedOutToken)
 
+	hungToken := filepath.Join(tmp, "hung-status-enrollment.token")
+	if err := os.WriteFile(hungToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", hungToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "STALL_STATUS=1", "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=1", "EXECUTOR_DASHBOARD_WAIT_DELAY=0.001", "EXECUTOR_DASHBOARD_COMMAND_TIMEOUT=1")
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("hung status command unexpectedly passed enrollment verification: %s", output)
+	}
+	assertFileExists(t, hungToken)
+
 	failedToken := filepath.Join(tmp, "failed-temporary-enrollment.token")
 	if err := os.WriteFile(failedToken, []byte(tokenValue+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -186,6 +203,7 @@ exit 2
 		"negative delay":       {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=-1"},
 		"huge delay":           {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=999999999999"},
 		"excessive total wait": {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=300", "EXECUTOR_DASHBOARD_WAIT_DELAY=2"},
+		"huge command timeout": {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=1", "EXECUTOR_DASHBOARD_WAIT_DELAY=1", "EXECUTOR_DASHBOARD_COMMAND_TIMEOUT=999999"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			command := exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),

@@ -8,6 +8,7 @@ TEMPORARY_TOKEN=0
 OWNED_COPY=""
 WAIT_ATTEMPTS="${EXECUTOR_DASHBOARD_WAIT_ATTEMPTS:-30}"
 WAIT_DELAY="${EXECUTOR_DASHBOARD_WAIT_DELAY:-1}"
+COMMAND_TIMEOUT="${EXECUTOR_DASHBOARD_COMMAND_TIMEOUT:-4}"
 
 usage() {
   printf 'Usage: %s --executor <path> --url <https-origin> --token-file <protected-file> [--temporary-token]\n' "$0"
@@ -33,7 +34,8 @@ if [[ ! "${DASHBOARD_URL}" =~ ^https://[^/?#]+/?$ ]]; then
   exit 2
 fi
 if [[ ! "${WAIT_ATTEMPTS}" =~ ^[1-9][0-9]{0,8}$ ]] ||
-   [[ ! "${WAIT_DELAY}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+   [[ ! "${WAIT_DELAY}" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+   [[ ! "${COMMAND_TIMEOUT}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   printf 'Dashboard relay wait settings are invalid.\n' >&2
   exit 2
 fi
@@ -41,7 +43,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   printf 'Python 3 is required to validate Dashboard enrollment token paths.\n' >&2
   exit 1
 fi
-if ! WAIT_ATTEMPTS="${WAIT_ATTEMPTS}" WAIT_DELAY="${WAIT_DELAY}" python3 - <<'PY'
+if ! WAIT_ATTEMPTS="${WAIT_ATTEMPTS}" WAIT_DELAY="${WAIT_DELAY}" COMMAND_TIMEOUT="${COMMAND_TIMEOUT}" python3 - <<'PY'
 from decimal import Decimal, InvalidOperation
 import os
 import sys
@@ -49,15 +51,42 @@ import sys
 try:
     attempts = int(os.environ["WAIT_ATTEMPTS"])
     delay = Decimal(os.environ["WAIT_DELAY"])
+    command_timeout = Decimal(os.environ["COMMAND_TIMEOUT"])
 except (InvalidOperation, ValueError):
     raise SystemExit(1)
-if attempts < 1 or attempts > 300 or not delay.is_finite() or delay <= 0 or Decimal(attempts) * delay > Decimal(300):
+total = Decimal(attempts) * (delay + Decimal(2) * command_timeout)
+if attempts < 1 or attempts > 300 or not delay.is_finite() or delay <= 0 or not command_timeout.is_finite() or command_timeout <= 0 or command_timeout > 10 or total > Decimal(300):
     raise SystemExit(1)
 PY
 then
   printf 'Dashboard relay wait settings must be positive and must not exceed 300 seconds total.\n' >&2
   exit 2
 fi
+
+bounded_executor_json() {
+  python3 - "${COMMAND_TIMEOUT}" "${EXECUTOR}" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+process = subprocess.Popen(sys.argv[2:], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+try:
+    output, _ = process.communicate(timeout=timeout)
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    raise SystemExit(124)
+if process.returncode != 0:
+    raise SystemExit(process.returncode)
+sys.stdout.write(output)
+PY
+}
 
 if ! python3 - "${TOKEN_FILE}" <<'PY'
 import os
@@ -139,8 +168,8 @@ relay_ready=0
 for ((attempt = 1; attempt <= WAIT_ATTEMPTS; attempt += 1)); do
   dashboard_status=""
   local_status=""
-  if dashboard_status="$("${EXECUTOR}" dashboard status --json 2>/dev/null)" &&
-     local_status="$("${EXECUTOR}" status --json 2>/dev/null)" &&
+  if dashboard_status="$(bounded_executor_json dashboard status --json)" &&
+     local_status="$(bounded_executor_json status --json)" &&
      DASHBOARD_STATUS="${dashboard_status}" LOCAL_STATUS="${local_status}" python3 -c '
 import json, os, sys
 try:
