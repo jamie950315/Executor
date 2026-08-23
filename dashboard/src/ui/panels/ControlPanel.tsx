@@ -8,13 +8,14 @@ import { useDialogFocus } from "../dialog-focus";
 
 type ConfirmMode = "rotate" | "kill" | "remove" | null;
 
-export function ControlPanel({ call, device, session, onSensitive, onKilled, onRotated, onRemoved }: PanelProps & {
+export function ControlPanel({ call, device, session, onSensitive, onKilled, onRotated, onRemoved, onRemoveFailure }: PanelProps & {
   device: DeviceRecord;
   session: SessionContext;
   onSensitive: (value: SensitiveResult) => void;
   onKilled: () => void;
   onRotated: () => void;
   onRemoved: () => void;
+  onRemoveFailure: (error: unknown) => boolean;
 }) {
   const [snapshot, setSnapshot] = useState<Record<string, unknown> | null>(null);
   const [status, setStatus] = useState("Lifecycle status not loaded");
@@ -91,8 +92,10 @@ export function ControlPanel({ call, device, session, onSensitive, onKilled, onR
         finishConfirm();
         onRemoved();
       }
-    } catch {
-      if (!controller.signal.aborted && activeLifecycle.current === controller && mounted.current) setStatus("Lifecycle action failed safely");
+    } catch (error) {
+      if (!controller.signal.aborted && activeLifecycle.current === controller && mounted.current) {
+        if (mode !== "remove" || !onRemoveFailure(error)) setStatus("Lifecycle action failed safely");
+      }
     } finally {
       if (activeLifecycle.current === controller) {
         activeLifecycle.current = null;

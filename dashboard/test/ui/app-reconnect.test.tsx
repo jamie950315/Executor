@@ -9,8 +9,13 @@ vi.mock("../../src/ui/api", async (importOriginal) => {
     fetchSession: vi.fn(),
     fetchDevices: vi.fn(),
     callDevice: vi.fn(),
+    removeDevice: vi.fn(),
   };
 });
+
+vi.mock("../../src/ui/lifecycle", () => ({
+  runSensitiveLifecycle: vi.fn(),
+}));
 
 import { App, FLEET_REVALIDATION_INTERVAL_MS } from "../../src/ui/App";
 import {
@@ -19,8 +24,10 @@ import {
   DeviceOfflineError,
   fetchDevices,
   fetchSession,
+  removeDevice,
   type DeviceRecord,
 } from "../../src/ui/api";
+import { runSensitiveLifecycle } from "../../src/ui/lifecycle";
 
 const device: DeviceRecord = {
   device_id: "device-1",
@@ -43,6 +50,12 @@ beforeEach(() => {
   vi.mocked(fetchSession).mockReset().mockResolvedValue({ access_subject: "access-1", browser_id: "browser-1" });
   vi.mocked(fetchDevices).mockReset().mockResolvedValue([device]);
   vi.mocked(callDevice).mockReset().mockResolvedValue({ requestID: "probe", result: { ready: true } });
+  vi.mocked(removeDevice).mockReset().mockResolvedValue();
+  vi.mocked(runSensitiveLifecycle).mockReset().mockResolvedValue({
+    recovery_key: "SENSITIVE-NEW-RECOVERY",
+    url_secret: "SENSITIVE-NEW-URL",
+    dashboard: "SENSITIVE-NEW-DASHBOARD",
+  });
 });
 
 afterEach(() => {
@@ -160,7 +173,68 @@ describe("fleet revalidation", () => {
     else expect(screen.getByText(expected)).toBeVisible();
     view.unmount();
   });
+
+  it.each([
+    ["locked", new DeviceLockedError(), "Unlock Owner Mac"],
+    ["offline", new DeviceOfflineError(), "Offline"],
+  ])("returns the real Control Remove flow to the fleet when deletion reports %s", async (_state, error, expected) => {
+    vi.mocked(removeDevice).mockRejectedValueOnce(error);
+    const view = render(<App />);
+    await flushAsyncWork();
+    await openControlPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove device" }));
+    fireEvent.change(screen.getByLabelText("Type device name exactly"), { target: { value: device.name } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm remove" }));
+    await flushAsyncWork();
+
+    expect(screen.queryByRole("tab", { name: "Control" })).not.toBeInTheDocument();
+    if (_state === "locked") expect(screen.getByRole("button", { name: expected })).toBeVisible();
+    else expect(screen.getByText(expected)).toBeVisible();
+    view.unmount();
+  });
+
+  it("keeps the workspace and shows only the fixed failure when Remove has an unrelated error", async () => {
+    vi.mocked(removeDevice).mockRejectedValueOnce(new Error("sensitive upstream detail"));
+    const view = render(<App />);
+    await flushAsyncWork();
+    await openControlPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove device" }));
+    fireEvent.change(screen.getByLabelText("Type device name exactly"), { target: { value: device.name } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm remove" }));
+    await flushAsyncWork();
+
+    expect(screen.getByRole("tab", { name: "Control" })).toBeVisible();
+    expect(screen.getByText("Lifecycle action failed safely")).toBeVisible();
+    expect(screen.queryByText("sensitive upstream detail")).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("returns to the killed fleet and retains the one-time secret after a successful Kill", async () => {
+    const view = render(<App />);
+    await flushAsyncWork();
+    await openControlPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Kill Executor" }));
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.change(screen.getByLabelText("Type device name exactly"), { target: { value: device.name } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Kill" }));
+    await flushAsyncWork();
+
+    expect(screen.queryByRole("tab", { name: "Control" })).not.toBeInTheDocument();
+    expect(screen.getByText("Killed")).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Save these credentials now" })).toBeVisible();
+    view.unmount();
+  });
 });
+
+async function openControlPanel(): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: "Open Owner Mac" }));
+  await flushAsyncWork();
+  fireEvent.click(screen.getByRole("tab", { name: "Control" }));
+  await flushAsyncWork();
+}
 
 async function flushAsyncWork(): Promise<void> {
   await act(async () => {

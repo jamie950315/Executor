@@ -30,7 +30,7 @@ function renderControl(overrides: { onSensitive?: (value: SensitiveResult) => vo
     onKilled: overrides.onKilled ?? vi.fn(),
     onRotated: overrides.onRotated ?? vi.fn(),
   };
-  const view = render(<ControlPanel call={call} device={device} session={session} {...callbacks} onRemoved={vi.fn()} />);
+  const view = render(<ControlPanel call={call} device={device} session={session} {...callbacks} onRemoved={vi.fn()} onRemoveFailure={vi.fn(() => false)} />);
   return { ...view, call };
 }
 
@@ -42,7 +42,7 @@ describe("Lifecycle controls", () => {
       call={call}
       device={device}
       session={session}
-      onSensitive={onSensitive} onKilled={onKilled} onRotated={vi.fn()} onRemoved={vi.fn()}
+      onSensitive={onSensitive} onKilled={onKilled} onRotated={vi.fn()} onRemoved={vi.fn()} onRemoveFailure={vi.fn(() => false)}
     />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Resume services" })).toBeDisabled());
     await userEvent.click(screen.getByRole("button", { name: "Kill Executor" }));
@@ -107,7 +107,7 @@ describe("Lifecycle controls", () => {
     const onRotated = vi.fn();
     const onSensitive = vi.fn();
     const call = vi.fn(async () => ({ requestID: "status", result: { state: "armed", agent: "reachable", broker: "reachable", desktop: "reachable" } }));
-    render(<StrictMode><ControlPanel call={call} device={device} session={session} onSensitive={onSensitive} onKilled={vi.fn()} onRotated={onRotated} onRemoved={vi.fn()} /></StrictMode>);
+    render(<StrictMode><ControlPanel call={call} device={device} session={session} onSensitive={onSensitive} onKilled={vi.fn()} onRotated={onRotated} onRemoved={vi.fn()} onRemoveFailure={vi.fn(() => false)} /></StrictMode>);
 
     await userEvent.click(screen.getByRole("button", { name: "Rotate credentials" }));
     await userEvent.click(screen.getByRole("checkbox"));
