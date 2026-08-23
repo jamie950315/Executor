@@ -334,6 +334,14 @@ $SecretsPath = Join-Path $StateDir "secrets.json"
 if (Test-Path $SecretsPath) {
   & icacls $SecretsPath /inheritance:r /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
 }
+$ConfigLockPath = Join-Path $StateDir ".config.lock"
+$SecretsLockPath = Join-Path $StateDir ".secrets.lock"
+foreach ($LockPath in @($ConfigLockPath, $SecretsLockPath)) {
+  if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
+    New-Item -ItemType File -Path $LockPath | Out-Null
+  }
+  & icacls $LockPath /grant:r "${WindowsAgentService}:(M)" "${DesktopUser}:(M)" "SYSTEM:(F)" | Out-Null
+}
 if (Test-Path $CloudflaredTokenPath) {
   & icacls $CloudflaredTokenPath /inheritance:r /grant:r "${WindowsAgentService}:(R)" "${DesktopUser}:(R)" "SYSTEM:(F)" | Out-Null
 }
