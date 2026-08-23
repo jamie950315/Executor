@@ -7,6 +7,7 @@ param(
   [string]$AccountId = $env:CLOUDFLARE_ACCOUNT_ID,
   [string]$ApiTokenFile = $env:CLOUDFLARE_API_TOKEN_FILE,
   [string]$AllowedEmail = $env:EXECUTOR_DASHBOARD_ALLOWED_EMAIL,
+  [string]$AccessTeamDomain = $env:EXECUTOR_DASHBOARD_ACCESS_TEAM_DOMAIN,
   [string]$StateFile = $env:EXECUTOR_DASHBOARD_STATE_FILE,
   [string]$EnrollmentTokenFile = $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE,
   [string]$VersionId = $env:EXECUTOR_DASHBOARD_VERSION_ID
@@ -36,6 +37,7 @@ $Arguments = @(
   "--allowed-email", $AllowedEmail
 )
 if ($StateFile) { $Arguments += @("--state-file", $StateFile) }
+if ($AccessTeamDomain) { $Arguments += @("--access-team-domain", $AccessTeamDomain) }
 if ($EnrollmentTokenFile) { $Arguments += @("--enrollment-token-file", $EnrollmentTokenFile) }
 if ($VersionId) { $Arguments += @("--version-id", $VersionId) }
 

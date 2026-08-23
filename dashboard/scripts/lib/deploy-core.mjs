@@ -26,6 +26,8 @@ export const deviceAccessApplicationName = "Executor Unified Dashboard device in
 export const deviceAccessPolicyName = "Executor device ingress bypass";
 
 const ownedDirectoryMarker = ".executor-owned";
+const workerDeploymentMessagePrefix = "Executor deployment ";
+const workerDeploymentMessageLimit = 50;
 
 const protectedFileScript = resolve(dirname(fileURLToPath(import.meta.url)), "..", "protected-file.ps1");
 
@@ -43,6 +45,61 @@ export function assertSupportedNodeVersion(version = process.version) {
   if (!supported) {
     throw new Error("A supported Node version is required (20.19+, 22.13+, or 24+).");
   }
+}
+
+export function validAccessTeamDomain(value) {
+  return typeof value === "string" &&
+    value.length <= 253 &&
+    value.endsWith(".cloudflareaccess.com") &&
+    !value.includes("..") &&
+    /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u.test(value) &&
+    value.split(".").every((label) => label.length >= 1 && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-"));
+}
+
+export async function ensureAccessTeamDomain(client, state, explicitDomain, persist) {
+  const candidate = explicitDomain ?? state.access_team_domain;
+  if (candidate !== undefined) {
+    if (!validAccessTeamDomain(candidate)) {
+      throw new Error("Deployment state has an invalid Access team domain.");
+    }
+    if (state.access_team_domain !== candidate) {
+      state.access_team_domain = candidate;
+      await persist();
+    }
+    return candidate;
+  }
+  const organization = await client.getOrganization();
+  const discovered = typeof organization?.auth_domain === "string" ? organization.auth_domain.toLowerCase() : undefined;
+  if (!validAccessTeamDomain(discovered)) {
+    throw new Error("Cloudflare Zero Trust organization state has no valid Access team domain.");
+  }
+  state.access_team_domain = discovered;
+  await persist();
+  return discovered;
+}
+
+export async function verifyAccessTeamDomain(hostname, expectedDomain, fetchImpl = globalThis.fetch) {
+  if (!validAccessTeamDomain(expectedDomain) || typeof fetchImpl !== "function") {
+    throw new Error("Access team-domain verification inputs are invalid.");
+  }
+  let response;
+  try {
+    response = await fetchImpl(`https://${hostname}/`, { redirect: "manual" });
+  } catch {
+    throw new Error("The Dashboard hostname could not be reached for Access team-domain verification.");
+  }
+  const location = response.headers.get("location");
+  let redirect;
+  try {
+    redirect = new URL(location);
+  } catch {
+    throw new Error("The Dashboard hostname did not return a valid Cloudflare Access redirect.");
+  }
+  const actualDomain = redirect.hostname.toLowerCase();
+  if (!validAccessTeamDomain(actualDomain) || actualDomain !== expectedDomain) {
+    throw new Error("The live Cloudflare Access redirect does not match the configured team domain.");
+  }
+  return actualDomain;
 }
 
 export function assertWranglerV4(output) {
@@ -758,7 +815,7 @@ export async function ensureWorkerOwnership(client, state, workerName, persist, 
     if (current.id === state.worker_pending_previous_deployment_id) {
       return { marker, skipDeploy: false, workerExists: true };
     }
-    if (deploymentMessage(current) !== `Executor deployment ${marker}`) {
+    if (!matchesWorkerDeploymentMarker(deploymentMessage(current), marker)) {
       throw new Error("Pending Worker ownership cannot be proven from the deployment marker.");
     }
     recordDeploymentIdentity(state, current);
@@ -770,7 +827,7 @@ export async function ensureWorkerOwnership(client, state, workerName, persist, 
       throw new Error("The state-owned Worker is missing or has been replaced.");
     }
     const current = await assertWorkerRemoteIdentity(client, state, workerName);
-    const marker = options.marker ?? cryptoRandomBytes(16).toString("hex");
+    const marker = options.marker ?? cryptoRandomBytes(15).toString("hex");
     state.worker_creation_pending = true;
     state.worker_pending_marker = marker;
     state.worker_pending_previous_deployment_id = current.id;
@@ -783,7 +840,7 @@ export async function ensureWorkerOwnership(client, state, workerName, persist, 
   if (exists) {
     throw new Error("A Worker with the requested name exists but is not owned by Executor state.");
   }
-  const marker = options.marker ?? cryptoRandomBytes(16).toString("hex");
+  const marker = options.marker ?? cryptoRandomBytes(15).toString("hex");
   state.worker_name = workerName;
   state.worker_creation_pending = true;
   state.worker_pending_marker = marker;
@@ -820,11 +877,18 @@ export async function recordWorkerDeployment(client, state, workerName, persist)
     throw new Error("Pending Worker deployment state is unavailable.");
   }
   const current = await currentWorkerDeployment(client, workerName);
-  if (deploymentMessage(current) !== `Executor deployment ${state.worker_pending_marker}`) {
+  if (!matchesWorkerDeploymentMarker(deploymentMessage(current), state.worker_pending_marker)) {
     throw new Error("Cloudflare Worker deployment marker does not prove ownership.");
   }
   recordDeploymentIdentity(state, current);
   await persist();
+}
+
+function matchesWorkerDeploymentMarker(actual, marker) {
+  const expected = `${workerDeploymentMessagePrefix}${marker}`;
+  if (actual === expected) return true;
+  if (expected.length <= workerDeploymentMessageLimit) return false;
+  return actual === `${expected.slice(0, workerDeploymentMessageLimit - 3)}...`;
 }
 
 function recordDeploymentIdentity(state, deployment) {

@@ -8,6 +8,7 @@ const optionMap = new Map([
   ["--account-id", "accountID"],
   ["--api-token-file", "apiTokenFile"],
   ["--allowed-email", "allowedEmail"],
+  ["--access-team-domain", "accessTeamDomain"],
   ["--state-file", "stateFile"],
   ["--enrollment-token-file", "enrollmentTokenFile"],
   ["--version-id", "versionID"],
@@ -52,6 +53,8 @@ export function normalizeDeploymentOptions(input, runtime = {}) {
   const accountID = (input.accountID ?? environment.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
   const apiTokenFile = input.apiTokenFile ?? environment.CLOUDFLARE_API_TOKEN_FILE ?? "";
   const allowedEmail = (input.allowedEmail ?? environment.EXECUTOR_DASHBOARD_ALLOWED_EMAIL ?? "").trim().toLowerCase();
+  const accessTeamDomainInput = input.accessTeamDomain ?? environment.EXECUTOR_DASHBOARD_ACCESS_TEAM_DOMAIN;
+  const accessTeamDomain = accessTeamDomainInput === undefined ? undefined : String(accessTeamDomainInput).trim().toLowerCase();
   if (!validHostname(hostname)) {
     throw new Error("A valid Dashboard hostname is required without a scheme, port, path, or wildcard.");
   }
@@ -63,6 +66,9 @@ export function normalizeDeploymentOptions(input, runtime = {}) {
   }
   if (!validEmail(allowedEmail)) {
     throw new Error("One valid Cloudflare Access email is required.");
+  }
+  if (accessTeamDomain !== undefined && !validAccessTeamDomain(accessTeamDomain)) {
+    throw new Error("The Access team domain must be a valid *.cloudflareaccess.com hostname without a scheme, port, or path.");
   }
 
   const defaultStateDirectory = platform === "win32"
@@ -96,6 +102,7 @@ export function normalizeDeploymentOptions(input, runtime = {}) {
     accountID,
     apiTokenFile: resolve(apiTokenFile),
     allowedEmail,
+    accessTeamDomain,
     stateFile,
     enrollmentTokenFile,
     versionID: input.versionID,
@@ -115,6 +122,14 @@ function validHostname(value) {
 
 function validEmail(value) {
   return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
+}
+
+function validAccessTeamDomain(value) {
+  return value.length <= 253 &&
+    value.endsWith(".cloudflareaccess.com") &&
+    !value.includes("..") &&
+    /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u.test(value) &&
+    value.split(".").every((label) => label.length >= 1 && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-"));
 }
 
 function inside(parent, child, platform) {

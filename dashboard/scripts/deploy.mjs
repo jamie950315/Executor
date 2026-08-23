@@ -22,6 +22,7 @@ import {
   deploymentStateVersion,
   deployWorkerWithSecret,
   ensureAccessResources,
+  ensureAccessTeamDomain,
   ensureD1Database,
   ensureWorkerOwnership,
   loadDeploymentState,
@@ -33,6 +34,8 @@ import {
   recordWorkerDeployment,
   saveDeploymentState,
   writeTemporaryWranglerConfig,
+  validAccessTeamDomain,
+  verifyAccessTeamDomain,
 } from "./lib/deploy-core.mjs";
 import { normalizeDeploymentOptions, parseDeploymentArguments } from "./lib/deploy-cli.mjs";
 
@@ -138,13 +141,8 @@ async function dispatchRemoteCommand(options, client, wranglerEnvironment, templ
   const localMigrationNames = await migrationNames();
   assertMigrationCompatible(state.dashboard_migration_version ?? 0, localMigrationNames.length);
 
-  stage = "Cloudflare Access organization lookup";
-  const organization = await client.getOrganization();
-  if (!validTeamDomain(organization?.auth_domain)) {
-    throw new Error("Cloudflare Zero Trust organization state has no valid Access team domain.");
-  }
-  state.access_team_domain = organization.auth_domain.toLowerCase();
-  await persistState(options, state);
+  stage = "Cloudflare Access team domain resolution";
+  await ensureAccessTeamDomain(client, state, options.accessTeamDomain, async () => persistState(options, state));
 
   if (options.command === "deploy") {
     await deploy(options, client, wranglerEnvironment, template, state, localMigrationNames);
@@ -255,6 +253,11 @@ async function deploy(options, client, wranglerEnvironment, template, state, loc
     state.last_completed_stage = "worker-deployed";
     await persist();
 
+    stage = "live Cloudflare Access verification";
+    await verifyAccessTeamDomain(options.hostname, state.access_team_domain);
+    state.last_completed_stage = "access-verified";
+    await persist();
+
     state.last_completed_stage = "complete";
     await persist();
   } finally {
@@ -294,7 +297,7 @@ async function renderTemporaryConfig(options, template, state) {
   if (
     typeof state.d1_database_id !== "string" ||
     typeof state.access_application_aud !== "string" ||
-    !validTeamDomain(state.access_team_domain)
+    !validAccessTeamDomain(state.access_team_domain)
   ) {
     throw new Error("Deployment state is incomplete for this operation.");
   }
@@ -340,10 +343,6 @@ async function assertPackagePayload() {
       throw new Error("The Dashboard source deployment payload is incomplete.");
     }
   }
-}
-
-function validTeamDomain(value) {
-  return typeof value === "string" && value.length <= 253 && /^[A-Za-z0-9.-]+$/u.test(value) && !value.includes("..");
 }
 
 function safeMessage(error) {

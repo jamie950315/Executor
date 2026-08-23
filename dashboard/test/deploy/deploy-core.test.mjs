@@ -13,6 +13,7 @@ import {
   assertSupportedNodeVersion,
   assertWranglerV4,
   ensureAccessResources,
+  ensureAccessTeamDomain,
   ensureD1Database,
   ensureEnrollmentToken,
   ensureWorkerOwnership,
@@ -20,6 +21,7 @@ import {
   renderWranglerConfig,
   removeProtectedFileIfOwned,
   saveDeploymentState,
+  verifyAccessTeamDomain,
   writeTemporaryWranglerConfig,
 } from "../../scripts/lib/deploy-core.mjs";
 import {
@@ -39,12 +41,14 @@ describe("deployment prerequisites", () => {
       "--account-id", accountID,
       "--api-token-file", "/secure/cloudflare.token",
       "--allowed-email", allowedEmail,
+      "--access-team-domain", "executor.cloudflareaccess.com",
     ])).toMatchObject({
       command: "deploy",
       hostname,
       accountID,
       apiTokenFile: "/secure/cloudflare.token",
       allowedEmail,
+      accessTeamDomain: "executor.cloudflareaccess.com",
     });
     expect(() => parseDeploymentArguments(["deploy", "--api-token", "forbidden-token-value"])).toThrow(/unknown option/iu);
   });
@@ -87,6 +91,17 @@ describe("deployment prerequisites", () => {
     };
     expect(() => normalizeDeploymentOptions(base, runtime)).toThrow(/version.*required|explicit/iu);
     expect(() => normalizeDeploymentOptions({ ...base, versionID: "version-owned-123" }, runtime)).not.toThrow();
+  });
+
+  test("accepts an explicit Access team domain and rejects unsafe values", () => {
+    const runtime = { dashboardRoot: "/checkout/Executor/dashboard", platform: "linux", homeDirectory: "/home/owner", environment: {} };
+    const base = {
+      command: "deploy", hostname, accountID, apiTokenFile: "/secure/cloudflare.token", allowedEmail,
+    };
+    expect(normalizeDeploymentOptions({ ...base, accessTeamDomain: "Executor.CloudflareAccess.com" }, runtime))
+      .toMatchObject({ accessTeamDomain: "executor.cloudflareaccess.com" });
+    expect(() => normalizeDeploymentOptions({ ...base, accessTeamDomain: "https://executor.cloudflareaccess.com" }, runtime))
+      .toThrow(/Access team domain/iu);
   });
 
   test("requires state and enrollment material to share one dedicated Executor directory", () => {
@@ -476,6 +491,45 @@ describe("protected deployment state and enrollment material", () => {
 });
 
 describe("Cloudflare API boundaries and ownership", () => {
+  test("uses an explicit Access team domain without requiring organization-read permission", async () => {
+    const state = {};
+    const persist = vi.fn(async () => {});
+    const client = { getOrganization: vi.fn(async () => { throw new Error("organization read forbidden"); }) };
+
+    await expect(ensureAccessTeamDomain(client, state, "executor.cloudflareaccess.com", persist))
+      .resolves.toBe("executor.cloudflareaccess.com");
+    expect(client.getOrganization).not.toHaveBeenCalled();
+    expect(state.access_team_domain).toBe("executor.cloudflareaccess.com");
+    expect(persist).toHaveBeenCalledOnce();
+  });
+
+  test("verifies the explicit team domain against the live Access redirect", async () => {
+    const redirect = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://purple-silence-448c.cloudflareaccess.com/cdn-cgi/access/login/dashboard.example.test?kid=test" },
+    }));
+    await expect(verifyAccessTeamDomain(hostname, "purple-silence-448c.cloudflareaccess.com", redirect))
+      .resolves.toBe("purple-silence-448c.cloudflareaccess.com");
+    await expect(verifyAccessTeamDomain(hostname, "executor.cloudflareaccess.com", redirect))
+      .rejects.toThrow(/does not match|redirect/iu);
+    expect(redirect).toHaveBeenCalledWith(`https://${hostname}/`, expect.objectContaining({ redirect: "manual" }));
+  });
+
+  test("reuses persisted Access team domain and otherwise reads the organization", async () => {
+    const persisted = { access_team_domain: "executor.cloudflareaccess.com" };
+    const persistedClient = { getOrganization: vi.fn() };
+    await expect(ensureAccessTeamDomain(persistedClient, persisted, undefined, async () => {}))
+      .resolves.toBe("executor.cloudflareaccess.com");
+    expect(persistedClient.getOrganization).not.toHaveBeenCalled();
+
+    const state = {};
+    const persist = vi.fn(async () => {});
+    const client = { getOrganization: vi.fn(async () => ({ auth_domain: "team.cloudflareaccess.com" })) };
+    await expect(ensureAccessTeamDomain(client, state, undefined, persist))
+      .resolves.toBe("team.cloudflareaccess.com");
+    expect(state.access_team_domain).toBe("team.cloudflareaccess.com");
+  });
+
   test("models the official single-page Worker list envelope and paginates D1 lists", async () => {
     const requests = [];
     const client = new CloudflareClient({
@@ -823,6 +877,37 @@ describe("Cloudflare API boundaries and ownership", () => {
     };
     await expect(ensureWorkerOwnership(wrongClient, wrongState, "executor-dashboard", async () => {}, { marker: "unused" }))
       .rejects.toThrow(/pending.*proven|marker/iu);
+  });
+
+  test("keeps generated Worker messages within Cloudflare's annotation limit", async () => {
+    const state = {};
+    const client = { listWorkerScripts: vi.fn(async () => []) };
+    const plan = await ensureWorkerOwnership(client, state, "executor-dashboard", async () => {});
+    expect(`Executor deployment ${plan.marker}`).toHaveLength(50);
+  });
+
+  test("recovers the exact deterministic Cloudflare truncation of a legacy pending marker", async () => {
+    const marker = "0762bc0b2bf33551af3d89f4a1faab45";
+    const state = {
+      worker_name: "executor-dashboard",
+      worker_creation_pending: true,
+      worker_pending_marker: marker,
+    };
+    const client = {
+      listWorkerScripts: vi.fn(async () => [{ id: "executor-dashboard" }]),
+      listWorkerDeployments: vi.fn(async () => [{
+        id: "deployment-legacy",
+        created_on: "2026-08-23T08:42:45Z",
+        source: "wrangler",
+        strategy: "percentage",
+        versions: [{ percentage: 100, version_id: "version-legacy" }],
+        annotations: { "workers/message": "Executor deployment 0762bc0b2bf33551af3d89f4a1f..." },
+      }]),
+    };
+
+    await expect(ensureWorkerOwnership(client, state, "executor-dashboard", async () => {}))
+      .resolves.toEqual({ marker, skipDeploy: true, workerExists: true });
+    expect(state.worker_deployment_id).toBe("deployment-legacy");
   });
 
   test("recovers an accepted pending enrollment rotation before considering a new bearer", async () => {

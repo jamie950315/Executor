@@ -72,14 +72,15 @@ If a local checkout predates those source-deployment wrappers, the coding agent 
 
 The Unified Dashboard is one Cloudflare Worker, Static Assets bundle, SQLite Durable Object, D1 database, and two path-scoped Cloudflare Access applications. The exact hostname has the owner's exact-email allow policy. Only the more-specific `<hostname>/api/device/*` ingress application has an Executor-owned bypass policy; the Worker still authenticates enrollment and signed device connections. It does not replace or rename any per-device MCP hostname, OAuth client, named Tunnel, unrestricted host capability, Broker/Desktop boundary, or local Kill Switch.
 
-Create a dedicated Cloudflare API token file outside the clone. On Unix it must be a regular mode-`0600` file. On Windows its ACL must allow only the current owner, Administrators, and SYSTEM. The token needs Workers Scripts write, D1 write, Workers Routes/Custom Domains access for the selected zone, Access: Apps and Policies write, and Access organization read access. Never pass the token value on a command line.
+Create a dedicated Cloudflare API token file outside the clone. On Unix it must be a regular mode-`0600` file. On Windows its ACL must allow only the current owner, Administrators, and SYSTEM. The token needs Workers Scripts write, D1 write, Workers Routes/Custom Domains access for the selected zone, and Access: Apps and Policies write. Either provide the public Zero Trust team domain explicitly, as shown below, or also grant Access organization read access so Executor can discover it. Never pass the token value on a command line.
 
 ```bash
 ./scripts/deploy-dashboard-from-source.sh deploy \
   --hostname dashboard.example.com \
   --account-id 0123456789abcdef0123456789abcdef \
   --api-token-file /secure/cloudflare-dashboard.token \
-  --allowed-email owner@example.com
+  --allowed-email owner@example.com \
+  --access-team-domain team.cloudflareaccess.com
 ```
 
 ```powershell
@@ -87,10 +88,11 @@ Create a dedicated Cloudflare API token file outside the clone. On Unix it must 
   -Hostname "dashboard.example.com" `
   -AccountId "0123456789abcdef0123456789abcdef" `
   -ApiTokenFile "C:\secure\cloudflare-dashboard.token" `
-  -AllowedEmail "owner@example.com"
+  -AllowedEmail "owner@example.com" `
+  -AccessTeamDomain "team.cloudflareaccess.com"
 ```
 
-The entrypoint installs the pinned Dashboard package from its lockfile, runs tests/check/build/dry-run validation, authenticates Cloudflare, reuses or creates the exact Executor D1 database, compares exact remote migration names and order, reconciles only state-owned Access resources, and deploys the Custom Domain. It records the current remote Worker deployment/version identity and refuses manual replacement or rollback drift. It generates the enrollment bearer once in a protected file outside the repository and prints only that file's path. Deployment state is also protected outside the repository; incompatible newer state or migrations are rejected. A disabled enrollment window remains disabled across ordinary upgrades; only `rotate-enrollment` re-enables it.
+The entrypoint installs the pinned Dashboard package from its lockfile, runs tests/check/build/dry-run validation, authenticates Cloudflare, reuses or creates the exact Executor D1 database, compares exact remote migration names and order, reconciles only state-owned Access resources, and deploys the Custom Domain. It verifies that the live Access redirect belongs to the configured team domain, records the current remote Worker deployment/version identity, and refuses manual replacement or rollback drift. It generates the enrollment bearer once in a protected file outside the repository and prints only that file's path. Deployment state is also protected outside the repository; incompatible newer state or migrations are rejected. A disabled enrollment window remains disabled across ordinary upgrades; only `rotate-enrollment` re-enables it.
 
 Transfer the enrollment file to each target through an encrypted file-transfer channel without opening, printing, pasting, or placing it in shell history. Mark the target copy as temporary so the host wrapper deletes that exact copy only after successful enrollment and config/service verification:
 
