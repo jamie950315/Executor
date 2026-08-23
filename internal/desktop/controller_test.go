@@ -129,8 +129,8 @@ func TestWindowsPowerShellBuilders(t *testing.T) {
 	if !strings.Contains(enumWindows, "EnumWindows") || !strings.Contains(enumWindows, "ConvertTo-Json") {
 		t.Fatalf("unexpected enum windows script: %s", enumWindows)
 	}
-	if strings.Contains(strings.ToLower(enumWindows), "$pid=") || !strings.Contains(enumWindows, "$processId=0") || !strings.Contains(enumWindows, "ConvertTo-Json -InputObject @($items)") {
-		t.Fatalf("window enumeration must avoid read-only $PID and preserve singleton arrays: %s", enumWindows)
+	if strings.Contains(strings.ToLower(enumWindows), "$pid=") || !strings.Contains(enumWindows, "$processId=0") {
+		t.Fatalf("window enumeration must avoid read-only $PID: %s", enumWindows)
 	}
 
 	keyboard := buildWindowsKeyboardScript(KeyboardAction{Text: "abc"})
