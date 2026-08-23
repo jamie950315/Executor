@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,6 +141,68 @@ func TestClientResetsReconnectBackoffAfterAuthenticatedConnection(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("client did not stop")
+	}
+}
+
+func TestClientRuntimeStatusTracksAuthenticatedSocketAndDisconnect(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	connected := make(chan *fakeSocket, 1)
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", HeartbeatInterval: time.Hour,
+		Now: func() time.Time { return now },
+		Dial: func(context.Context, string, *http.Client) (relaySocket, error) {
+			socket := newFakeSocket()
+			connected <- socket
+			return socket, nil
+		},
+		Sleep: func(ctx context.Context, _ time.Duration) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusMethod := reflect.ValueOf(client).MethodByName("Status")
+	if !statusMethod.IsValid() {
+		t.Fatal("relay client has no metadata-only runtime Status method")
+	}
+	state := func() string {
+		values := statusMethod.Call(nil)
+		if len(values) != 1 {
+			t.Fatal("relay client Status returned an invalid value count")
+		}
+		field := values[0].FieldByName("State")
+		if !field.IsValid() || field.Kind() != reflect.String {
+			t.Fatal("relay client Status omitted state")
+		}
+		return field.String()
+	}
+	waitState := func(want string) {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if state() == want {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatalf("relay state = %q, want %q", state(), want)
+	}
+	if got := state(); got != "disconnected" {
+		t.Fatalf("initial relay state = %q, want disconnected", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	socket := <-connected
+	completeFakeHandshake(t, socket, cfg, values, now)
+	waitState("connected")
+	_ = socket.Close(0, "test disconnect")
+	waitState("disconnected")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

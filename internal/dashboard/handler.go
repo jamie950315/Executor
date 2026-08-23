@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const cookieName = "executor_local"
@@ -40,9 +41,17 @@ type Controller interface {
 
 type TokenProvider func() (string, error)
 
+type RelayStatus struct {
+	State     string    `json:"state"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type RelayStatusProvider func() RelayStatus
+
 type handler struct {
 	controller    Controller
 	tokenProvider TokenProvider
+	relayStatus   RelayStatusProvider
 }
 
 func NewHandler(controller Controller, token string) http.Handler {
@@ -51,7 +60,13 @@ func NewHandler(controller Controller, token string) http.Handler {
 }
 
 func NewHandlerWithTokenProvider(controller Controller, provider TokenProvider) http.Handler {
-	return &handler{controller: controller, tokenProvider: provider}
+	return NewHandlerWithRuntimeStatus(controller, provider, func() RelayStatus {
+		return RelayStatus{State: "disconnected", UpdatedAt: time.Now().UTC()}
+	})
+}
+
+func NewHandlerWithRuntimeStatus(controller Controller, provider TokenProvider, relayStatus RelayStatusProvider) http.Handler {
+	return &handler{controller: controller, tokenProvider: provider, relayStatus: relayStatus}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +87,26 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("X-Executor-Health", "ok")
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/.executor/relay-status" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !same(r.Header.Get("X-Executor-Health-Key"), token) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		status := RelayStatus{State: "disconnected", UpdatedAt: time.Now().UTC()}
+		if h.relayStatus != nil {
+			candidate := h.relayStatus()
+			if candidate.State == "connected" || candidate.State == "disconnected" {
+				status = candidate
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
 		return
 	}
 	if candidate := r.URL.Query().Get("token"); candidate != "" {

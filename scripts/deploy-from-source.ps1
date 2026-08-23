@@ -20,6 +20,9 @@ if ($env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -and $env:EXECUTOR_DASHBO
 if (-not (Get-Command "go.exe" -ErrorAction SilentlyContinue)) {
   throw "Required command is not installed or not in PATH: go.exe"
 }
+if (-not (Get-Command "git.exe" -ErrorAction SilentlyContinue)) {
+  throw "Required command is not installed or not in PATH: git.exe"
+}
 
 $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
 switch ($Architecture) {
@@ -66,21 +69,22 @@ try {
     Pop-Location
   }
 
-  Copy-Item -Recurse -Path (Join-Path $RootDir "scripts") -Destination (Join-Path $BundleDir "scripts")
-  Copy-Item -Recurse -Path (Join-Path $RootDir "docs") -Destination (Join-Path $BundleDir "docs")
+  $TrackedPayload = & git.exe -C $RootDir ls-files -- scripts docs dashboard
+  if ($LASTEXITCODE -ne 0 -or -not $TrackedPayload) { throw "Unable to enumerate the tracked source payload." }
+  foreach ($RelativePath in $TrackedPayload) {
+    if ($RelativePath -notmatch '^(scripts|docs|dashboard)/' -or $RelativePath.Contains("..")) {
+      throw "Tracked source payload contains an unsafe path."
+    }
+    $SourcePath = Join-Path $RootDir ($RelativePath -replace '/', '\')
+    $SourceItem = Get-Item -LiteralPath $SourcePath -Force
+    if ($SourceItem.PSIsContainer -or ($SourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Tracked source payload contains a non-regular file."
+    }
+    $DestinationPath = Join-Path $BundleDir ($RelativePath -replace '/', '\')
+    New-Item -ItemType Directory -Path (Split-Path $DestinationPath -Parent) -Force | Out-Null
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+  }
   Copy-Item -Path (Join-Path $RootDir "THIRD_PARTY_NOTICES.md") -Destination $BundleDir
-  $DashboardDestination = Join-Path $BundleDir "dashboard"
-  New-Item -ItemType Directory -Path $DashboardDestination -Force | Out-Null
-  foreach ($DashboardFile in @(
-    ".gitignore", "eslint.config.js", "index.html", "package.json", "package-lock.json", "tsconfig.json",
-    "vite.config.ts", "vitest.config.ts", "vitest.ui.config.ts", "vitest.unit.config.ts",
-    "worker-configuration.d.ts", "wrangler.jsonc", "wrangler.test.jsonc", "wrangler.deploy.template.jsonc"
-  )) {
-    Copy-Item -LiteralPath (Join-Path $RootDir "dashboard\$DashboardFile") -Destination $DashboardDestination
-  }
-  foreach ($DashboardDirectory in @("migrations", "scripts", "src", "test")) {
-    Copy-Item -Recurse -LiteralPath (Join-Path $RootDir "dashboard\$DashboardDirectory") -Destination (Join-Path $DashboardDestination $DashboardDirectory)
-  }
 
   if ($PrepareOnly) {
     Write-Output "Deployable Executor bundle prepared at $BundleDir"

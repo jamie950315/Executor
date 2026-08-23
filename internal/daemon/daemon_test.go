@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,8 +364,16 @@ func (r *fakeDashboardRelay) Run(ctx context.Context) error {
 	return nil
 }
 
+func (r *fakeDashboardRelay) Status() dashboard.RelayStatus {
+	return dashboard.RelayStatus{State: "connected", UpdatedAt: time.Now().UTC()}
+}
+
+func (r *failingDashboardRelay) Status() dashboard.RelayStatus {
+	return dashboard.RelayStatus{State: "disconnected", UpdatedAt: time.Now().UTC()}
+}
+
 func TestRunDashboardOwnsConfiguredRelayAndStopsItWithHTTPRuntime(t *testing.T) {
-	configPath, cfg, _ := daemonFixture(t)
+	configPath, cfg, values := daemonFixture(t)
 	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
 	cfg.UnifiedDashboard.Enrolled = true
 	if err := config.Save(configPath, cfg); err != nil {
@@ -385,6 +394,15 @@ func TestRunDashboardOwnsConfiguredRelayAndStopsItWithHTTPRuntime(t *testing.T) 
 	}
 	response := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/", nil, nil)
 	response.Body.Close()
+	relayHeaders := make(http.Header)
+	relayHeaders.Set("X-Executor-Health-Key", values.DashboardKey)
+	relayResponse := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/.executor/relay-status", nil, relayHeaders)
+	relayBody, err := io.ReadAll(relayResponse.Body)
+	relayResponse.Body.Close()
+	if err != nil || relayResponse.StatusCode != http.StatusOK || !strings.Contains(string(relayBody), `"state":"connected"`) {
+		cancel()
+		t.Fatalf("runtime relay status = %d %q, %v", relayResponse.StatusCode, relayBody, err)
+	}
 	cancel()
 	assertDaemonStopped(t, errCh)
 	select {

@@ -56,7 +56,7 @@ fi
 
 export PATH="/opt/homebrew/bin:/usr/local/go/bin:/usr/local/bin:${PATH}"
 
-for command_name in go tar; do
+for command_name in git go tar; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     printf 'required command is not installed or not in PATH: %s\n' "${command_name}" >&2
     exit 1

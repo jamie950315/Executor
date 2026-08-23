@@ -193,7 +193,22 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 		return errors.New("dashboard address must bind to loopback")
 	}
 
-	handler := dashboard.NewHandlerWithTokenProvider(
+	if relayFactory == nil {
+		return errors.New("dashboard relay factory is required")
+	}
+	relayRuntime, err := relayFactory(relayclient.ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: serverVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("create dashboard relay: %w", err)
+	}
+	relayStatus := func() dashboard.RelayStatus {
+		if provider, ok := relayRuntime.(interface{ Status() dashboard.RelayStatus }); ok {
+			return provider.Status()
+		}
+		return dashboard.RelayStatus{State: "disconnected", UpdatedAt: time.Now().UTC()}
+	}
+	handler := dashboard.NewHandlerWithRuntimeStatus(
 		&reloadingDashboardController{configPath: configPath},
 		func() (string, error) {
 			current, err := secrets.Load(cfg.StateDir)
@@ -202,23 +217,13 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 			}
 			return current.DashboardKey, nil
 		},
+		relayStatus,
 	)
 	listener, err := net.Listen("tcp", cfg.DashboardAddress)
 	if err != nil {
 		return err
 	}
 	server := &http.Server{Handler: handler}
-	if relayFactory == nil {
-		_ = listener.Close()
-		return errors.New("dashboard relay factory is required")
-	}
-	relayRuntime, err := relayFactory(relayclient.ClientOptions{
-		ConfigPath: configPath, ExecutorVersion: serverVersion,
-	})
-	if err != nil {
-		_ = listener.Close()
-		return fmt.Errorf("create dashboard relay: %w", err)
-	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	httpDone := make(chan error, 1)

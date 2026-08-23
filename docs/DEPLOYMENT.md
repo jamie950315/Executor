@@ -16,6 +16,7 @@ Web ChatGPT cannot perform this first-time installation by itself. Until Executo
 ## Prerequisites
 
 - Go 1.24 or newer for source deployment
+- Git and a real checkout so source packaging can include only tracked files
 - `cloudflared` 2025.4.0 or newer installed on the target host and resolvable by the bootstrap script
 - Administrator or root access
 - Python 3 on macOS, Linux, and WSL
@@ -34,7 +35,7 @@ Dashboard deployment additionally requires Node 20.19+, Node 22.13+, or Node 24+
 - Account Workers Scripts write for the `executor-dashboard` Worker and its secret.
 - Account D1 write for the exact `executor-dashboard` database and migrations.
 - Zone Workers Routes edit, including Workers Custom Domains, for the requested Dashboard hostname.
-- Access: Apps and Policies write for one hostname-based self-hosted application and one exact-email allow policy.
+- Access: Apps and Policies write for two self-hosted applications: the owner site at the exact hostname with one exact-email allow policy, and the more-specific `<hostname>/api/device/*` ingress path with one Executor-owned bypass policy.
 - Access organization read access so deployment can obtain the account's `auth_domain` as `ACCESS_TEAM_DOMAIN`.
 
 The token file must remain outside the repository. Unix requires a regular mode-`0600` file. Windows requires an ACL restricted to the current owner, Administrators, and SYSTEM. The entrypoints reject inline token values and never print the token.
@@ -55,11 +56,11 @@ The token file must remain outside the repository. Unix requires a regular mode-
   -AllowedEmail "owner@example.com"
 ```
 
-No tracked file needs editing. The same values can be supplied through `EXECUTOR_DASHBOARD_HOSTNAME`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN_FILE`, and `EXECUTOR_DASHBOARD_ALLOWED_EMAIL`. Optional `EXECUTOR_DASHBOARD_STATE_FILE` and `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE` paths must also remain outside the repository.
+No tracked file needs editing. The same values can be supplied through `EXECUTOR_DASHBOARD_HOSTNAME`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN_FILE`, and `EXECUTOR_DASHBOARD_ALLOWED_EMAIL`; the PowerShell wrapper uses these as defaults and explicit parameters take precedence. Optional `EXECUTOR_DASHBOARD_STATE_FILE` and `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE` paths must also remain outside the repository and share one dedicated Executor-owned parent directory. Defaults use a protected `dashboard` directory below Executor's platform state directory.
 
-The canonical entrypoint performs all local package validation before remote mutation. It uses pinned Wrangler v4, checks Cloudflare authentication, creates or reuses one exact D1 database, creates only state-owned Access resources, renders a temporary ignored Wrangler config, applies all remote D1 migrations, and deploys Worker + Static Assets + SQLite Durable Object with a Workers Custom Domain route using `custom_domain: true`. It obtains `ACCESS_AUD` from the Access application response and `ACCESS_TEAM_DOMAIN` from Access organization state. `ENROLLMENT_TOKEN_HASH` receives only SHA-256 output; the generated bearer remains only in its protected local file.
+The canonical entrypoint performs all local package validation before remote mutation. It uses pinned Wrangler v4, checks Cloudflare authentication, creates or reuses one exact D1 database, queries the remote `d1_migrations` table by the state-owned database UUID, and refuses unknown, newer, missing, or reordered migration history before applying anything. It creates only state-owned Access resources, renders a temporary ignored Wrangler config, applies compatible remote D1 migrations, and deploys Worker + Static Assets + SQLite Durable Object with a Workers Custom Domain route using `custom_domain: true`. The general hostname application has exactly one owner-email `allow` policy. A separate, more-specific application for `<hostname>/api/device/*` has exactly one `bypass` policy; no `/api/devices/*`, `/api/session`, Static Assets, or UI route is bypassed. The Worker remains the final device boundary: enrollment still requires the hashed bearer and same-origin JSON, while WebSocket connection still requires an enrolled device identity and signed challenge. It obtains `ACCESS_AUD` from the owner Access application response and `ACCESS_TEAM_DOMAIN` from Access organization state. `ENROLLMENT_TOKEN_HASH` receives only SHA-256 output; the generated bearer remains only in its protected local file.
 
-Persistent non-secret state records resource IDs, ownership, schema/migration version, and the last completed stage. Retries are idempotent. Newer state or migrations fail closed. Ordinary retry never deletes Cloudflare resources. `rollback` targets only the Worker whose ownership is proven by state; D1 and Access removal is never automatic. Any destructive cleanup must be explicit and limited to IDs proven by Executor state.
+Persistent non-secret state records resource IDs, ownership, exact migration names, the last completed stage, and the current Worker deployment/version identity. Retries are idempotent. Before upgrade or rollback, the current remote deployment must match the last Executor-owned identity; replacement, manual rollback, or unknown drift fails closed. Interrupted creation can be recovered only when the latest deployment carries the exact pending Executor marker. `rollback` requires `--version-id` / `-VersionId` for a version already present in Executor-owned history. Ordinary retry never deletes Cloudflare resources. D1 and Access removal is never automatic. Any destructive cleanup must be explicit and limited to IDs proven by Executor state.
 
 ### Enroll hosts
 
@@ -81,7 +82,7 @@ Equivalent environment variables are `EXECUTOR_DASHBOARD_URL`, `EXECUTOR_DASHBOA
   -DashboardEnrollmentTokenTemporary
 ```
 
-The wrapper waits until local bootstrap, `executor status`, and `executor doctor --full` succeed. It then calls `executor dashboard enroll --url ... --token-file ...`, checks `executor dashboard status --json` and local service status, and deletes only the explicitly designated temporary copy after successful enrollment. Without the temporary flag it passes a separate protected helper-owned copy, so the source file is preserved. Enrollment failure does not invoke local rollback and does not remove a healthy existing installation. Loading the config through the CLI safely migrates v1/v2 state before enrollment.
+The wrapper waits until local bootstrap, `executor status`, and `executor doctor --full` succeed. It always gives enrollment a separate protected helper-owned copy, then waits boundedly until `executor dashboard status --json` reports the actual relay as `connected` and local Agent/Broker state is healthy. Only then does it delete an explicitly designated original temporary file. Enrollment, status, relay timeout, or local-health failure retains the original. Without the temporary flag the source file is always preserved. Enrollment failure does not invoke local rollback and does not remove a healthy existing installation. Loading the config through the CLI safely migrates v1/v2 state before enrollment.
 
 After the last host is enrolled, close the enrollment window:
 
@@ -94,6 +95,8 @@ After the last host is enrolled, close the enrollment window:
 ```
 
 Use `rotate-enrollment` with the same arguments to create a new protected bearer and invalidate every previous enrollment copy. Transfer the new file only to hosts that still require enrollment.
+
+An ordinary `deploy` or upgrade preserves the current enrollment state. If enrollment was disabled, it stays disabled, no bearer is recreated, and the enrollment secret is not changed. Only `rotate-enrollment` creates a new bearer and re-enables enrollment.
 
 ### Authentication and rescue boundaries
 

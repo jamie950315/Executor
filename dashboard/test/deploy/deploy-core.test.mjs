@@ -1,7 +1,9 @@
-import { chmod, lstat, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
+
+import * as deploymentCore from "../../scripts/lib/deploy-core.mjs";
 
 import {
   CloudflareClient,
@@ -60,8 +62,8 @@ describe("deployment prerequisites", () => {
       homeDirectory: "/home/owner",
       environment: {},
     });
-    expect(normalized.stateFile).toBe("/home/owner/.local/state/executor/dashboard-deployment.json");
-    expect(normalized.enrollmentTokenFile).toBe("/home/owner/.local/state/executor/dashboard-enrollment.token");
+    expect(normalized.stateFile).toBe("/home/owner/.local/state/executor/dashboard/deployment.json");
+    expect(normalized.enrollmentTokenFile).toBe("/home/owner/.local/state/executor/dashboard/enrollment.token");
     expect(() => normalizeDeploymentOptions({
       command: "deploy",
       hostname,
@@ -75,6 +77,25 @@ describe("deployment prerequisites", () => {
       homeDirectory: "/home/owner",
       environment: {},
     })).toThrow(/outside the repository/iu);
+  });
+
+  test("requires an explicit Worker version for rollback", () => {
+    const runtime = { dashboardRoot: "/checkout/Executor/dashboard", platform: "linux", homeDirectory: "/home/owner", environment: {} };
+    const base = {
+      command: "rollback", hostname, accountID, apiTokenFile: "/secure/cloudflare.token", allowedEmail,
+    };
+    expect(() => normalizeDeploymentOptions(base, runtime)).toThrow(/version.*required|explicit/iu);
+    expect(() => normalizeDeploymentOptions({ ...base, versionID: "version-owned-123" }, runtime)).not.toThrow();
+  });
+
+  test("requires state and enrollment material to share one dedicated Executor directory", () => {
+    expect(() => normalizeDeploymentOptions({
+      command: "deploy", hostname, accountID, apiTokenFile: "/secure/cloudflare.token", allowedEmail,
+      stateFile: "/secure/executor-state/deployment.json",
+      enrollmentTokenFile: "/secure/executor-token/enrollment.token",
+    }, {
+      dashboardRoot: "/checkout/Executor/dashboard", platform: "linux", homeDirectory: "/home/owner", environment: {},
+    })).toThrow(/dedicated Executor directory/iu);
   });
 
   test.each(["v20.19.0", "v20.20.1", "v22.13.0", "v24.0.0", "v26.2.0"])(
@@ -104,7 +125,20 @@ describe("deployment prerequisites", () => {
 
     const linkPath = join(directory, "cloudflare-link.token");
     await symlink(tokenPath, linkPath);
-    await expect(assertProtectedFile(linkPath, { platform: "linux" })).rejects.toThrow(/regular protected file/iu);
+    await expect(assertProtectedFile(linkPath, { platform: "linux" })).rejects.toThrow(/unsafe path ancestor|regular protected file/iu);
+  });
+
+  test("rejects a protected leaf reached through a symlinked ancestor", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-token-ancestor-"));
+    const realDirectory = join(directory, "real");
+    const linkedDirectory = join(directory, "linked");
+    await mkdir(realDirectory, { mode: 0o700 });
+    const tokenPath = join(realDirectory, "cloudflare.token");
+    await writeFile(tokenPath, "test-only-cloudflare-token\n", { mode: 0o600 });
+    await symlink(realDirectory, linkedDirectory, "dir");
+
+    await expect(assertProtectedFile(join(linkedDirectory, "cloudflare.token"), { platform: "linux" }))
+      .rejects.toThrow(/unsafe path ancestor/iu);
   });
 
   test("delegates Windows ACL verification and fails closed", async () => {
@@ -164,7 +198,7 @@ describe("temporary Wrangler config", () => {
 describe("protected deployment state and enrollment material", () => {
   test("round-trips versioned mode-0600 state and rejects newer or mismatched state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-state-"));
-    const statePath = join(directory, "deployment.json");
+    const statePath = join(directory, "dashboard", "deployment.json");
     const state = {
       schema_version: 1,
       owner: "executor-unified-dashboard",
@@ -183,6 +217,24 @@ describe("protected deployment state and enrollment material", () => {
     await expect(loadDeploymentState(statePath, { accountID: "fedcba9876543210fedcba9876543210", hostname, platform: "linux" })).rejects.toThrow(/different Cloudflare account/iu);
   });
 
+  test("refuses state writes through symlink ancestors and never chmods a shared parent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-state-ancestor-"));
+    const sharedParent = join(directory, "secure");
+    const redirected = join(directory, "redirected");
+    await mkdir(sharedParent, { mode: 0o755 });
+    await mkdir(redirected, { mode: 0o755 });
+    await symlink(redirected, join(sharedParent, "executor"), "dir");
+
+    await expect(saveDeploymentState(join(sharedParent, "executor", "deployment.json"), {
+      schema_version: 1,
+      owner: "executor-unified-dashboard",
+      account_id: accountID,
+      hostname,
+    }, { platform: "linux" })).rejects.toThrow(/unsafe path ancestor/iu);
+    expect((await lstat(sharedParent)).mode & 0o777).toBe(0o755);
+    await expect(lstat(join(redirected, "deployment.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   test("rejects a newer recorded D1 migration version instead of downgrading", () => {
     expect(() => assertMigrationCompatible(2, 2)).not.toThrow();
     expect(() => assertMigrationCompatible(1, 2)).not.toThrow();
@@ -192,7 +244,7 @@ describe("protected deployment state and enrollment material", () => {
 
   test("creates an enrollment bearer once, hashes it, and rotates only explicitly", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-enrollment-"));
-    const tokenPath = join(directory, "enrollment.token");
+    const tokenPath = join(directory, "dashboard", "enrollment.token");
     const first = await ensureEnrollmentToken(tokenPath, { platform: "linux", randomBytes: () => Buffer.alloc(32, 1) });
     expect(first.created).toBe(true);
     expect(first.hash).toMatch(/^[0-9a-f]{64}$/u);
@@ -209,13 +261,99 @@ describe("protected deployment state and enrollment material", () => {
     expect(rotated.hash).not.toBe(first.hash);
   });
 
+  test("preserves disabled enrollment without recreating or hashing a bearer", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-disabled-enrollment-"));
+    const tokenPath = join(directory, "dashboard", "enrollment.token");
+    const disabled = await ensureEnrollmentToken(tokenPath, {
+      platform: "linux",
+      enabled: false,
+      randomBytes: () => {
+        throw new Error("disabled enrollment generated a bearer");
+      },
+    });
+
+    expect(disabled).toEqual({ created: false, enabled: false, hash: null });
+    await expect(lstat(tokenPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("enables enrollment exactly once on a first deployment", async () => {
+    expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
+    const state = {};
+    const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-first-enrollment-")), "dashboard", "enrollment.token");
+    const result = await deploymentCore.prepareEnrollmentDeployment(state, tokenPath, {
+      platform: "linux", randomBytes: () => Buffer.alloc(32, 11),
+    });
+    expect(result).toMatchObject({ created: true, enabled: true });
+    expect(state).toMatchObject({ enrollment_enabled: true, enrollment_token_file: tokenPath });
+  });
+
+  test("reuses the same bearer on an enabled upgrade", async () => {
+    expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
+    const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-enabled-upgrade-")), "dashboard", "enrollment.token");
+    const state = {};
+    await deploymentCore.prepareEnrollmentDeployment(state, tokenPath, { platform: "linux", randomBytes: () => Buffer.alloc(32, 12) });
+    const original = await readFile(tokenPath, "utf8");
+    const result = await deploymentCore.prepareEnrollmentDeployment(state, tokenPath, {
+      platform: "linux",
+      randomBytes: () => {
+        throw new Error("enabled upgrade replaced the bearer");
+      },
+    });
+    expect(result.created).toBe(false);
+    expect(await readFile(tokenPath, "utf8")).toBe(original);
+  });
+
+  test("keeps a disabled upgrade disabled without a bearer or secret hash", async () => {
+    expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
+    const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-disabled-upgrade-")), "dashboard", "enrollment.token");
+    const state = { enrollment_enabled: false, enrollment_token_file: tokenPath };
+    const result = await deploymentCore.prepareEnrollmentDeployment(state, tokenPath, {
+      platform: "linux",
+      randomBytes: () => {
+        throw new Error("disabled upgrade generated a bearer");
+      },
+    });
+    expect(result).toEqual({ created: false, enabled: false, hash: null });
+    expect(state.enrollment_enabled).toBe(false);
+    await expect(lstat(tokenPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("only explicit rotation re-enables disabled enrollment", async () => {
+    expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
+    const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-rotate-enrollment-")), "dashboard", "enrollment.token");
+    const state = { enrollment_enabled: false, enrollment_token_file: tokenPath };
+    const result = await deploymentCore.prepareEnrollmentDeployment(state, tokenPath, {
+      platform: "linux", rotate: true, randomBytes: () => Buffer.alloc(32, 13),
+    });
+    expect(result).toMatchObject({ created: true, enabled: true });
+    expect(state.enrollment_enabled).toBe(true);
+  });
+
+  test("reuses a bearer left by a partial first-deployment retry", async () => {
+    expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
+    const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-partial-enrollment-")), "dashboard", "enrollment.token");
+    const partialState = {};
+    await ensureEnrollmentToken(tokenPath, { platform: "linux", randomBytes: () => Buffer.alloc(32, 14) });
+    const original = await readFile(tokenPath, "utf8");
+    const result = await deploymentCore.prepareEnrollmentDeployment(partialState, tokenPath, {
+      platform: "linux",
+      randomBytes: () => {
+        throw new Error("partial retry replaced the bearer");
+      },
+    });
+    expect(result.created).toBe(false);
+    expect(await readFile(tokenPath, "utf8")).toBe(original);
+    expect(partialState.enrollment_enabled).toBe(true);
+    await rm(tokenPath);
+  });
+
   test("does not replace an existing unsafe enrollment path", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-unsafe-enrollment-"));
     const targetPath = join(directory, "target.token");
     const tokenPath = join(directory, "enrollment.token");
     await writeFile(targetPath, "do-not-replace\n", { mode: 0o600 });
     await symlink(targetPath, tokenPath);
-    await expect(ensureEnrollmentToken(tokenPath, { platform: "linux" })).rejects.toThrow(/regular protected file/iu);
+    await expect(ensureEnrollmentToken(tokenPath, { platform: "linux" })).rejects.toThrow(/unsafe path ancestor|regular protected file/iu);
     expect(await readFile(targetPath, "utf8")).toBe("do-not-replace\n");
   });
 
@@ -228,7 +366,7 @@ describe("protected deployment state and enrollment material", () => {
 
     const linkPath = join(directory, "enrollment-link.token");
     await symlink(tokenPath, linkPath);
-    await expect(removeProtectedFileIfOwned(linkPath, linkPath, { platform: "linux" })).rejects.toThrow(/regular protected file/iu);
+    await expect(removeProtectedFileIfOwned(linkPath, linkPath, { platform: "linux" })).rejects.toThrow(/unsafe path ancestor|regular protected file/iu);
     expect(await readFile(tokenPath, "utf8")).toContain("test-only");
 
     await expect(removeProtectedFileIfOwned(tokenPath, tokenPath, { platform: "linux" })).resolves.toBe(true);
@@ -238,20 +376,35 @@ describe("protected deployment state and enrollment material", () => {
 });
 
 describe("Cloudflare API boundaries and ownership", () => {
-  test("parses paginated API envelopes without exposing upstream error messages", async () => {
+  test("models the official single-page Worker list envelope and paginates D1 lists", async () => {
     const requests = [];
     const client = new CloudflareClient({
       accountID,
       token: "test-only-api-token",
       fetchImpl: async (url, init) => {
         requests.push({ url: String(url), init });
+        if (String(url).includes("/workers/scripts")) {
+          return new Response(JSON.stringify({
+            success: true,
+            errors: [],
+            messages: [],
+            result: [{ id: "executor-dashboard", created_on: "2026-08-23T00:00:00Z", modified_on: "2026-08-23T00:00:00Z" }],
+          }), { status: 200 });
+        }
         if (String(url).includes("page=2")) {
           return new Response(JSON.stringify({ success: true, result: [{ id: "worker-2" }], result_info: { total_pages: 2 } }), { status: 200 });
         }
         return new Response(JSON.stringify({ success: true, result: [{ id: "worker-1" }], result_info: { total_pages: 2 } }), { status: 200 });
       },
     });
-    await expect(client.listWorkerScripts()).resolves.toEqual([{ id: "worker-1" }, { id: "worker-2" }]);
+    await expect(client.listWorkerScripts()).resolves.toEqual([
+      { id: "executor-dashboard", created_on: "2026-08-23T00:00:00Z", modified_on: "2026-08-23T00:00:00Z" },
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountID}/workers/scripts`);
+
+    requests.length = 0;
+    await expect(client.listD1Databases()).resolves.toEqual([{ id: "worker-1" }, { id: "worker-2" }]);
     expect(requests).toHaveLength(2);
 
     const failing = new CloudflareClient({
@@ -261,6 +414,75 @@ describe("Cloudflare API boundaries and ownership", () => {
     });
     await expect(failing.getOrganization()).rejects.not.toThrow(/test-only-api-token/u);
     await expect(failing.getOrganization()).rejects.toThrow(/Cloudflare API request failed/iu);
+  });
+
+  test("uses pinned D1 query and Worker deployment API envelopes", async () => {
+    const requests = [];
+    const client = new CloudflareClient({
+      accountID,
+      token: "test-only-api-token",
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), init });
+        if (String(url).endsWith("/query")) {
+          return new Response(JSON.stringify({
+            success: true,
+            errors: [],
+            messages: [],
+            result: [{
+              success: true,
+              results: [{ name: "0001_control_plane.sql" }],
+              meta: { served_by: "v3-prod", duration: 0.2, changes: 0, rows_read: 1, rows_written: 0 },
+            }],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          success: true,
+          errors: [],
+          messages: [],
+          result: {
+            deployments: [{
+              id: "deployment-1",
+              created_on: "2026-08-23T00:00:00Z",
+              source: "api",
+              strategy: "percentage",
+              versions: [{ percentage: 100, version_id: "version-1" }],
+              annotations: { "workers/message": "Executor deployment marker" },
+            }],
+          },
+        }), { status: 200 });
+      },
+    });
+
+    await expect(client.queryD1("db-owned", "SELECT name FROM d1_migrations ORDER BY id ASC"))
+      .resolves.toEqual([{ name: "0001_control_plane.sql" }]);
+    expect(requests[0].url).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountID}/d1/database/db-owned/query`);
+    expect(JSON.parse(requests[0].init.body)).toEqual({ sql: "SELECT name FROM d1_migrations ORDER BY id ASC" });
+    await expect(client.listWorkerDeployments("executor-dashboard")).resolves.toEqual([
+      expect.objectContaining({ id: "deployment-1", versions: [{ percentage: 100, version_id: "version-1" }] }),
+    ]);
+    expect(requests[1].url).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountID}/workers/scripts/executor-dashboard/deployments`);
+  });
+
+  test("queries the exact state-owned D1 migration table and rejects remote divergence", async () => {
+    expect(deploymentCore).toHaveProperty("assertRemoteMigrationsCompatible");
+    const assertRemoteMigrationsCompatible = deploymentCore.assertRemoteMigrationsCompatible;
+    const local = ["0001_control_plane.sql", "0002_device_tombstones.sql"];
+    const makeClient = (tables, migrations) => ({
+      queryD1: vi.fn(async (_databaseID, sql) => {
+        if (sql.includes("sqlite_schema")) return [{ name: tables ? "d1_migrations" : undefined }].filter((row) => row.name);
+        return migrations.map((name) => ({ name }));
+      }),
+    });
+    const state = { d1_database_id: "db-owned", d1_owned_by_executor: true };
+
+    await expect(assertRemoteMigrationsCompatible(makeClient(false, []), state, local)).resolves.toEqual([]);
+    await expect(assertRemoteMigrationsCompatible(makeClient(true, [local[0]]), state, local)).resolves.toEqual([local[0]]);
+    await expect(assertRemoteMigrationsCompatible(makeClient(true, [...local, "0003_future.sql"]), state, local)).rejects.toThrow(/newer|unknown/iu);
+    await expect(assertRemoteMigrationsCompatible(makeClient(true, [local[1], local[0]]), state, local)).rejects.toThrow(/divergent/iu);
+    await expect(assertRemoteMigrationsCompatible(makeClient(true, [local[1]]), state, local)).rejects.toThrow(/divergent/iu);
+
+    const unowned = { d1_database_id: "db-existing", d1_owned_by_executor: false };
+    await expect(assertRemoteMigrationsCompatible(makeClient(false, []), unowned, local)).rejects.toThrow(/migration table/iu);
   });
 
   test("reuses one exact D1 database and rejects ambiguous duplicates", async () => {
@@ -298,38 +520,197 @@ describe("Cloudflare API boundaries and ownership", () => {
     expect(state).toMatchObject({ d1_database_id: "db-created", d1_owned_by_executor: true, d1_creation_pending: false });
   });
 
-  test("creates and then idempotently updates only state-owned Access resources", async () => {
+  test("creates exact owner and device-path Access applications with isolated policies", async () => {
     const state = {};
     const persist = vi.fn(async () => {});
     const client = {
       listAccessApplications: vi.fn(async () => []),
-      createAccessApplication: vi.fn(async (payload) => ({ ...payload, id: "app-1", aud: "aud-1" })),
-      updateAccessApplication: vi.fn(async (_id, payload) => ({ ...payload, id: "app-1", aud: "aud-1" })),
+      createAccessApplication: vi.fn(async (payload) => ({ ...payload, id: payload.domain.includes("/api/device/") ? "app-device" : "app-owner", aud: payload.domain.includes("/api/device/") ? "aud-device" : "aud-owner" })),
+      updateAccessApplication: vi.fn(async (id, payload) => ({ ...payload, id, aud: id === "app-device" ? "aud-device" : "aud-owner" })),
       listAccessPolicies: vi.fn(async () => []),
-      createAccessPolicy: vi.fn(async (_appID, payload) => ({ ...payload, id: "policy-1" })),
-      updateAccessPolicy: vi.fn(async (_appID, _policyID, payload) => ({ ...payload, id: "policy-1" })),
+      createAccessPolicy: vi.fn(async (appID, payload) => ({ ...payload, id: appID === "app-device" ? "policy-device" : "policy-owner" })),
+      updateAccessPolicy: vi.fn(async (_appID, policyID, payload) => ({ ...payload, id: policyID })),
     };
     await expect(ensureAccessResources(client, state, { hostname, allowedEmail }, persist)).resolves.toEqual({
-      applicationID: "app-1",
-      audience: "aud-1",
+      applicationID: "app-owner",
+      audience: "aud-owner",
     });
     expect(state).toMatchObject({
-      access_application_id: "app-1",
-      access_application_aud: "aud-1",
-      access_policy_id: "policy-1",
+      access_application_id: "app-owner",
+      access_application_aud: "aud-owner",
+      access_policy_id: "policy-owner",
+      device_access_application_id: "app-device",
+      device_access_policy_id: "policy-device",
       access_owned_by_executor: true,
     });
     expect(client.createAccessApplication).toHaveBeenCalledWith(expect.objectContaining({ type: "self_hosted", domain: hostname }));
-    expect(client.createAccessPolicy).toHaveBeenCalledWith("app-1", expect.objectContaining({
+    expect(client.createAccessApplication).toHaveBeenCalledWith(expect.objectContaining({ type: "self_hosted", domain: `${hostname}/api/device/*` }));
+    expect(client.createAccessPolicy).toHaveBeenCalledWith("app-owner", expect.objectContaining({
       decision: "allow",
       include: [{ email: { email: allowedEmail } }],
     }));
+    expect(client.createAccessPolicy).toHaveBeenCalledWith("app-device", expect.objectContaining({
+      decision: "bypass",
+      include: [{ everyone: {} }],
+    }));
 
-    client.listAccessApplications.mockResolvedValueOnce([{ id: "app-1", aud: "aud-1", name: "Executor Unified Dashboard", domain: hostname, type: "self_hosted" }]);
-    client.listAccessPolicies.mockResolvedValueOnce([{ id: "policy-1", name: "Executor owner email", decision: "allow", include: [{ email: { email: allowedEmail } }] }]);
+    client.listAccessApplications.mockResolvedValueOnce([
+      { id: "app-owner", aud: "aud-owner", name: "Executor Unified Dashboard", domain: hostname, type: "self_hosted" },
+      { id: "app-device", aud: "aud-device", name: "Executor Unified Dashboard device ingress", domain: `${hostname}/api/device/*`, type: "self_hosted" },
+    ]);
+    client.listAccessPolicies
+      .mockResolvedValueOnce([{ id: "policy-owner", name: "Executor owner email", decision: "allow", include: [{ email: { email: allowedEmail } }] }])
+      .mockResolvedValueOnce([{ id: "policy-device", name: "Executor device ingress bypass", decision: "bypass", include: [{ everyone: {} }] }]);
     await ensureAccessResources(client, state, { hostname, allowedEmail }, persist);
-    expect(client.updateAccessApplication).toHaveBeenCalledWith("app-1", expect.objectContaining({ domain: hostname }));
-    expect(client.updateAccessPolicy).toHaveBeenCalledWith("app-1", "policy-1", expect.objectContaining({ include: [{ email: { email: allowedEmail } }] }));
+    expect(client.updateAccessApplication).toHaveBeenCalledWith("app-owner", expect.objectContaining({ domain: hostname }));
+    expect(client.updateAccessPolicy).toHaveBeenCalledWith("app-owner", "policy-owner", expect.objectContaining({ include: [{ email: { email: allowedEmail } }] }));
+  });
+
+  test.each([
+    { name: "allow everyone", policy: { id: "foreign", name: "foreign", decision: "allow", include: [{ everyone: {} }] } },
+    { name: "extra bypass", policy: { id: "foreign", name: "foreign", decision: "bypass", include: [{ everyone: {} }] } },
+    { name: "extra service auth", policy: { id: "foreign", name: "foreign", decision: "non_identity", include: [{ service_token: { token_id: "foreign" } }] } },
+    { name: "duplicate allow", policy: { id: "duplicate", name: "Executor owner email", decision: "allow", include: [{ email: { email: allowedEmail } }] } },
+  ])("rejects $name alongside the exact owned Access policy", async ({ policy }) => {
+    const state = {
+      access_application_id: "app-owner",
+      access_application_aud: "aud-owner",
+      access_policy_id: "policy-owner",
+      access_owned_by_executor: true,
+    };
+    const client = {
+      listAccessApplications: vi.fn(async () => [{ id: "app-owner", aud: "aud-owner", name: "Executor Unified Dashboard", domain: hostname, type: "self_hosted" }]),
+      updateAccessApplication: vi.fn(async (_id, payload) => ({ ...payload, id: "app-owner", aud: "aud-owner" })),
+      listAccessPolicies: vi.fn(async () => [
+        { id: "policy-owner", name: "Executor owner email", decision: "allow", include: [{ email: { email: allowedEmail } }] },
+        policy,
+      ]),
+    };
+    await expect(ensureAccessResources(client, state, { hostname, allowedEmail }, async () => {})).rejects.toThrow(/extra|unowned|exact/iu);
+  });
+
+  test("does not claim Worker ownership before creation and verifies stable remote deployment identity", async () => {
+    const state = {};
+    const persist = vi.fn(async () => {});
+    const absentClient = {
+      listWorkerScripts: vi.fn(async () => []),
+      listWorkerDeployments: vi.fn(async () => []),
+    };
+    const beforeCreate = await ensureWorkerOwnership(absentClient, state, "executor-dashboard", persist, { marker: "pending-marker" });
+    expect(beforeCreate).toEqual({ marker: "pending-marker", skipDeploy: false });
+    expect(state.worker_owned_by_executor).not.toBe(true);
+    expect(state.worker_creation_pending).toBe(true);
+
+    expect(deploymentCore).toHaveProperty("recordWorkerDeployment");
+    const recordWorkerDeployment = deploymentCore.recordWorkerDeployment;
+    const createdClient = {
+      listWorkerDeployments: vi.fn(async () => [{
+        id: "deployment-1",
+        created_on: "2026-08-23T00:00:00Z",
+        source: "api",
+        strategy: "percentage",
+        versions: [{ percentage: 100, version_id: "version-1" }],
+        annotations: { "workers/message": "Executor deployment pending-marker" },
+      }]),
+    };
+    await expect(recordWorkerDeployment(createdClient, state, "executor-dashboard", persist)).resolves.toBeUndefined();
+    expect(state).toMatchObject({
+      worker_owned_by_executor: true,
+      worker_deployment_id: "deployment-1",
+      worker_version_ids: ["version-1"],
+      worker_creation_pending: false,
+    });
+
+    const replacedClient = {
+      listWorkerScripts: vi.fn(async () => [{ id: "executor-dashboard" }]),
+      listWorkerDeployments: vi.fn(async () => [{
+        id: "manual-replacement",
+        created_on: "2026-08-23T01:00:00Z",
+        source: "api",
+        strategy: "percentage",
+        versions: [{ percentage: 100, version_id: "manual-version" }],
+        annotations: {},
+      }]),
+    };
+    await expect(ensureWorkerOwnership(replacedClient, state, "executor-dashboard", persist, { marker: "upgrade-marker" }))
+      .rejects.toThrow(/remote identity|drift|replaced/iu);
+  });
+
+  test("recovers only an interrupted Worker deploy carrying the exact pending marker", async () => {
+    const state = {
+      worker_name: "executor-dashboard",
+      worker_creation_pending: true,
+      worker_pending_marker: "expected-marker",
+    };
+    const exactClient = {
+      listWorkerScripts: vi.fn(async () => [{ id: "executor-dashboard" }]),
+      listWorkerDeployments: vi.fn(async () => [{
+        id: "deployment-1",
+        created_on: "2026-08-23T00:00:00Z",
+        source: "api",
+        strategy: "percentage",
+        versions: [{ percentage: 100, version_id: "version-1" }],
+        annotations: { "workers/message": "Executor deployment expected-marker" },
+      }]),
+    };
+    await expect(ensureWorkerOwnership(exactClient, state, "executor-dashboard", async () => {}, { marker: "unused" }))
+      .resolves.toEqual({ marker: "expected-marker", skipDeploy: true });
+    expect(state.worker_owned_by_executor).toBe(true);
+
+    const wrongState = { worker_name: "executor-dashboard", worker_creation_pending: true, worker_pending_marker: "expected-marker" };
+    const wrongClient = {
+      ...exactClient,
+      listWorkerDeployments: vi.fn(async () => [{
+        id: "deployment-foreign",
+        created_on: "2026-08-23T00:00:00Z",
+        source: "api",
+        strategy: "percentage",
+        versions: [{ percentage: 100, version_id: "version-foreign" }],
+        annotations: { "workers/message": "manual replacement" },
+      }]),
+    };
+    await expect(ensureWorkerOwnership(wrongClient, wrongState, "executor-dashboard", async () => {}, { marker: "unused" }))
+      .rejects.toThrow(/pending.*proven|marker/iu);
+  });
+
+  test("records a successful Worker upgrade while retaining explicit owned history", async () => {
+    const state = {
+      worker_name: "executor-dashboard",
+      worker_owned_by_executor: true,
+      worker_deployment_id: "deployment-1",
+      worker_version_ids: ["version-1"],
+      worker_owned_deployment_ids: ["deployment-1"],
+      worker_owned_version_ids: ["version-1"],
+    };
+    const current = {
+      id: "deployment-1", created_on: "2026-08-23T00:00:00Z", source: "api", strategy: "percentage",
+      versions: [{ percentage: 100, version_id: "version-1" }], annotations: { "workers/message": "Executor deployment first" },
+    };
+    const client = {
+      listWorkerScripts: vi.fn(async () => [{ id: "executor-dashboard" }]),
+      listWorkerDeployments: vi.fn(async () => [current]),
+    };
+    await expect(ensureWorkerOwnership(client, state, "executor-dashboard", async () => {}, { marker: "upgrade-marker" }))
+      .resolves.toEqual({ marker: "upgrade-marker", skipDeploy: false });
+    client.listWorkerDeployments.mockResolvedValueOnce([{
+      id: "deployment-2", created_on: "2026-08-23T01:00:00Z", source: "api", strategy: "percentage",
+      versions: [{ percentage: 100, version_id: "version-2" }], annotations: { "workers/message": "Executor deployment upgrade-marker" },
+    }]);
+    await deploymentCore.recordWorkerDeployment(client, state, "executor-dashboard", async () => {});
+    expect(state).toMatchObject({
+      worker_deployment_id: "deployment-2",
+      worker_version_ids: ["version-2"],
+      worker_owned_deployment_ids: ["deployment-1", "deployment-2"],
+      worker_owned_version_ids: ["version-1", "version-2"],
+    });
+  });
+
+  test("allows rollback only to an explicitly recorded Executor-owned Worker version", () => {
+    expect(deploymentCore).toHaveProperty("assertOwnedRollbackVersion");
+    const state = { worker_owned_by_executor: true, worker_owned_version_ids: ["version-1", "version-2"] };
+    expect(() => deploymentCore.assertOwnedRollbackVersion(state, "version-1")).not.toThrow();
+    expect(() => deploymentCore.assertOwnedRollbackVersion(state, undefined)).toThrow(/explicitly recorded/iu);
+    expect(() => deploymentCore.assertOwnedRollbackVersion(state, "manual-version")).toThrow(/explicitly recorded/iu);
   });
 
   test("does not adopt an unowned Access app or replace an unowned Worker", async () => {
@@ -340,5 +721,19 @@ describe("Cloudflare API boundaries and ownership", () => {
 
     const workerClient = { listWorkerScripts: vi.fn(async () => [{ id: "executor-dashboard" }]) };
     await expect(ensureWorkerOwnership(workerClient, {}, "executor-dashboard", async () => {})).rejects.toThrow(/not owned by Executor/iu);
+  });
+
+  test("rejects an unowned more-specific Access application inside device ingress", async () => {
+    const client = {
+      listAccessApplications: vi.fn(async () => [{
+        id: "foreign-connect-app", name: "Foreign device connect override",
+        domain: `${hostname}/api/device/connect/*`, type: "self_hosted", aud: "foreign-aud",
+      }]),
+      createAccessApplication: vi.fn(async (payload) => ({ ...payload, id: payload.domain.includes("/api/device/") ? "app-device" : "app-owner", aud: "aud" })),
+      listAccessPolicies: vi.fn(async () => []),
+      createAccessPolicy: vi.fn(async (_applicationID, payload) => ({ ...payload, id: "policy" })),
+    };
+    await expect(ensureAccessResources(client, {}, { hostname, allowedEmail }, async () => {}))
+      .rejects.toThrow(/conflicting.*device|device.*conflict/iu);
   });
 });

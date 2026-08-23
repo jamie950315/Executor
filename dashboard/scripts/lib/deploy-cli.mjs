@@ -68,17 +68,26 @@ export function normalizeDeploymentOptions(input, runtime = {}) {
   const defaultStateDirectory = platform === "win32"
     ? join(environment.LOCALAPPDATA || join(homeDirectory, "AppData", "Local"), "Executor")
     : join(environment.XDG_STATE_HOME || join(homeDirectory, ".local", "state"), "executor");
-  const stateFile = resolve(input.stateFile ?? environment.EXECUTOR_DASHBOARD_STATE_FILE ?? join(defaultStateDirectory, "dashboard-deployment.json"));
-  const enrollmentTokenFile = resolve(input.enrollmentTokenFile ?? environment.EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE ?? join(defaultStateDirectory, "dashboard-enrollment.token"));
+  const dashboardStateDirectory = join(defaultStateDirectory, "dashboard");
+  const stateFile = resolve(input.stateFile ?? environment.EXECUTOR_DASHBOARD_STATE_FILE ?? join(dashboardStateDirectory, "deployment.json"));
+  const enrollmentTokenFile = resolve(input.enrollmentTokenFile ?? environment.EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE ?? join(dashboardStateDirectory, "enrollment.token"));
   for (const path of [resolve(apiTokenFile), stateFile, enrollmentTokenFile]) {
     if (inside(repositoryRoot, path, platform)) {
       throw new Error("Credential and deployment state files must remain outside the repository.");
     }
   }
+  const stateParent = platform === "win32" ? dirname(stateFile).toLowerCase() : dirname(stateFile);
+  const enrollmentParent = platform === "win32" ? dirname(enrollmentTokenFile).toLowerCase() : dirname(enrollmentTokenFile);
+  if (stateParent !== enrollmentParent) {
+    throw new Error("Dashboard state and enrollment material must share one dedicated Executor directory.");
+  }
   if (stateFile === enrollmentTokenFile || resolve(apiTokenFile) === enrollmentTokenFile || resolve(apiTokenFile) === stateFile) {
     throw new Error("Cloudflare token, enrollment token, and deployment state must use separate files.");
   }
-  if (command === "rollback" && input.versionID !== undefined && !/^[A-Za-z0-9_-]{8,128}$/u.test(input.versionID)) {
+  if (command === "rollback" && input.versionID === undefined) {
+    throw new Error("An explicit Executor-owned Worker version ID is required for rollback.");
+  }
+  if (command === "rollback" && !/^[A-Za-z0-9_-]{8,128}$/u.test(input.versionID)) {
     throw new Error("The Worker rollback version ID is invalid.");
   }
   return {

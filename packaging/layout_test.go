@@ -215,8 +215,11 @@ func TestReleaseWorkflowValidatesDashboardPackageBeforeArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflow := string(mustReadFile(t, filepath.Join(root, ".github", "workflows", "release.yml")))
+	dashboardJob := strings.Split(workflow, "\n  build:")[0]
 	for _, required := range []string{
 		"actions/setup-node@v4",
+		"actions/setup-go@v5",
+		"go-version-file: go.mod",
 		"cache-dependency-path: dashboard/package-lock.json",
 		"npm ci",
 		"npm test",
@@ -224,14 +227,20 @@ func TestReleaseWorkflowValidatesDashboardPackageBeforeArchives(t *testing.T) {
 		"npm run build",
 		"dashboard/test/deploy/windows-deployment.tests.ps1",
 	} {
-		if !strings.Contains(workflow, required) {
+		if !strings.Contains(dashboardJob, required) {
 			t.Fatalf("release workflow does not validate Dashboard requirement %q:\n%s", required, workflow)
+		}
+	}
+	goWorkflow := string(mustReadFile(t, filepath.Join(root, ".github", "workflows", "go.yml")))
+	goDashboardJob := strings.Split(goWorkflow, "\n  test:")[0]
+	for _, required := range []string{"actions/setup-go@v5", "go-version-file: go.mod", "dashboard/test/deploy/windows-deployment.tests.ps1"} {
+		if !strings.Contains(goDashboardJob, required) {
+			t.Fatalf("Go workflow Dashboard job does not validate Windows source packaging requirement %q:\n%s", required, goWorkflow)
 		}
 	}
 }
 
 func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("release archive script is covered by Linux and macOS jobs")
 	}
@@ -240,6 +249,24 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Abs: %v", err)
 	}
+	forbiddenArtifacts := []string{
+		filepath.Join(root, "scripts", ".executor-packaging-test", "runtime.token"),
+		filepath.Join(root, "docs", ".executor-packaging-test", "browser-state.json"),
+		filepath.Join(root, "dashboard", "scripts", ".executor-packaging-test", "deployment-state.json"),
+	}
+	for _, path := range forbiddenArtifacts {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test-only runtime artifact\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(filepath.Join(root, "scripts", ".executor-packaging-test"))
+		_ = os.RemoveAll(filepath.Join(root, "docs", ".executor-packaging-test"))
+		_ = os.RemoveAll(filepath.Join(root, "dashboard", "scripts", ".executor-packaging-test"))
+	})
 	outDir := filepath.Join(t.TempDir(), "release")
 	cmd := exec.Command("bash", filepath.Join(root, "scripts", "build-release-artifacts.sh"))
 	cmd.Dir = root
@@ -269,6 +296,15 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	)
 	assertArchiveExcludes(t, linuxEntries, "dashboard/node_modules/", "dashboard/dist/", "dashboard/.wrangler/", ".playwright-cli/")
 	assertArchiveExcludes(t, windowsEntries, "dashboard/node_modules/", "dashboard/dist/", "dashboard/.wrangler/", ".playwright-cli/")
+	for _, entries := range [][]string{linuxEntries, windowsEntries} {
+		for _, forbidden := range []string{"runtime.token", "browser-state.json", "deployment-state.json"} {
+			for _, entry := range entries {
+				if strings.HasSuffix(entry, "/"+forbidden) || entry == forbidden {
+					t.Fatalf("archive contains untracked runtime artifact %q", entry)
+				}
+			}
+		}
+	}
 
 	sums := string(mustReadFile(t, filepath.Join(outDir, "SHA256SUMS.txt")))
 	if strings.Contains(sums, outDir) {

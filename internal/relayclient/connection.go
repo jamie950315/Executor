@@ -20,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/jamie950315/executor/internal/config"
+	localdashboard "github.com/jamie950315/executor/internal/dashboard"
 	"github.com/jamie950315/executor/internal/relay"
 	"github.com/jamie950315/executor/internal/secrets"
 )
@@ -55,6 +56,8 @@ type Client struct {
 	now               func() time.Time
 	dial              DialFunc
 	sleep             func(context.Context, time.Duration) error
+	statusMu          sync.RWMutex
+	relayStatus       localdashboard.RelayStatus
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
@@ -80,11 +83,28 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if options.Sleep == nil {
 		options.Sleep = sleepContext
 	}
-	return &Client{
+	client := &Client{
 		configPath: options.ConfigPath, executorVersion: options.ExecutorVersion, httpClient: options.HTTPClient,
 		adapter: options.Adapter, heartbeatInterval: options.HeartbeatInterval, now: options.Now,
 		dial: options.Dial, sleep: options.Sleep,
-	}, nil
+	}
+	client.setRelayState("disconnected")
+	return client, nil
+}
+
+func (c *Client) Status() localdashboard.RelayStatus {
+	c.statusMu.RLock()
+	defer c.statusMu.RUnlock()
+	return c.relayStatus
+}
+
+func (c *Client) setRelayState(state string) {
+	if state != "connected" {
+		state = "disconnected"
+	}
+	c.statusMu.Lock()
+	c.relayStatus = localdashboard.RelayStatus{State: state, UpdatedAt: c.now().UTC()}
+	c.statusMu.Unlock()
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -101,12 +121,14 @@ func (c *Client) Run(ctx context.Context) error {
 			return errors.New("relay configuration unavailable")
 		}
 		if cfg.UnifiedDashboard.URL == "" || !cfg.UnifiedDashboard.Enrolled {
+			c.setRelayState("disconnected")
 			if err := c.sleep(ctx, 100*time.Millisecond); err != nil {
 				return nil
 			}
 			continue
 		}
 		if disabled(filepath.Join(cfg.StateDir, "disabled")) {
+			c.setRelayState("disconnected")
 			if err := c.sleep(ctx, 100*time.Millisecond); err != nil {
 				return nil
 			}
@@ -125,6 +147,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			_ = socket.Close(int(websocket.StatusNormalClosure), "relay reconnect")
 		}
+		c.setRelayState("disconnected")
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -170,6 +193,8 @@ func (c *connection) run(ctx context.Context) error {
 		return err
 	}
 	c.authenticated = true
+	c.client.setRelayState("connected")
+	defer c.client.setRelayState("disconnected")
 	connectionCtx, cancel := context.WithCancel(ctx)
 	defer func() {
 		cancel()
@@ -325,6 +350,7 @@ func (c *connection) heartbeat(ctx context.Context) error {
 			if err := c.writeEnvelope(ctx, envelope); err != nil {
 				return err
 			}
+			c.client.setRelayState("connected")
 		}
 	}
 }

@@ -29,11 +29,37 @@ if [[ "$1" == "dashboard" && "$2" == "enroll" ]]; then
   printf 'enrolled\n'
   exit 0
 fi
-if [[ "$1" == "dashboard" && "$2" == "status" ]]; then printf '{"enrolled":true,"relay":"configured"}\n'; exit 0; fi
-if [[ "$1" == "status" ]]; then printf '{"state":"armed","agent":"online"}\n'; exit 0; fi
+if [[ "$1" == "dashboard" && "$2" == "status" ]]; then
+  if [[ "${RELAY_DOWN:-}" == "1" ]]; then printf '{"enrolled":true,"relay":"disconnected"}\n'; else printf '{"enrolled":true,"relay":"connected"}\n'; fi
+  exit 0
+fi
+if [[ "$1" == "status" ]]; then printf '{"state":"armed","agent":"online","broker":"online","dashboard":"online"}\n'; exit 0; fi
 exit 2
 `)
 	environment := append(os.Environ(), "COMMAND_LOG="+commandLog, "PASSED_TOKEN_PATH="+passedTokenPath)
+	realTokenDirectory := filepath.Join(tmp, "real-token-directory")
+	linkedTokenDirectory := filepath.Join(tmp, "linked-token-directory")
+	if err := os.MkdirAll(realTokenDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ancestorToken := filepath.Join(realTokenDirectory, "ancestor-enrollment.token")
+	if err := os.WriteFile(ancestorToken, []byte("test-only-enrollment-bearer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realTokenDirectory, linkedTokenDirectory); err != nil {
+		t.Fatal(err)
+	}
+	unsafeCommand := exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", filepath.Join(linkedTokenDirectory, "ancestor-enrollment.token"),
+	)
+	unsafeCommand.Env = environment
+	if output, err := unsafeCommand.CombinedOutput(); err == nil {
+		t.Fatalf("enrollment helper accepted a symlinked token ancestor: %s", output)
+	}
+	assertFileExists(t, ancestorToken)
+
 	sourceToken := filepath.Join(tmp, "source-enrollment.token")
 	const tokenValue = "test-only-enrollment-bearer"
 	if err := os.WriteFile(sourceToken, []byte(tokenValue+"\n"), 0o600); err != nil {
@@ -84,6 +110,26 @@ exit 2
 	if _, err := os.Stat(temporaryToken); !os.IsNotExist(err) {
 		t.Fatalf("designated temporary token remains after success: %v", err)
 	}
+	passed = strings.TrimSpace(readFile(t, passedTokenPath))
+	if passed == temporaryToken {
+		t.Fatal("helper passed the designated original temporary token to enrollment")
+	}
+
+	timedOutToken := filepath.Join(tmp, "timed-out-temporary-enrollment.token")
+	if err := os.WriteFile(timedOutToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", timedOutToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "RELAY_DOWN=1", "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=0")
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("disconnected relay unexpectedly passed enrollment verification: %s", output)
+	}
+	assertFileExists(t, timedOutToken)
 
 	failedToken := filepath.Join(tmp, "failed-temporary-enrollment.token")
 	if err := os.WriteFile(failedToken, []byte(tokenValue+"\n"), 0o600); err != nil {

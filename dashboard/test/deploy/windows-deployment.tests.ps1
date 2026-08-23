@@ -44,7 +44,34 @@ try {
 
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenPath -Initialize
   if ($LASTEXITCODE -ne 0) { throw "Protected-file ACL repair failed." }
+
+  $JunctionTarget = Join-Path $TemporaryRoot "junction-target"
+  $JunctionPath = Join-Path $TemporaryRoot "junction-link"
+  New-Item -ItemType Directory -Path $JunctionTarget | Out-Null
+  $JunctionToken = Join-Path $JunctionTarget "junction.token"
+  [System.IO.File]::WriteAllText($JunctionToken, "test-only-junction-token`n")
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $JunctionToken -Initialize
+  if ($LASTEXITCODE -ne 0) { throw "Junction target token initialization failed." }
+  & cmd.exe /d /c "mklink /J `"$JunctionPath`" `"$JunctionTarget`"" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Junction fixture creation failed." }
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path (Join-Path $JunctionPath "junction.token")
+  if ($LASTEXITCODE -eq 0) { throw "Protected-file validation accepted a reparse-point ancestor." }
+
   $Deploy = Join-Path $RepositoryRoot "scripts\deploy-dashboard-from-source.ps1"
+
+  $env:EXECUTOR_DASHBOARD_HOSTNAME = "dashboard.example.test"
+  $env:CLOUDFLARE_ACCOUNT_ID = "0123456789abcdef0123456789abcdef"
+  $env:CLOUDFLARE_API_TOKEN_FILE = $TokenPath
+  $env:EXECUTOR_DASHBOARD_ALLOWED_EMAIL = "owner@example.test"
+  $EnvironmentOutput = & $Deploy validate 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0 -or $EnvironmentOutput -notmatch "no Cloudflare changes were made") {
+    throw "PowerShell Dashboard environment defaults failed: $EnvironmentOutput"
+  }
+
+  $env:EXECUTOR_DASHBOARD_HOSTNAME = "invalid hostname"
+  $env:CLOUDFLARE_ACCOUNT_ID = "invalid-account"
+  $env:CLOUDFLARE_API_TOKEN_FILE = "C:\missing\token"
+  $env:EXECUTOR_DASHBOARD_ALLOWED_EMAIL = "invalid-email"
   $Output = & $Deploy validate `
     -Hostname "dashboard.example.test" `
     -AccountId "0123456789abcdef0123456789abcdef" `
@@ -63,8 +90,8 @@ try {
 @echo off
 echo %*>>"$CommandLog"
 if "%1"=="dashboard" if "%2"=="enroll" goto enroll
-if "%1"=="dashboard" if "%2"=="status" exit /b 0
-if "%1"=="status" exit /b 0
+if "%1"=="dashboard" if "%2"=="status" goto dashboardstatus
+if "%1"=="status" goto localstatus
 exit /b 2
 :enroll
 if "%FAIL_ENROLL%"=="1" exit /b 9
@@ -75,6 +102,12 @@ shift
 goto scan
 :consume
 del /f /q "%~2"
+exit /b 0
+:dashboardstatus
+if "%RELAY_DOWN%"=="1" (echo {"enrolled":true,"relay":"disconnected"}) else (echo {"enrolled":true,"relay":"connected"})
+exit /b 0
+:localstatus
+echo {"state":"armed","agent":"online","broker":"online","dashboard":"online"}
 exit /b 0
 "@)
   $EnrollmentHelper = Join-Path $RepositoryRoot "scripts\enroll-dashboard.ps1"
@@ -104,6 +137,30 @@ exit /b 0
     throw "Windows enrollment helper retained a designated temporary token after success."
   }
 
+  $TimedOutEnrollment = Join-Path $TemporaryRoot "timed-out-enrollment.token"
+  [System.IO.File]::WriteAllText($TimedOutEnrollment, "test-only-dashboard-enrollment-bearer`n")
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TimedOutEnrollment -Initialize
+  if ($LASTEXITCODE -ne 0) { throw "Timed-out enrollment ACL initialization failed." }
+  $env:RELAY_DOWN = "1"
+  $env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS = "2"
+  $env:EXECUTOR_DASHBOARD_WAIT_DELAY = "0"
+  try {
+    $TimedOut = $false
+    try {
+      & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $TimedOutEnrollment -TemporaryToken | Out-Null
+    } catch {
+      $TimedOut = $true
+    }
+    if (-not $TimedOut) { throw "Windows disconnected relay unexpectedly passed verification." }
+    if (-not (Test-Path -LiteralPath $TimedOutEnrollment)) {
+      throw "Windows relay timeout deleted the designated token before success."
+    }
+  } finally {
+    Remove-Item Env:RELAY_DOWN -ErrorAction SilentlyContinue
+    Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_ATTEMPTS -ErrorAction SilentlyContinue
+    Remove-Item Env:EXECUTOR_DASHBOARD_WAIT_DELAY -ErrorAction SilentlyContinue
+  }
+
   $FailedEnrollment = Join-Path $TemporaryRoot "failed-enrollment.token"
   [System.IO.File]::WriteAllText($FailedEnrollment, "test-only-dashboard-enrollment-bearer`n")
   & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $FailedEnrollment -Initialize
@@ -123,6 +180,23 @@ exit /b 0
   } finally {
     Remove-Item Env:FAIL_ENROLL -ErrorAction SilentlyContinue
   }
+
+  $ForbiddenPackagingRoot = Join-Path $RepositoryRoot "scripts\.executor-windows-packaging-test"
+  New-Item -ItemType Directory -Path $ForbiddenPackagingRoot -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $ForbiddenPackagingRoot "runtime.token"), "test-only runtime artifact`n")
+  $PreparedBundle = Join-Path $TemporaryRoot "prepared-bundle"
+  $SourceDeploy = Join-Path $RepositoryRoot "scripts\deploy-from-source.ps1"
+  & $SourceDeploy -PrepareOnly $PreparedBundle | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Windows source bundle preparation failed." }
+  if (Test-Path -LiteralPath (Join-Path $PreparedBundle "scripts\.executor-windows-packaging-test\runtime.token")) {
+    throw "Windows source bundle included an untracked runtime token."
+  }
 } finally {
+  foreach ($Name in @(
+    "EXECUTOR_DASHBOARD_HOSTNAME", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN_FILE", "EXECUTOR_DASHBOARD_ALLOWED_EMAIL"
+  )) {
+    Remove-Item "Env:$Name" -ErrorAction SilentlyContinue
+  }
+  Remove-Item -LiteralPath (Join-Path $RepositoryRoot "scripts\.executor-windows-packaging-test") -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $TemporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

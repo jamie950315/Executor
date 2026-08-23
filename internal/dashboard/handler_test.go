@@ -124,6 +124,29 @@ func TestDashboardHealthRequiresCurrentKeyAndReturnsIdentityMarker(t *testing.T)
 	}
 }
 
+func TestDashboardRelayStatusMachineEndpointIsAuthenticatedAndMetadataOnly(t *testing.T) {
+	h := NewHandler(&fakeController{}, "local-secret")
+
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/.executor/relay-status", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized relay status = %d, want 401", unauthorized.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/.executor/relay-status", nil)
+	request.Header.Set("X-Executor-Health-Key", "local-secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"disconnected"`) {
+		t.Fatalf("relay status = %d %q, want disconnected metadata", response.Code, response.Body.String())
+	}
+	for _, forbidden := range []string{"grant", "token", "secret", "device_id"} {
+		if strings.Contains(strings.ToLower(response.Body.String()), forbidden) {
+			t.Fatalf("relay status exposed forbidden material %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
 func TestDashboardTokenProviderImmediatelyTracksExternalRotation(t *testing.T) {
 	controller := &fakeController{}
 	current := "old-local-secret"

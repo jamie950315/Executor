@@ -126,6 +126,49 @@ func TestDashboardEnrollmentSerializesOriginConfigurationWithRelayWorkflow(t *te
 	}
 }
 
+func TestDashboardStatusReadsLiveLoopbackRelayStateAndFailsClosedWhenStaleOrCrashed(t *testing.T) {
+	stateDir := t.TempDir()
+	values, err := secrets.Create(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(stateDir, "config.json")
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.DeviceID = "device-status-1"
+	cfg.UnifiedDashboard.Enrolled = true
+	updatedAt := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.executor/relay-status" || r.Header.Get("X-Executor-Health-Key") != values.DashboardKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"state": "connected", "updated_at": updatedAt})
+	}))
+	cfg.DashboardAddress = strings.TrimPrefix(server.URL, "http://")
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+
+	status, err := b.DashboardStatus(context.Background())
+	if err != nil || status.Relay != "connected" {
+		t.Fatalf("live Dashboard status = %#v, %v", status, err)
+	}
+
+	updatedAt = time.Now().UTC().Add(-10 * time.Minute)
+	status, err = b.DashboardStatus(context.Background())
+	if err != nil || status.Relay != "disconnected" {
+		t.Fatalf("stale Dashboard status = %#v, %v", status, err)
+	}
+
+	server.Close()
+	status, err = b.DashboardStatus(context.Background())
+	if err != nil || status.Relay != "disconnected" {
+		t.Fatalf("crashed Dashboard status = %#v, %v", status, err)
+	}
+}
+
 func TestDashboardEquivalentOriginFinishesMatchingCleanupWithoutPosting(t *testing.T) {
 	stateDir := t.TempDir()
 	values, err := secrets.Create(stateDir)

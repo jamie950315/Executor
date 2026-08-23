@@ -3,17 +3,13 @@ param(
   [Parameter(Position = 0, Mandatory = $true)]
   [ValidateSet("deploy", "validate", "rotate-enrollment", "disable-enrollment", "rollback")]
   [string]$Command,
-  [Parameter(Mandatory = $true)]
-  [string]$Hostname,
-  [Parameter(Mandatory = $true)]
-  [string]$AccountId,
-  [Parameter(Mandatory = $true)]
-  [string]$ApiTokenFile,
-  [Parameter(Mandatory = $true)]
-  [string]$AllowedEmail,
-  [string]$StateFile = "",
-  [string]$EnrollmentTokenFile = "",
-  [string]$VersionId = ""
+  [string]$Hostname = $env:EXECUTOR_DASHBOARD_HOSTNAME,
+  [string]$AccountId = $env:CLOUDFLARE_ACCOUNT_ID,
+  [string]$ApiTokenFile = $env:CLOUDFLARE_API_TOKEN_FILE,
+  [string]$AllowedEmail = $env:EXECUTOR_DASHBOARD_ALLOWED_EMAIL,
+  [string]$StateFile = $env:EXECUTOR_DASHBOARD_STATE_FILE,
+  [string]$EnrollmentTokenFile = $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE,
+  [string]$VersionId = $env:EXECUTOR_DASHBOARD_VERSION_ID
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +17,10 @@ $RootDir = Split-Path $PSScriptRoot -Parent
 $DeployScript = Join-Path $RootDir "dashboard\scripts\deploy.mjs"
 $Node = Get-Command "node.exe" -ErrorAction SilentlyContinue
 $Npm = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+if ([string]::IsNullOrWhiteSpace($Hostname) -or [string]::IsNullOrWhiteSpace($AccountId) -or `
+    [string]::IsNullOrWhiteSpace($ApiTokenFile) -or [string]::IsNullOrWhiteSpace($AllowedEmail)) {
+  throw "Dashboard hostname, account ID, API token file, and allowed email are required."
+}
 if (-not $Node) { throw "Node is required to deploy the Unified Dashboard." }
 if (-not $Npm) { throw "npm is required to deploy the Unified Dashboard." }
 if (-not (Test-Path -LiteralPath $DeployScript -PathType Leaf)) {
