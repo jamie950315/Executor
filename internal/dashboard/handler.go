@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
-	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 )
 
 const cookieName = "executor_local"
@@ -37,8 +35,7 @@ type Controller interface {
 	Snapshot(context.Context) (Snapshot, error)
 	Kill(context.Context) (KillResult, error)
 	Resume(context.Context) error
-	Rotate(context.Context) error
-	Permissions(context.Context, bool) (permissionmodel.Report, error)
+	Rotate(context.Context) (KillResult, error)
 }
 
 type TokenProvider func() (string, error)
@@ -99,16 +96,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.render(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/status":
 		h.status(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/permissions/status":
-		h.permissions(w, r, false)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/permissions/request-all":
-		h.permissions(w, r, true)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/kill":
-		h.kill(w, r)
+		h.resultAction(w, r, h.controller.Kill)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/resume":
 		h.action(w, r, h.controller.Resume)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/rotate":
-		h.action(w, r, h.controller.Rotate)
+		h.resultAction(w, r, h.controller.Rotate)
 	default:
 		http.NotFound(w, r)
 	}
@@ -174,18 +167,8 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(snapshot)
 }
 
-func (h *handler) permissions(w http.ResponseWriter, r *http.Request, request bool) {
-	report, err := h.controller.Permissions(r.Context(), request)
-	if err != nil {
-		http.Error(w, "permission status unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(report)
-}
-
-func (h *handler) kill(w http.ResponseWriter, r *http.Request) {
-	result, err := h.controller.Kill(r.Context())
+func (h *handler) resultAction(w http.ResponseWriter, r *http.Request, action func(context.Context) (KillResult, error)) {
+	result, err := action(r.Context())
 	if err != nil {
 		if result.RecoveryKey != "" && result.URLSecret != "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -202,10 +185,6 @@ func (h *handler) kill(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) action(w http.ResponseWriter, r *http.Request, action func(context.Context) error) {
 	if err := action(r.Context()); err != nil {
-		if errors.Is(err, ErrRotateUnsupported) {
-			http.Error(w, "rotate is not available while Executor services are running", http.StatusNotImplemented)
-			return
-		}
 		http.Error(w, "action failed", http.StatusInternalServerError)
 		return
 	}
@@ -214,16 +193,15 @@ func (h *handler) action(w http.ResponseWriter, r *http.Request, action func(con
 
 var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Executor Control Room</title><style>
+<title>Executor Emergency Rescue</title><style>
 :root{--ink:#11120f;--paper:#e8e2d5;--acid:#d7ff45;--alarm:#ff4d2e;--muted:#77766d;--line:#292a24}*{box-sizing:border-box}
 body{margin:0;background:var(--ink);color:var(--paper);font-family:"Avenir Next Condensed","Franklin Gothic Condensed",sans-serif;min-height:100vh;background-image:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:28px 28px}
 main{max-width:1180px;margin:auto;padding:44px 28px 72px}.mast{display:flex;justify-content:space-between;align-items:end;border-bottom:2px solid var(--paper);padding-bottom:18px}.brand{font-size:clamp(54px,9vw,118px);font-weight:900;line-height:.78;letter-spacing:-.055em;text-transform:uppercase}.tag{font:600 12px ui-monospace,monospace;color:var(--acid);letter-spacing:.18em;text-transform:uppercase}.state{border:1px solid var(--acid);padding:10px 14px;color:var(--acid);font:700 13px ui-monospace,monospace;text-transform:uppercase}
 .grid{display:grid;grid-template-columns:1.35fr .65fr;gap:18px;margin-top:24px}.panel{border:1px solid var(--line);background:rgba(17,18,15,.88);padding:22px}.kicker{font:700 11px ui-monospace,monospace;letter-spacing:.15em;color:var(--muted);text-transform:uppercase;margin-bottom:18px}.endpoint{font:600 clamp(18px,3vw,34px) ui-monospace,monospace;overflow-wrap:anywhere;color:var(--acid)}
 .services{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}.service{background:var(--ink);padding:16px}.service b{display:block;font:800 14px ui-monospace,monospace;text-transform:uppercase}.service span{color:var(--acid);font-size:12px}
-.permissions{margin-top:18px}.permission-head{display:flex;justify-content:space-between;align-items:center;gap:16px}.permission-head .kicker{margin:0}.permission-summary{margin:16px 0 10px;font:700 12px ui-monospace,monospace;color:var(--muted)}.permission-list{display:grid;gap:1px;background:var(--line);border:1px solid var(--line)}.permission-item{display:flex;justify-content:space-between;gap:14px;background:var(--ink);padding:12px 14px;font:12px ui-monospace,monospace}.permission-copy{display:grid;gap:5px}.permission-detail{color:var(--muted);line-height:1.35}.permission-link{color:var(--acid)}.permission-state{text-transform:uppercase;color:var(--acid)}
 .danger{border-color:var(--alarm);display:flex;flex-direction:column;justify-content:space-between}.danger h2{font-size:40px;line-height:.9;text-transform:uppercase;margin:0;letter-spacing:-.03em}.danger p{color:#b7b3a9;line-height:1.5}.actions{display:flex;gap:10px;flex-wrap:wrap}button{border:1px solid var(--paper);background:transparent;color:var(--paper);padding:12px 16px;font:800 12px ui-monospace,monospace;text-transform:uppercase;cursor:pointer}button:hover{background:var(--paper);color:var(--ink)}button.kill{border-color:var(--alarm);background:var(--alarm);color:var(--ink);flex:1}button.kill:hover{filter:brightness(1.15)}
 .credentials{margin-top:18px;border:1px solid var(--acid);padding:16px;background:#181a11}.credentials[hidden]{display:none}.credentials h3{margin:0 0 10px;color:var(--acid);font:800 13px ui-monospace,monospace;text-transform:uppercase}.credentials p{margin:7px 0;font:12px ui-monospace,monospace;overflow-wrap:anywhere}.credentials code{color:var(--paper)}.foot{margin-top:22px;font:11px ui-monospace,monospace;color:var(--muted);display:flex;justify-content:space-between}@media(max-width:760px){.grid{grid-template-columns:1fr}.mast{align-items:start;gap:20px;flex-direction:column}.services{grid-template-columns:1fr}}
-</style></head><body><main><header class="mast"><div><div class="tag">Sovereign machine control</div><div class="brand">Executor</div></div><div class="state">● {{.State}}</div></header>
-<section class="grid"><div><div class="panel"><div class="kicker">Public MCP endpoint</div><div class="endpoint">{{.MCPURL}}</div><div class="kicker" style="margin-top:28px">Subsystem telemetry</div><div class="services"><div class="service"><b>Agent</b><span>{{.Agent}}</span></div><div class="service"><b>Broker</b><span>{{.Broker}}</span></div><div class="service"><b>Desktop</b><span>{{.Desktop}}</span></div><div class="service"><b>Tunnel</b><span>{{.Tunnel}}</span></div></div></div><section class="panel permissions"><div class="permission-head"><div class="kicker">Permission Setup</div><button id="request-permissions" onclick="requestPermissions()">Request all</button></div><div id="permission-summary" class="permission-summary" aria-live="polite">Checking active-user permissions…</div><div id="permission-list" class="permission-list"></div></section></div>
+</style></head><body><main><header class="mast"><div><div class="tag">Emergency rescue only</div><div class="brand">Executor</div></div><div class="state">● {{.State}}</div></header>
+<section class="grid"><div><div class="panel"><div class="kicker">Device MCP endpoint · status only</div><div class="endpoint">{{.MCPURL}}</div><div class="kicker" style="margin-top:28px">Local host and service state</div><div class="services"><div class="service"><b>Agent</b><span>{{.Agent}}</span></div><div class="service"><b>Broker</b><span>{{.Broker}}</span></div><div class="service"><b>Desktop</b><span>{{.Desktop}}</span></div><div class="service"><b>Tunnel</b><span>{{.Tunnel}}</span></div></div></div></div>
 <aside class="panel danger"><div><div class="kicker">Emergency control</div><h2 aria-label="Kill Switch">Kill<br>Switch</h2><p>Terminates sessions, disconnects the tunnel, revokes tokens, and rotates credentials.</p></div><div class="actions"><button onclick="act('resume')">Resume</button><button onclick="act('rotate')">Rotate</button><button class="kill" onclick="act('kill')">Kill now</button></div></aside></section><section id="credentials" class="credentials" hidden><h3>New recovery material — record now</h3><p>Recovery key: <code id="recovery-key"></code></p><p>URL secret: <code id="url-secret"></code></p><p>Dashboard URL: <code id="dashboard-url"></code></p></section><div class="foot"><span>{{.Domain}}</span><span>LOCAL CONSOLE // 127.0.0.1</span></div></main>
-<script>async function act(name){if(name==='kill'&&!confirm('Kill Executor and revoke every active credential?'))return;const r=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json'}});if(!r.ok){alert(await r.text());return}if(name==='kill'){const result=await r.json();document.getElementById('recovery-key').textContent=result.recovery_key;document.getElementById('url-secret').textContent=result.url_secret;document.getElementById('dashboard-url').textContent=result.dashboard;document.getElementById('credentials').hidden=false;return}location.reload()}async function loadPermissions(path='/api/permissions/status',method='GET'){const summary=document.getElementById('permission-summary'),list=document.getElementById('permission-list'),button=document.getElementById('request-permissions');button.disabled=true;const r=await fetch(path,{method,headers:{'Content-Type':'application/json'}});if(!r.ok){summary.textContent='Permission status unavailable';list.replaceChildren();button.disabled=false;return}const report=await r.json();summary.textContent=report.ready?'Ready — all required permissions are approved':(report.requested&&report.restart_required?'Requests sent — approve the prompts, then restart the Executor Desktop helper and check again':(report.requested?'Requests sent — complete any operating-system prompts or settings, then check again':(report.restart_required?'Dependencies changed — restart the Executor Desktop helper, then check again':'Action required — review and request permissions')));list.replaceChildren(...report.permissions.map(item=>{const row=document.createElement('div');row.className='permission-item';const copy=document.createElement('div');copy.className='permission-copy';const label=document.createElement('span');label.textContent=item.label+(item.required?' · required':' · optional');copy.append(label);if(item.detail){const detail=document.createElement('span');detail.className='permission-detail';detail.textContent=item.detail;copy.append(detail)}if(item.settings_url){const link=document.createElement('a');link.className='permission-link';link.href=item.settings_url;link.textContent='Open settings';copy.append(link)}const state=document.createElement('span');state.className='permission-state';state.textContent=item.state;row.append(copy,state);return row}));button.disabled=false}function requestPermissions(){loadPermissions('/api/permissions/request-all','POST')}loadPermissions()</script></body></html>`))
+<script>async function act(name){if((name==='kill'||name==='rotate')&&!confirm(name==='kill'?'Kill Executor and revoke every active credential?':'Rotate every Executor credential and reconnect services?'))return;const r=await fetch('/api/'+name,{method:'POST',headers:{'Content-Type':'application/json'}});if(!r.ok){alert(await r.text());return}if(name==='kill'||name==='rotate'){const result=await r.json();document.getElementById('recovery-key').textContent=result.recovery_key;document.getElementById('url-secret').textContent=result.url_secret;document.getElementById('dashboard-url').textContent=result.dashboard;document.getElementById('credentials').hidden=false;return}location.reload()}</script></body></html>`))

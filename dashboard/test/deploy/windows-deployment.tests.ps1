@@ -6,6 +6,8 @@ $DashboardRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $RepositoryRoot = Split-Path $DashboardRoot -Parent
 $Scripts = @(
   (Join-Path $RepositoryRoot "scripts\deploy-dashboard-from-source.ps1"),
+  (Join-Path $RepositoryRoot "scripts\deploy-from-source.ps1"),
+  (Join-Path $RepositoryRoot "scripts\enroll-dashboard.ps1"),
   (Join-Path $DashboardRoot "scripts\protected-file.ps1")
 )
 foreach ($Script in $Scripts) {
@@ -53,6 +55,73 @@ try {
   }
   if ($Output.Contains("test-only-dashboard-api-token")) {
     throw "PowerShell Dashboard validation exposed token material."
+  }
+
+  $CommandLog = Join-Path $TemporaryRoot "executor-commands.log"
+  $FakeExecutor = Join-Path $TemporaryRoot "executor.cmd"
+  [System.IO.File]::WriteAllText($FakeExecutor, @"
+@echo off
+echo %*>>"$CommandLog"
+if "%1"=="dashboard" if "%2"=="enroll" goto enroll
+if "%1"=="dashboard" if "%2"=="status" exit /b 0
+if "%1"=="status" exit /b 0
+exit /b 2
+:enroll
+if "%FAIL_ENROLL%"=="1" exit /b 9
+:scan
+if "%~1"=="" exit /b 2
+if "%~1"=="--token-file" goto consume
+shift
+goto scan
+:consume
+del /f /q "%~2"
+exit /b 0
+"@)
+  $EnrollmentHelper = Join-Path $RepositoryRoot "scripts\enroll-dashboard.ps1"
+  $EnrollmentOutput = & $EnrollmentHelper `
+    -Executor $FakeExecutor `
+    -Url "https://dashboard.example.test" `
+    -TokenFile $TokenPath 2>&1 | Out-String
+  if (-not (Test-Path -LiteralPath $TokenPath)) {
+    throw "Windows enrollment helper deleted a persistent source token."
+  }
+  if ($EnrollmentOutput.Contains("test-only-dashboard-api-token")) {
+    throw "Windows enrollment helper exposed bearer material."
+  }
+  $Commands = [System.IO.File]::ReadAllText($CommandLog)
+  foreach ($ExpectedCommand in @("dashboard enroll --url", "dashboard status --json", "status --json")) {
+    if (-not $Commands.Contains($ExpectedCommand)) {
+      throw "Windows enrollment verification missed $ExpectedCommand."
+    }
+  }
+
+  $TemporaryEnrollment = Join-Path $TemporaryRoot "temporary-enrollment.token"
+  [System.IO.File]::WriteAllText($TemporaryEnrollment, "test-only-dashboard-enrollment-bearer`n")
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TemporaryEnrollment -Initialize
+  if ($LASTEXITCODE -ne 0) { throw "Temporary enrollment ACL initialization failed." }
+  & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $TemporaryEnrollment -TemporaryToken | Out-Null
+  if (Test-Path -LiteralPath $TemporaryEnrollment) {
+    throw "Windows enrollment helper retained a designated temporary token after success."
+  }
+
+  $FailedEnrollment = Join-Path $TemporaryRoot "failed-enrollment.token"
+  [System.IO.File]::WriteAllText($FailedEnrollment, "test-only-dashboard-enrollment-bearer`n")
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $FailedEnrollment -Initialize
+  if ($LASTEXITCODE -ne 0) { throw "Failed-enrollment ACL initialization failed." }
+  $env:FAIL_ENROLL = "1"
+  try {
+    $Failed = $false
+    try {
+      & $EnrollmentHelper -Executor $FakeExecutor -Url "https://dashboard.example.test" -TokenFile $FailedEnrollment -TemporaryToken | Out-Null
+    } catch {
+      $Failed = $true
+    }
+    if (-not $Failed) { throw "Windows failed enrollment unexpectedly succeeded." }
+    if (-not (Test-Path -LiteralPath $FailedEnrollment)) {
+      throw "Windows failed enrollment deleted the designated token before success."
+    }
+  } finally {
+    Remove-Item Env:FAIL_ENROLL -ErrorAction SilentlyContinue
   }
 } finally {
   Remove-Item -LiteralPath $TemporaryRoot -Recurse -Force -ErrorAction SilentlyContinue

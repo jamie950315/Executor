@@ -179,6 +179,19 @@ func (b *backend) EnrollDashboard(ctx context.Context, options cli.DashboardEnro
 	return cli.DashboardEnrollResult{DeviceID: result.DeviceID, URL: result.URL}, nil
 }
 
+func (b *backend) DashboardStatus(context.Context) (cli.DashboardStatusResult, error) {
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		return cli.DashboardStatusResult{}, err
+	}
+	if cfg.UnifiedDashboard.URL == "" || cfg.UnifiedDashboard.DeviceID == "" || !cfg.UnifiedDashboard.Enrolled {
+		return cli.DashboardStatusResult{}, errors.New("Unified Dashboard enrollment is not configured")
+	}
+	return cli.DashboardStatusResult{
+		URL: cfg.UnifiedDashboard.URL, DeviceID: cfg.UnifiedDashboard.DeviceID, Enrolled: true, Relay: "configured",
+	}, nil
+}
+
 func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {
 	controller, err := b.loadControl(b.configPath())
 	if err != nil {

@@ -19,7 +19,7 @@ For clone deployments, the documented source-deployment entrypoints are `scripts
 
 ## Permission request completed but status is not ready
 
-**Observed symptom:** `executor permissions request-all`, the Dashboard button, or MCP `device_permissions action=request_all` returns a report with `requested: true`, but one or more required permissions are still `pending`, `denied`, `manual`, or `unavailable`.
+**Observed symptom:** `executor permissions request-all`, the centralized Dashboard, or MCP `device_permissions action=request_all` returns a report with `requested: true`, but one or more required permissions are still `pending`, `denied`, `manual`, or `unavailable`.
 
 **Expected cause:** Operating systems do not allow Executor to silently approve owner consent. On macOS, the native request calls return before the owner finishes System Settings. On Linux and WSL, missing desktop tools must be installed or configured; the AT-SPI bus and `ydotoold` authorization are checked live, and X11 also requires `wmctrl`. On Windows, the active-user helper must run on the unlocked interactive `Default` desktop.
 
@@ -80,6 +80,23 @@ If repeated setup reports that the existing recovery key remains unchanged, no n
 - On macOS, Linux, or WSL, Python 3 is missing from the bootstrap path.
 
 **Correct fix:** Satisfy the prerequisite that failed, then rerun the source-deployment entrypoint. If bootstrap already replaced files or installed services before the failure, run the platform rollback script before retrying.
+
+## Unified Dashboard deployment or enrollment fails
+
+Diagnose the exact stage printed by `scripts/deploy-dashboard-from-source.sh` or `.ps1`. The entrypoint preserves non-secret retry state outside the repository and does not delete unrelated Cloudflare resources.
+
+- **Access JWT rejected:** confirm the Access application response AUD matches Worker `ACCESS_AUD`. Confirm `ACCESS_TEAM_DOMAIN` is the account organization `auth_domain`, such as `team.cloudflareaccess.com`, without a scheme or path. A valid Access login for another application or team does not satisfy this Worker.
+- **Dashboard hostname does not route:** inspect the temporary config contract and deployed Worker routes. The exact hostname must be a Workers Custom Domain with `custom_domain: true`, not a path route accidentally attached to a per-device tunnel. The centralized hostname must not replace any device MCP hostname.
+- **D1 migration failure:** verify the state-owned D1 UUID and run Wrangler's remote D1 migration listing before retrying. Never point Executor migrations at a similarly named foreign database. If deployment state records a newer D1 migration version than the clone, upgrade the clone; do not silently downgrade.
+- **Browser works but device WebSocket gets HTTP 403:** use a hostname-based self-hosted Cloudflare Access application. Worker-level Access protection does not support WebSocket upgrades and can reject the device relay even when ordinary HTTP pages work.
+- **Enrollment returns 401:** enrollment may be disabled, the transferred copy may be stale after `rotate-enrollment`, or the Worker secret may not contain the hash for the current protected file. Do not print the bearer to compare it. Rotate a new file centrally, transfer it securely, protect it, and retry.
+- **Enrollment succeeded but relay is offline:** run `executor dashboard status --json`, `executor status --json`, and local service logs. Confirm the Dashboard origin is HTTPS and that no Cloudflare policy blocks `/api/device/connect/<device-id>` WebSocket upgrades.
+
+Cloudflare Access login and device recovery-key unlock are separate. Access identifies the centralized user; the per-device key creates a 30-day grant bound to the device, browser, Access subject, and credential generation. A new browser, Access user, or post-Rotate generation requires another unlock.
+
+After a full Kill disconnects the relay, open the authenticated localhost rescue URL on that host. The localhost rescue page remains available on `127.0.0.1` for service state, Resume, Rotate, and Kill; it is not the centralized workspace. Save any one-time recovery result immediately.
+
+For rollback, use only the explicit Dashboard `rollback` command and the protected state belonging to the same account and hostname. It targets only the Executor-owned Worker. Do not delete a D1 database, Access application, policy, Custom Domain, device Tunnel, or DNS record unless Executor state proves ownership and the owner explicitly requested destructive cleanup.
 
 ## Cloudflare account or zone selection fails
 

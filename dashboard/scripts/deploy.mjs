@@ -5,13 +5,13 @@ import {
   lstat,
   readFile,
   readdir,
-  rm,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   CloudflareClient,
+  assertMigrationCompatible,
   assertProtectedFile,
   assertSupportedNodeVersion,
   assertWranglerV4,
@@ -25,6 +25,7 @@ import {
   ensureWorkerOwnership,
   loadDeploymentState,
   renderWranglerConfig,
+  removeProtectedFileIfOwned,
   saveDeploymentState,
   writeTemporaryWranglerConfig,
 } from "./lib/deploy-core.mjs";
@@ -59,6 +60,7 @@ async function main(options) {
   const wranglerVersion = assertWranglerV4((await run(process.execPath, [wranglerPath, "--version"], { cwd: dashboardRoot })).stdout);
 
   stage = "Dashboard package validation";
+  await run(npmBinary, ["test"], { cwd: dashboardRoot });
   await run(npmBinary, ["run", "check"], { cwd: dashboardRoot });
   await run(npmBinary, ["run", "build"], { cwd: dashboardRoot });
   const template = await readFile(templatePath, "utf8");
@@ -128,9 +130,7 @@ async function dispatchRemoteCommand(options, client, wranglerEnvironment, templ
     throw new Error("Deployment state names a different enrollment token file.");
   }
   const localMigrationVersion = await migrationVersion();
-  if ((state.dashboard_migration_version ?? 0) > localMigrationVersion) {
-    throw new Error("A newer Dashboard migration version is recorded; refusing to downgrade it.");
-  }
+  assertMigrationCompatible(state.dashboard_migration_version ?? 0, localMigrationVersion);
 
   stage = "Cloudflare Access organization lookup";
   const organization = await client.getOrganization();
@@ -163,7 +163,7 @@ async function dispatchRemoteCommand(options, client, wranglerEnvironment, templ
       const unavailableHash = (await import("node:crypto")).createHash("sha256").update(unavailableBearer).digest("hex");
       unavailableBearer.fill(0);
       await putEnrollmentHash(temporary.configPath, unavailableHash, wranglerEnvironment);
-      await removeOwnedEnrollmentFile(options, state);
+      await removeProtectedFileIfOwned(options.enrollmentTokenFile, state.enrollment_token_file, { platform: options.platform });
       state.enrollment_enabled = false;
       state.last_completed_stage = "enrollment-disabled";
       await persistState(options, state);
@@ -279,20 +279,6 @@ async function renderTemporaryConfig(options, template, state) {
 async function persistState(options, state) {
   state.updated_at = new Date().toISOString();
   await saveDeploymentState(options.stateFile, state, { platform: options.platform });
-}
-
-async function removeOwnedEnrollmentFile(options, state) {
-  if (state.enrollment_token_file !== options.enrollmentTokenFile) {
-    throw new Error("Deployment state does not prove ownership of the enrollment token file.");
-  }
-  try {
-    await assertProtectedFile(options.enrollmentTokenFile, { platform: options.platform });
-    await rm(options.enrollmentTokenFile);
-  } catch (error) {
-    if (error?.code !== "ENOENT" && !String(error?.message).includes("regular protected file")) {
-      throw error;
-    }
-  }
 }
 
 async function migrationVersion() {

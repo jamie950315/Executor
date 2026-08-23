@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/jamie950315/executor/internal/daemon"
 )
@@ -33,7 +34,7 @@ func runRuntimeCommand(ctx context.Context, args []string, stdin io.Reader, stdo
 		return false, 0
 	}
 	name := args[0]
-	if name == "dashboard" && len(args) > 1 && args[1] == "enroll" {
+	if name == "dashboard" && len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 		return false, 0
 	}
 	if name != "agent" && name != "broker" && name != "desktop" && name != "dashboard" && name != "stdio" {

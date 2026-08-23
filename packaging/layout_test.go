@@ -26,6 +26,8 @@ func TestPackagingScaffoldExists(t *testing.T) {
 		filepath.Join(root, "scripts", "deploy-from-source.ps1"),
 		filepath.Join(root, "scripts", "deploy-dashboard-from-source.sh"),
 		filepath.Join(root, "scripts", "deploy-dashboard-from-source.ps1"),
+		filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		filepath.Join(root, "scripts", "enroll-dashboard.ps1"),
 		filepath.Join(root, "scripts", "bootstrap.sh"),
 		filepath.Join(root, "scripts", "bootstrap.ps1"),
 		filepath.Join(root, "scripts", "rollback.sh"),
@@ -55,7 +57,7 @@ func TestUnixDeploymentEntrypointsAreExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"deploy-from-source.sh", "deploy-dashboard-from-source.sh", "bootstrap.sh", "rollback.sh", "uninstall.sh"} {
+	for _, name := range []string{"deploy-from-source.sh", "deploy-dashboard-from-source.sh", "enroll-dashboard.sh", "bootstrap.sh", "rollback.sh", "uninstall.sh"} {
 		info, err := os.Stat(filepath.Join(root, "scripts", name))
 		if err != nil {
 			t.Fatal(err)
@@ -136,7 +138,11 @@ func TestDeployFromSourcePreparesNativeBundle(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("prepare native source bundle: %v\n%s", err, output)
 	}
-	for _, name := range []string{"executor", "executor-kill", "scripts/bootstrap.sh", "docs/DEPLOYMENT.md"} {
+	for _, name := range []string{
+		"executor", "executor-kill", "scripts/bootstrap.sh", "scripts/enroll-dashboard.sh", "scripts/deploy-dashboard-from-source.sh",
+		"dashboard/package.json", "dashboard/package-lock.json", "dashboard/wrangler.deploy.template.jsonc",
+		"dashboard/scripts/deploy.mjs", "dashboard/migrations/0001_control_plane.sql", "dashboard/src/index.ts", "docs/DEPLOYMENT.md",
+	} {
 		if _, err := os.Stat(filepath.Join(bundleDir, filepath.FromSlash(name))); err != nil {
 			t.Fatalf("prepared bundle missing %s: %v", name, err)
 		}
@@ -202,6 +208,28 @@ func TestDarwinReleaseRunsOnMacOSForNativeDesktopEvents(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowValidatesDashboardPackageBeforeArchives(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(mustReadFile(t, filepath.Join(root, ".github", "workflows", "release.yml")))
+	for _, required := range []string{
+		"actions/setup-node@v4",
+		"cache-dependency-path: dashboard/package-lock.json",
+		"npm ci",
+		"npm test",
+		"npm run check",
+		"npm run build",
+		"dashboard/test/deploy/windows-deployment.tests.ps1",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Fatalf("release workflow does not validate Dashboard requirement %q:\n%s", required, workflow)
+		}
+	}
+}
+
 func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -225,10 +253,22 @@ func TestBuildReleaseArtifactsIncludeExecutorAndKillBinaries(t *testing.T) {
 	}
 
 	linuxEntries := readTarEntries(t, filepath.Join(outDir, "executor_linux_amd64.tar.gz"))
-	assertArchiveEntries(t, linuxEntries, "executor", "executor-kill", "scripts/bootstrap.sh", "scripts/deploy-from-source.sh", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
+	assertArchiveEntries(t, linuxEntries,
+		"executor", "executor-kill", "scripts/bootstrap.sh", "scripts/deploy-from-source.sh", "scripts/deploy-dashboard-from-source.sh", "scripts/enroll-dashboard.sh",
+		"dashboard/package.json", "dashboard/package-lock.json", "dashboard/wrangler.deploy.template.jsonc", "dashboard/scripts/deploy.mjs",
+		"dashboard/migrations/0001_control_plane.sql", "dashboard/migrations/0002_device_tombstones.sql", "dashboard/src/index.ts",
+		"docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md",
+	)
 
 	windowsEntries := readZipEntries(t, filepath.Join(outDir, "executor_windows_amd64.zip"))
-	assertArchiveEntries(t, windowsEntries, "executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "scripts/deploy-from-source.ps1", "docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md")
+	assertArchiveEntries(t, windowsEntries,
+		"executor.exe", "executor-kill.exe", "scripts/bootstrap.ps1", "scripts/deploy-from-source.ps1", "scripts/deploy-dashboard-from-source.ps1", "scripts/enroll-dashboard.ps1",
+		"dashboard/package.json", "dashboard/package-lock.json", "dashboard/wrangler.deploy.template.jsonc", "dashboard/scripts/deploy.mjs",
+		"dashboard/migrations/0001_control_plane.sql", "dashboard/migrations/0002_device_tombstones.sql", "dashboard/src/index.ts",
+		"docs/DEPLOYMENT.md", "docs/TROUBLESHOOTING.md", "THIRD_PARTY_NOTICES.md",
+	)
+	assertArchiveExcludes(t, linuxEntries, "dashboard/node_modules/", "dashboard/dist/", "dashboard/.wrangler/", ".playwright-cli/")
+	assertArchiveExcludes(t, windowsEntries, "dashboard/node_modules/", "dashboard/dist/", "dashboard/.wrangler/", ".playwright-cli/")
 
 	sums := string(mustReadFile(t, filepath.Join(outDir, "SHA256SUMS.txt")))
 	if strings.Contains(sums, outDir) {
@@ -302,6 +342,17 @@ func assertArchiveEntries(t *testing.T, entries []string, wants ...string) {
 	}
 }
 
+func assertArchiveExcludes(t *testing.T, entries []string, forbiddenPrefixes ...string) {
+	t.Helper()
+	for _, entry := range entries {
+		for _, prefix := range forbiddenPrefixes {
+			if strings.HasPrefix(entry, prefix) || strings.Contains(entry, "/"+prefix) {
+				t.Fatalf("archive contains forbidden generated entry %q", entry)
+			}
+		}
+	}
+}
+
 func mustReadFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -332,6 +383,52 @@ func TestDeploymentDocsDescribeDashboardServiceBundles(t *testing.T) {
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("DEPLOYMENT.md missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestUnifiedDashboardDocsCoverCloneSafeOwnerWorkflow(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string][]string{
+		"README.md": {
+			"scripts/deploy-dashboard-from-source.sh",
+			"Cloudflare Access",
+			"30-day",
+			"emergency rescue",
+			"web ChatGPT cannot",
+		},
+		"docs/DEPLOYMENT.md": {
+			"--hostname",
+			"--api-token-file",
+			"--allowed-email",
+			"Workers Scripts",
+			"D1",
+			"Workers Routes",
+			"Access: Apps and Policies",
+			"dashboard-enrollment-token-temporary",
+			"rotate-enrollment",
+			"disable-enrollment",
+		},
+		"docs/TROUBLESHOOTING.md": {
+			"ACCESS_AUD",
+			"ACCESS_TEAM_DOMAIN",
+			"custom_domain: true",
+			"D1 migration",
+			"WebSocket",
+			"localhost rescue",
+			"Executor-owned",
+		},
+	}
+	for relativePath, required := range checks {
+		body := string(mustReadFile(t, filepath.Join(root, filepath.FromSlash(relativePath))))
+		for _, phrase := range required {
+			if !strings.Contains(body, phrase) {
+				t.Fatalf("%s does not explain %q", relativePath, phrase)
+			}
 		}
 	}
 }

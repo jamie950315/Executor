@@ -290,10 +290,10 @@ func (c *reloadingDashboardController) Resume(ctx context.Context) error {
 	return current.Resume(ctx)
 }
 
-func (c *reloadingDashboardController) Rotate(ctx context.Context) error {
+func (c *reloadingDashboardController) Rotate(ctx context.Context) (dashboard.KillResult, error) {
 	current, err := c.current()
 	if err != nil {
-		return err
+		return dashboard.KillResult{}, err
 	}
 	return current.Rotate(ctx)
 }

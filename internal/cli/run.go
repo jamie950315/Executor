@@ -36,6 +36,13 @@ type DashboardEnrollResult struct {
 	URL      string `json:"url"`
 }
 
+type DashboardStatusResult struct {
+	URL      string `json:"url"`
+	DeviceID string `json:"device_id"`
+	Enrolled bool   `json:"enrolled"`
+	Relay    string `json:"relay"`
+}
+
 type Status struct {
 	State     string `json:"state"`
 	Domain    string `json:"domain"`
@@ -75,6 +82,7 @@ type Backend interface {
 	EnableURLSecret(context.Context) (RotateResult, error)
 	Permissions(context.Context, bool) (permissionmodel.Report, error)
 	EnrollDashboard(context.Context, DashboardEnrollOptions) (DashboardEnrollResult, error)
+	DashboardStatus(context.Context) (DashboardStatusResult, error)
 }
 
 func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.Writer) int {
@@ -84,27 +92,50 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 	}
 	switch args[0] {
 	case "dashboard":
-		if len(args) < 2 || args[1] != "enroll" {
+		if len(args) < 2 {
 			usage(stderr)
 			return 2
 		}
-		set := flag.NewFlagSet("dashboard enroll", flag.ContinueOnError)
-		set.SetOutput(stderr)
-		dashboardURL := set.String("url", "", "Unified Dashboard HTTPS origin")
-		tokenFile := set.String("token-file", "", "path to a mode-600 one-time enrollment token file")
-		if err := set.Parse(args[2:]); err != nil {
-			return 2
-		}
-		if set.NArg() != 0 || *dashboardURL == "" || *tokenFile == "" {
+		switch args[1] {
+		case "enroll":
+			set := flag.NewFlagSet("dashboard enroll", flag.ContinueOnError)
+			set.SetOutput(stderr)
+			dashboardURL := set.String("url", "", "Unified Dashboard HTTPS origin")
+			tokenFile := set.String("token-file", "", "path to a mode-600 one-time enrollment token file")
+			if err := set.Parse(args[2:]); err != nil {
+				return 2
+			}
+			if set.NArg() != 0 || *dashboardURL == "" || *tokenFile == "" {
+				usage(stderr)
+				return 2
+			}
+			result, err := backend.EnrollDashboard(ctx, DashboardEnrollOptions{URL: *dashboardURL, TokenFile: *tokenFile})
+			if err != nil {
+				return printError(stderr, err)
+			}
+			fmt.Fprintf(stdout, "Executor device %s enrolled with Unified Dashboard %s.\n", result.DeviceID, result.URL)
+			return 0
+		case "status":
+			set := flag.NewFlagSet("dashboard status", flag.ContinueOnError)
+			set.SetOutput(stderr)
+			asJSON := set.Bool("json", false, "print JSON")
+			if err := set.Parse(args[2:]); err != nil || set.NArg() != 0 {
+				return 2
+			}
+			result, err := backend.DashboardStatus(ctx)
+			if err != nil {
+				return printError(stderr, err)
+			}
+			if *asJSON {
+				_ = json.NewEncoder(stdout).Encode(result)
+			} else {
+				fmt.Fprintf(stdout, "Unified Dashboard: enrolled\nOrigin: %s\nRelay: %s\n", result.URL, result.Relay)
+			}
+			return 0
+		default:
 			usage(stderr)
 			return 2
 		}
-		result, err := backend.EnrollDashboard(ctx, DashboardEnrollOptions{URL: *dashboardURL, TokenFile: *tokenFile})
-		if err != nil {
-			return printError(stderr, err)
-		}
-		fmt.Fprintf(stdout, "Executor device %s enrolled with Unified Dashboard %s.\n", result.DeviceID, result.URL)
-		return 0
 	case "setup":
 		set := flag.NewFlagSet("setup", flag.ContinueOnError)
 		set.SetOutput(stderr)
@@ -288,7 +319,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, strings.TrimSpace(`Executor — sovereign machine control
 
 Usage:
-	  executor dashboard enroll --url <https-origin> --token-file <mode-600-file>
+  executor dashboard enroll --url <https-origin> --token-file <mode-600-file>
+  executor dashboard status [--json]
   executor setup --domain <hostname> [--cloudflare-token-file <path>] [--cloudflare-account-id <id>] [--cloudflare-zone-id <id>] [--cloudflare-tunnel-name <name>]
   executor status [--json]
   executor doctor [--full] [--json]

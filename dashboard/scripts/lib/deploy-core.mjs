@@ -45,6 +45,15 @@ export function assertWranglerV4(output) {
   return match[1];
 }
 
+export function assertMigrationCompatible(recordedVersion, localVersion) {
+  if (!Number.isInteger(recordedVersion) || recordedVersion < 0 || !Number.isInteger(localVersion) || localVersion < 1) {
+    throw new Error("Dashboard deployment state has an invalid Dashboard migration version.");
+  }
+  if (recordedVersion > localVersion) {
+    throw new Error("A newer Dashboard migration version is recorded; refusing to downgrade it.");
+  }
+}
+
 export async function assertProtectedFile(path, options = {}) {
   let info;
   try {
@@ -224,6 +233,26 @@ export async function ensureEnrollmentToken(path, options = {}) {
   return { created, hash };
 }
 
+export async function removeProtectedFileIfOwned(path, ownedPath, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const actual = platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+  const expected = platform === "win32" ? resolve(ownedPath).toLowerCase() : resolve(ownedPath);
+  if (actual !== expected) {
+    throw new Error("Deployment state does not prove ownership of the enrollment token file.");
+  }
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw new Error("The enrollment token file is unavailable.", { cause: error });
+  }
+  await assertProtectedFile(path, options);
+  await rm(path);
+  return true;
+}
+
 async function writeProtectedSecret(path, body, platform) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   if (platform !== "win32") {
@@ -231,10 +260,12 @@ async function writeProtectedSecret(path, body, platform) {
   }
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
   try {
-    await writeFile(temporary, body, { mode: 0o600, flag: "wx" });
     if (platform === "win32") {
+      await writeFile(temporary, "", { mode: 0o600, flag: "wx" });
       await protectWindowsFile(temporary);
+      await writeFile(temporary, body, { flag: "r+" });
     } else {
+      await writeFile(temporary, body, { mode: 0o600, flag: "wx" });
       await chmod(temporary, 0o600);
     }
     await rename(temporary, path);

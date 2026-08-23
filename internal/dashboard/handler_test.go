@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +27,10 @@ func (f *fakeController) Kill(context.Context) (KillResult, error) {
 	return KillResult{RecoveryKey: "new-recovery-key", URLSecret: "new-url-secret", Dashboard: "http://127.0.0.1:8788/?token=new-dashboard-key"}, f.killErr
 }
 func (f *fakeController) Resume(context.Context) error { f.resumed = true; return nil }
-func (f *fakeController) Rotate(context.Context) error { f.rotated = true; return nil }
+func (f *fakeController) Rotate(context.Context) (KillResult, error) {
+	f.rotated = true
+	return KillResult{RecoveryKey: "rotated-recovery-key", URLSecret: "rotated-url-secret", Dashboard: "http://127.0.0.1:8788/?token=rotated-dashboard-key"}, nil
+}
 func (f *fakeController) Permissions(_ context.Context, request bool) (permissionmodel.Report, error) {
 	f.permissionRequests = append(f.permissionRequests, request)
 	return permissionmodel.NewReport("darwin", request, []permissionmodel.Item{{
@@ -60,8 +62,13 @@ func TestDashboardRequiresBootstrapTokenThenUsesStrictCookie(t *testing.T) {
 	pageReq.AddCookie(cookies[0])
 	page := httptest.NewRecorder()
 	h.ServeHTTP(page, pageReq)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Executor") || !strings.Contains(page.Body.String(), "Kill Switch") || !strings.Contains(page.Body.String(), "Permission Setup") {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Executor") || !strings.Contains(page.Body.String(), "Kill Switch") || !strings.Contains(page.Body.String(), "Emergency rescue only") {
 		t.Fatalf("unexpected page: status=%d body=%q", page.Code, page.Body.String())
+	}
+	for _, centralizedPresentation := range []string{"Permission Setup", "Request all", "permission-list", "workspace", "FilesPanel"} {
+		if strings.Contains(page.Body.String(), centralizedPresentation) {
+			t.Fatalf("localhost rescue page retained centralized presentation %q", centralizedPresentation)
+		}
 	}
 	if strings.Contains(page.Body.String(), "local-secret") || strings.Contains(page.Body.String(), "new-recovery-key") || strings.Contains(page.Body.String(), "new-url-secret") {
 		t.Fatal("dashboard page exposed secret material before an action")
@@ -71,7 +78,7 @@ func TestDashboardRequiresBootstrapTokenThenUsesStrictCookie(t *testing.T) {
 	}
 }
 
-func TestDashboardPermissionStatusAndRequestAllUseAuthenticatedDesktopFlow(t *testing.T) {
+func TestDashboardRescueDoesNotExposePermissionManagementRoutes(t *testing.T) {
 	t.Parallel()
 
 	controller := &fakeController{}
@@ -81,15 +88,8 @@ func TestDashboardPermissionStatusAndRequestAllUseAuthenticatedDesktopFlow(t *te
 	statusRequest.AddCookie(&http.Cookie{Name: cookieName, Value: "local-secret"})
 	statusResponse := httptest.NewRecorder()
 	h.ServeHTTP(statusResponse, statusRequest)
-	if statusResponse.Code != http.StatusOK {
-		t.Fatalf("permission status = %d, want 200", statusResponse.Code)
-	}
-	var statusReport permissionmodel.Report
-	if err := json.NewDecoder(statusResponse.Body).Decode(&statusReport); err != nil {
-		t.Fatalf("decode permission status: %v", err)
-	}
-	if statusReport.Platform != "darwin" || statusReport.Requested || statusReport.Ready {
-		t.Fatalf("permission status report = %#v", statusReport)
+	if statusResponse.Code != http.StatusNotFound {
+		t.Fatalf("permission status = %d, want 404", statusResponse.Code)
 	}
 
 	requestAll := httptest.NewRequest(http.MethodPost, "/api/permissions/request-all", nil)
@@ -98,49 +98,11 @@ func TestDashboardPermissionStatusAndRequestAllUseAuthenticatedDesktopFlow(t *te
 	requestAll.Header.Set("Origin", "http://127.0.0.1:8788")
 	requestResponse := httptest.NewRecorder()
 	h.ServeHTTP(requestResponse, requestAll)
-	if requestResponse.Code != http.StatusOK {
-		t.Fatalf("permission request-all = %d, want 200", requestResponse.Code)
+	if requestResponse.Code != http.StatusNotFound {
+		t.Fatalf("permission request-all = %d, want 404", requestResponse.Code)
 	}
-	var requestReport permissionmodel.Report
-	if err := json.NewDecoder(requestResponse.Body).Decode(&requestReport); err != nil {
-		t.Fatalf("decode permission request-all: %v", err)
-	}
-	if !requestReport.Requested || requestReport.Ready {
-		t.Fatalf("permission request-all report = %#v", requestReport)
-	}
-	if len(controller.permissionRequests) != 2 || controller.permissionRequests[0] || !controller.permissionRequests[1] {
-		t.Fatalf("permission request flags = %#v", controller.permissionRequests)
-	}
-}
-
-func TestDashboardPermissionPanelExposesDetailsSettingsAndRestartGuidance(t *testing.T) {
-	t.Parallel()
-
-	h := NewHandler(&fakeController{}, "local-secret")
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: "local-secret"})
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	body := response.Body.String()
-	for _, visibleContract := range []string{"aria-live=\"polite\"", "Open settings", "restart the Executor Desktop helper", "Dependencies changed — restart"} {
-		if !strings.Contains(body, visibleContract) {
-			t.Fatalf("permission panel missing %q", visibleContract)
-		}
-	}
-}
-
-func TestDashboardPermissionRequestAllRejectsCrossOrigin(t *testing.T) {
-	t.Parallel()
-
-	controller := &fakeController{}
-	h := NewHandler(controller, "local-secret")
-	request := httptest.NewRequest(http.MethodPost, "/api/permissions/request-all", nil)
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: "local-secret"})
-	request.Header.Set("Origin", "https://attacker.example")
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden || len(controller.permissionRequests) != 0 {
-		t.Fatalf("cross-origin permission request status=%d calls=%#v", response.Code, controller.permissionRequests)
+	if len(controller.permissionRequests) != 0 {
+		t.Fatalf("rescue page invoked permission management: %#v", controller.permissionRequests)
 	}
 }
 
@@ -217,6 +179,23 @@ func TestDashboardSameOriginKillReturnsOneTimeMaterial(t *testing.T) {
 	}
 	if got := res.Body.String(); !strings.Contains(got, "new-recovery-key") || !strings.Contains(got, "new-url-secret") || !strings.Contains(got, "new-dashboard-key") {
 		t.Fatalf("Kill response lost new one-time material: %q", got)
+	}
+}
+
+func TestDashboardSameOriginRotateReturnsOneTimeMaterial(t *testing.T) {
+	controller := &fakeController{}
+	h := NewHandler(controller, "local-secret")
+	req := httptest.NewRequest(http.MethodPost, "/api/rotate", nil)
+	req.Host = "127.0.0.1:8788"
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: "local-secret"})
+	req.Header.Set("Origin", "http://127.0.0.1:8788")
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusOK || !controller.rotated {
+		t.Fatalf("same-origin Rotate status=%d rotated=%v", res.Code, controller.rotated)
+	}
+	if got := res.Body.String(); !strings.Contains(got, "rotated-recovery-key") || !strings.Contains(got, "rotated-url-secret") || !strings.Contains(got, "rotated-dashboard-key") {
+		t.Fatalf("Rotate response lost new one-time material: %q", got)
 	}
 }
 

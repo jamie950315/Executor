@@ -6,6 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   CloudflareClient,
   assertProtectedFile,
+  assertMigrationCompatible,
   assertSupportedNodeVersion,
   assertWranglerV4,
   ensureAccessResources,
@@ -14,6 +15,7 @@ import {
   ensureWorkerOwnership,
   loadDeploymentState,
   renderWranglerConfig,
+  removeProtectedFileIfOwned,
   saveDeploymentState,
   writeTemporaryWranglerConfig,
 } from "../../scripts/lib/deploy-core.mjs";
@@ -181,6 +183,13 @@ describe("protected deployment state and enrollment material", () => {
     await expect(loadDeploymentState(statePath, { accountID: "fedcba9876543210fedcba9876543210", hostname, platform: "linux" })).rejects.toThrow(/different Cloudflare account/iu);
   });
 
+  test("rejects a newer recorded D1 migration version instead of downgrading", () => {
+    expect(() => assertMigrationCompatible(2, 2)).not.toThrow();
+    expect(() => assertMigrationCompatible(1, 2)).not.toThrow();
+    expect(() => assertMigrationCompatible(3, 2)).toThrow(/newer Dashboard migration/iu);
+    expect(() => assertMigrationCompatible(-1, 2)).toThrow(/invalid Dashboard migration/iu);
+  });
+
   test("creates an enrollment bearer once, hashes it, and rotates only explicitly", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-enrollment-"));
     const tokenPath = join(directory, "enrollment.token");
@@ -208,6 +217,23 @@ describe("protected deployment state and enrollment material", () => {
     await symlink(targetPath, tokenPath);
     await expect(ensureEnrollmentToken(tokenPath, { platform: "linux" })).rejects.toThrow(/regular protected file/iu);
     expect(await readFile(targetPath, "utf8")).toBe("do-not-replace\n");
+  });
+
+  test("disables only the exact state-owned protected enrollment file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-disable-enrollment-"));
+    const tokenPath = join(directory, "enrollment.token");
+    await writeFile(tokenPath, "test-only-enrollment-token\n", { mode: 0o600 });
+    await expect(removeProtectedFileIfOwned(tokenPath, join(directory, "different.token"), { platform: "linux" })).rejects.toThrow(/does not prove ownership/iu);
+    expect(await readFile(tokenPath, "utf8")).toContain("test-only");
+
+    const linkPath = join(directory, "enrollment-link.token");
+    await symlink(tokenPath, linkPath);
+    await expect(removeProtectedFileIfOwned(linkPath, linkPath, { platform: "linux" })).rejects.toThrow(/regular protected file/iu);
+    expect(await readFile(tokenPath, "utf8")).toContain("test-only");
+
+    await expect(removeProtectedFileIfOwned(tokenPath, tokenPath, { platform: "linux" })).resolves.toBe(true);
+    await expect(lstat(tokenPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(removeProtectedFileIfOwned(tokenPath, tokenPath, { platform: "linux" })).resolves.toBe(false);
   });
 });
 

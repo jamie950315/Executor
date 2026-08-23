@@ -1,10 +1,21 @@
 [CmdletBinding()]
 param(
-  [string]$PrepareOnly = ""
+  [string]$PrepareOnly = "",
+  [string]$DashboardUrl = $env:EXECUTOR_DASHBOARD_URL,
+  [string]$DashboardEnrollmentTokenFile = $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE,
+  [switch]$DashboardEnrollmentTokenTemporary
 )
 
 $ErrorActionPreference = "Stop"
 $RootDir = Split-Path $PSScriptRoot -Parent
+$TemporaryDashboardEnrollment = $DashboardEnrollmentTokenTemporary.IsPresent -or $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -eq "1"
+
+if ([string]::IsNullOrWhiteSpace($DashboardUrl) -xor [string]::IsNullOrWhiteSpace($DashboardEnrollmentTokenFile)) {
+  throw "Dashboard URL and enrollment token file must be supplied together."
+}
+if ($env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -and $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -notin @("0", "1")) {
+  throw "EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY must be 0 or 1."
+}
 
 if (-not (Get-Command "go.exe" -ErrorAction SilentlyContinue)) {
   throw "Required command is not installed or not in PATH: go.exe"
@@ -58,6 +69,18 @@ try {
   Copy-Item -Recurse -Path (Join-Path $RootDir "scripts") -Destination (Join-Path $BundleDir "scripts")
   Copy-Item -Recurse -Path (Join-Path $RootDir "docs") -Destination (Join-Path $BundleDir "docs")
   Copy-Item -Path (Join-Path $RootDir "THIRD_PARTY_NOTICES.md") -Destination $BundleDir
+  $DashboardDestination = Join-Path $BundleDir "dashboard"
+  New-Item -ItemType Directory -Path $DashboardDestination -Force | Out-Null
+  foreach ($DashboardFile in @(
+    ".gitignore", "eslint.config.js", "index.html", "package.json", "package-lock.json", "tsconfig.json",
+    "vite.config.ts", "vitest.config.ts", "vitest.ui.config.ts", "vitest.unit.config.ts",
+    "worker-configuration.d.ts", "wrangler.jsonc", "wrangler.test.jsonc", "wrangler.deploy.template.jsonc"
+  )) {
+    Copy-Item -LiteralPath (Join-Path $RootDir "dashboard\$DashboardFile") -Destination $DashboardDestination
+  }
+  foreach ($DashboardDirectory in @("migrations", "scripts", "src", "test")) {
+    Copy-Item -Recurse -LiteralPath (Join-Path $RootDir "dashboard\$DashboardDirectory") -Destination (Join-Path $DashboardDestination $DashboardDirectory)
+  }
 
   if ($PrepareOnly) {
     Write-Output "Deployable Executor bundle prepared at $BundleDir"
@@ -76,6 +99,24 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Executor status failed with exit code $LASTEXITCODE" }
   & $InstalledExecutor doctor --full
   if ($LASTEXITCODE -ne 0) { throw "Executor doctor --full failed with exit code $LASTEXITCODE" }
+
+  if ($DashboardUrl) {
+    $EnrollmentScript = Join-Path $BundleDir "scripts\enroll-dashboard.ps1"
+    $EnrollmentArguments = @(
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      "-File", $EnrollmentScript,
+      "-Executor", $InstalledExecutor,
+      "-Url", $DashboardUrl,
+      "-TokenFile", $DashboardEnrollmentTokenFile
+    )
+    if ($TemporaryDashboardEnrollment) {
+      $EnrollmentArguments += "-TemporaryToken"
+    }
+    & powershell.exe @EnrollmentArguments
+    if ($LASTEXITCODE -ne 0) { throw "Unified Dashboard enrollment failed with exit code $LASTEXITCODE" }
+  }
 } finally {
   if ($WorkDir -and (Test-Path $WorkDir)) {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force

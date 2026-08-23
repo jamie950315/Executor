@@ -19,6 +19,33 @@ checksum() {
 	fi
 }
 
+copy_dashboard_source() {
+  local destination="$1"
+  mkdir -p "${destination}"
+  local file
+  for file in \
+    .gitignore \
+    eslint.config.js \
+    index.html \
+    package.json \
+    package-lock.json \
+    tsconfig.json \
+    vite.config.ts \
+    vitest.config.ts \
+    vitest.ui.config.ts \
+    vitest.unit.config.ts \
+    worker-configuration.d.ts \
+    wrangler.jsonc \
+    wrangler.test.jsonc \
+    wrangler.deploy.template.jsonc; do
+    cp "${ROOT_DIR}/dashboard/${file}" "${destination}/${file}"
+  done
+  local directory
+  for directory in migrations scripts src test; do
+    cp -R "${ROOT_DIR}/dashboard/${directory}" "${destination}/${directory}"
+  done
+}
+
 for target in ${BUILD_TARGETS}; do
   IFS=/ read -r GOOS GOARCH <<<"${target}"
   ARCHIVE_NAME="executor_${GOOS}_${GOARCH}"
@@ -51,6 +78,7 @@ for target in ${BUILD_TARGETS}; do
     codesign --verify --deep --strict "${DESKTOP_APP}"
   fi
   cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
+  copy_dashboard_source "${STAGING_DIR}/dashboard"
   mkdir -p "${STAGING_DIR}/docs"
   cp -R "${ROOT_DIR}/docs/." "${STAGING_DIR}/docs/"
   cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${STAGING_DIR}/THIRD_PARTY_NOTICES.md"

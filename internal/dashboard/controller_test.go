@@ -3,10 +3,12 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +90,49 @@ func TestRuntimeControllerPermissionsCallsActiveUserDesktopHelper(t *testing.T) 
 }
 
 func (fakeLifecycle) Resume(context.Context) error { return nil }
+
+type recordingLifecycle struct {
+	calls     []string
+	killError error
+	result    control.Result
+}
+
+func (l *recordingLifecycle) Kill(context.Context) (control.Result, error) {
+	l.calls = append(l.calls, "kill")
+	return l.result, l.killError
+}
+
+func (l *recordingLifecycle) Resume(context.Context) error {
+	l.calls = append(l.calls, "resume")
+	return nil
+}
+
+func TestRuntimeControllerRotateReturnsOneTimeMaterialAndResumesAfterKill(t *testing.T) {
+	lifecycle := &recordingLifecycle{result: control.Result{
+		RecoveryKey: "recovery-once", URLSecret: "url-once", Dashboard: "http://127.0.0.1:8788/?token=dashboard-once",
+	}}
+	controller := NewRuntimeController(config.Default(t.TempDir()), secrets.Values{}, lifecycle)
+	result, err := controller.Rotate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RecoveryKey != "recovery-once" || result.URLSecret != "url-once" || result.Dashboard == "" {
+		t.Fatalf("Rotate result = %#v", result)
+	}
+	if got := strings.Join(lifecycle.calls, ","); got != "kill,resume" {
+		t.Fatalf("Rotate lifecycle calls = %q", got)
+	}
+
+	lifecycle = &recordingLifecycle{result: control.Result{RecoveryKey: "partial-recovery", URLSecret: "partial-url"}, killError: errors.New("stop failed")}
+	controller = NewRuntimeController(config.Default(t.TempDir()), secrets.Values{}, lifecycle)
+	result, err = controller.Rotate(context.Background())
+	if err == nil || result.RecoveryKey != "partial-recovery" {
+		t.Fatalf("partial Rotate result=%#v err=%v", result, err)
+	}
+	if got := strings.Join(lifecycle.calls, ","); got != "kill" {
+		t.Fatalf("partial Rotate must not resume: %q", got)
+	}
+}
 
 func TestRuntimeControllerSnapshotReportsAuthenticatedReachabilityAndDisabledMarker(t *testing.T) {
 	stateDir := t.TempDir()

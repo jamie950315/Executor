@@ -25,6 +25,82 @@ Web ChatGPT cannot perform this first-time installation by itself. Until Executo
 
 On Unix targets, the Cloudflare API token file must be a regular file with mode `0600`. Setup rejects broader permissions.
 
+## Centralized Unified Dashboard
+
+Deploy the centralized Dashboard before enrolling any host. A local coding agent with terminal access can complete this from a fresh clone; web ChatGPT cannot install the first MCP or privileged services before a host connection exists.
+
+Dashboard deployment additionally requires Node 20.19+, Node 22.13+, or Node 24+ and npm. Create a dedicated Cloudflare API token with only the selected account/zone and these capabilities:
+
+- Account Workers Scripts write for the `executor-dashboard` Worker and its secret.
+- Account D1 write for the exact `executor-dashboard` database and migrations.
+- Zone Workers Routes edit, including Workers Custom Domains, for the requested Dashboard hostname.
+- Access: Apps and Policies write for one hostname-based self-hosted application and one exact-email allow policy.
+- Access organization read access so deployment can obtain the account's `auth_domain` as `ACCESS_TEAM_DOMAIN`.
+
+The token file must remain outside the repository. Unix requires a regular mode-`0600` file. Windows requires an ACL restricted to the current owner, Administrators, and SYSTEM. The entrypoints reject inline token values and never print the token.
+
+```bash
+./scripts/deploy-dashboard-from-source.sh deploy \
+  --hostname dashboard.example.com \
+  --account-id 0123456789abcdef0123456789abcdef \
+  --api-token-file /secure/cloudflare-dashboard.token \
+  --allowed-email owner@example.com
+```
+
+```powershell
+.\scripts\deploy-dashboard-from-source.ps1 deploy `
+  -Hostname "dashboard.example.com" `
+  -AccountId "0123456789abcdef0123456789abcdef" `
+  -ApiTokenFile "C:\secure\cloudflare-dashboard.token" `
+  -AllowedEmail "owner@example.com"
+```
+
+No tracked file needs editing. The same values can be supplied through `EXECUTOR_DASHBOARD_HOSTNAME`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN_FILE`, and `EXECUTOR_DASHBOARD_ALLOWED_EMAIL`. Optional `EXECUTOR_DASHBOARD_STATE_FILE` and `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE` paths must also remain outside the repository.
+
+The canonical entrypoint performs all local package validation before remote mutation. It uses pinned Wrangler v4, checks Cloudflare authentication, creates or reuses one exact D1 database, creates only state-owned Access resources, renders a temporary ignored Wrangler config, applies all remote D1 migrations, and deploys Worker + Static Assets + SQLite Durable Object with a Workers Custom Domain route using `custom_domain: true`. It obtains `ACCESS_AUD` from the Access application response and `ACCESS_TEAM_DOMAIN` from Access organization state. `ENROLLMENT_TOKEN_HASH` receives only SHA-256 output; the generated bearer remains only in its protected local file.
+
+Persistent non-secret state records resource IDs, ownership, schema/migration version, and the last completed stage. Retries are idempotent. Newer state or migrations fail closed. Ordinary retry never deletes Cloudflare resources. `rollback` targets only the Worker whose ownership is proven by state; D1 and Access removal is never automatic. Any destructive cleanup must be explicit and limited to IDs proven by Executor state.
+
+### Enroll hosts
+
+Transfer the generated enrollment file with an encrypted file-transfer mechanism. Do not print it, paste it into chat or a terminal command, put it in the repository, or copy its contents through the clipboard. Protect the received file before running the host wrapper.
+
+```bash
+sudo -E ./scripts/deploy-from-source.sh \
+  --dashboard-url https://dashboard.example.com \
+  --dashboard-enrollment-token-file /secure/dashboard-enrollment.copy \
+  --dashboard-enrollment-token-temporary
+```
+
+Equivalent environment variables are `EXECUTOR_DASHBOARD_URL`, `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE`, and `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY=1`.
+
+```powershell
+.\scripts\deploy-from-source.ps1 `
+  -DashboardUrl "https://dashboard.example.com" `
+  -DashboardEnrollmentTokenFile "C:\secure\dashboard-enrollment.copy" `
+  -DashboardEnrollmentTokenTemporary
+```
+
+The wrapper waits until local bootstrap, `executor status`, and `executor doctor --full` succeed. It then calls `executor dashboard enroll --url ... --token-file ...`, checks `executor dashboard status --json` and local service status, and deletes only the explicitly designated temporary copy after successful enrollment. Without the temporary flag it passes a separate protected helper-owned copy, so the source file is preserved. Enrollment failure does not invoke local rollback and does not remove a healthy existing installation. Loading the config through the CLI safely migrates v1/v2 state before enrollment.
+
+After the last host is enrolled, close the enrollment window:
+
+```bash
+./scripts/deploy-dashboard-from-source.sh disable-enrollment \
+  --hostname dashboard.example.com \
+  --account-id 0123456789abcdef0123456789abcdef \
+  --api-token-file /secure/cloudflare-dashboard.token \
+  --allowed-email owner@example.com
+```
+
+Use `rotate-enrollment` with the same arguments to create a new protected bearer and invalidate every previous enrollment copy. Transfer the new file only to hosts that still require enrollment.
+
+### Authentication and rescue boundaries
+
+Cloudflare Access authentication opens the centralized workspace. The device recovery key separately unlocks sensitive operations for that one device. A control grant lasts at most 30 days and is bound to device ID, browser ID, Access subject, and credential generation. Rotate or Kill advances the generation and invalidates the old grant.
+
+The authenticated loopback page on `127.0.0.1` is labeled emergency rescue. It shows local host/service state and exposes Resume, Rotate, and Kill with one-time replacement recovery material. It intentionally has no ordinary workspace or permission-management UI. Permission initialization remains available through `executor permissions`, MCP `device_permissions`, and the centralized Dashboard.
+
 Representative clone-deployment commands:
 
 ```bash
@@ -59,7 +135,7 @@ Available interfaces use the same report and the same Desktop-helper boundary:
 
 - CLI: `executor permissions status [--json]` and `executor permissions request-all [--json]`
 - MCP: `device_permissions` with `action: "status"` or `action: "request_all"`
-- Local Dashboard: `GET /api/permissions/status`, `POST /api/permissions/request-all`, and the Permission Setup panel
+- Centralized Unified Dashboard after device enrollment
 
 `requested: true` means Executor invoked the available operating-system request mechanisms. It does not mean the owner approved them. A report is `ready: true` only when every required item is `granted` or `not_required`. On macOS, Screen Recording, Accessibility, and Input Control may remain `pending` until the owner approves System Settings prompts; the report may also request a helper restart. Full Disk Access has no supported automatic grant API, remains an optional `manual` item, and opens its System Settings page. Windows verifies that the helper can open the active `Default` input desktop, so a locked, disconnected, or secure desktop is not reported ready; Screen Capture and Input Control require no separate consent grant. Linux and WSL verify the live AT-SPI bus and, on Wayland, `ydotoold` access rather than trusting executable presence alone. X11 also requires `wmctrl`. When newly installed tools differ from the helper's startup inventory, the report remains not ready and requests a helper restart. The current Wayland backend does not create an unused XDG Desktop Portal session.
 
