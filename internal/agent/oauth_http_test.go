@@ -177,8 +177,25 @@ func TestOAuthAuthorizePageUsesMobileReliableSubmitControl(t *testing.T) {
 	)
 
 	body := response.Body.String()
-	if !strings.Contains(body, `<input class="authorize-submit" type="submit" value="Authorize full control">`) {
+	if !strings.Contains(body, `<input id="authorize-submit" class="authorize-submit" type="submit" value="Authorize full control">`) {
 		t.Fatalf("authorize page does not use a native submit input: %s", body)
+	}
+	if !strings.Contains(body, `addEventListener("pointerup"`) || !strings.Contains(body, `requestSubmit`) {
+		t.Fatalf("authorize page has no touch activation fallback for mobile Safari: %s", body)
+	}
+	if !strings.Contains(body, `event.pointerType!=="touch"&&event.button!==0`) {
+		t.Fatalf("authorize page pointer fallback does not reject non-primary mouse buttons: %s", body)
+	}
+	scriptStart := strings.Index(body, "<script>")
+	scriptEnd := strings.Index(body, "</script>")
+	if scriptStart < 0 || scriptEnd <= scriptStart {
+		t.Fatalf("authorize page script missing: %s", body)
+	}
+	script := body[scriptStart+len("<script>") : scriptEnd]
+	sum := sha256.Sum256([]byte(script))
+	wantSource := "script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+	if policy := response.Header().Get("Content-Security-Policy"); !strings.Contains(policy, wantSource) {
+		t.Fatalf("authorize page script is not protected by its exact CSP hash: %q, want %q", policy, wantSource)
 	}
 }
 
