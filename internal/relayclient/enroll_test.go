@@ -408,6 +408,106 @@ func TestEnrollPreservesTokenFileWhenPostFailsAndDoesNotEchoCredential(t *testin
 	}
 }
 
+func TestEnrollRejectsSymlinkTokenBeforeHTTP(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires host-specific privileges")
+	}
+	configPath, cfg, _ := relayFixture(t)
+	tokenTarget := filepath.Join(t.TempDir(), "enrollment-target.token")
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenTarget, []byte("test-only-symlink-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(tokenTarget, tokenPath); err != nil {
+		t.Fatal(err)
+	}
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	requested := false
+	client := &http.Client{Transport: enrollmentRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		requested = true
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}
+	err := Enroll(context.Background(), EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: client, ExecutorVersion: "test-version",
+	})
+	if err == nil {
+		t.Fatal("symlink enrollment token was accepted")
+	}
+	if requested {
+		t.Fatal("symlink enrollment token reached the HTTP transport")
+	}
+	if _, err := os.Stat(tokenTarget); err != nil {
+		t.Fatalf("symlink rejection removed the token target: %v", err)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UnifiedDashboard.Enrolled {
+		t.Fatal("symlink enrollment token was recorded as enrolled")
+	}
+}
+
+func TestEnrollDoesNotDeleteReplacementTokenCreatedDuringRequest(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	oldToken := "test-only-original-enrollment-token"
+	newToken := "test-only-replacement-enrollment-token"
+	if err := os.WriteFile(tokenPath, []byte(oldToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		if err := os.WriteFile(tokenPath, []byte(newToken), 0o600); err != nil {
+			t.Error(err)
+			http.Error(writer, "replacement failed", http.StatusInternalServerError)
+			return
+		}
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg.UnifiedDashboard.URL = server.URL
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Enroll(context.Background(), EnrollOptions{
+		ConfigPath: configPath, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test-version",
+	})
+	if err == nil {
+		t.Fatal("replacement token was silently deleted after enrollment")
+	}
+	if containsSensitive(err.Error(), oldToken, newToken, tokenPath) {
+		t.Fatalf("replacement cleanup error exposed sensitive input: %v", err)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("enrollment POST count = %d, want 1", posts.Load())
+	}
+	replacement, readErr := os.ReadFile(tokenPath)
+	if readErr != nil {
+		t.Fatalf("replacement token was removed: %v", readErr)
+	}
+	if string(replacement) != newToken {
+		t.Fatal("replacement token content changed")
+	}
+	loaded, loadErr := config.Load(configPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !loaded.UnifiedDashboard.Enrolled || loaded.UnifiedDashboard.EnrollmentCleanupFingerprint == "" {
+		t.Fatal("completed enrollment did not retain retry-safe cleanup state")
+	}
+}
+
 func TestEnrollSaveFailurePreservesRetryToken(t *testing.T) {
 	t.Parallel()
 	configPath, cfg, _ := relayFixture(t)

@@ -73,6 +73,10 @@ func (b windowsBackend) Keyboard(ctx context.Context, action KeyboardAction) err
 		if _, err := normalizeKeys(action.Keys); err != nil {
 			return err
 		}
+	} else if action.Text == "" {
+		if err := validateWindowsLegacyKeyboardAction(action); err != nil {
+			return err
+		}
 	}
 	_, err := b.runner.Run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", buildWindowsKeyboardScript(action))
 	if err != nil {

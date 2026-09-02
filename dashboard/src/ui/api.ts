@@ -149,6 +149,16 @@ export async function parseCallResponse(
     throw new DeviceActionError("Invalid device response");
   }
   const reader = response.body.getReader();
+  let bodyCancelled = false;
+  const cancelBody = async (): Promise<void> => {
+    if (bodyCancelled) return;
+    bodyCancelled = true;
+    try {
+      await reader.cancel();
+    } catch {
+      // The transport may already be aborted or errored.
+    }
+  };
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
   const encoder = new TextEncoder();
   const streamParts: Uint8Array[] = [];
@@ -204,7 +214,7 @@ export async function parseCallResponse(
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > bounds.maximumBytes) {
-        await reader.cancel();
+        await cancelBody();
         throw new DeviceActionError("Device response is too large");
       }
       textBuffer += decoder.decode(value, { stream: true });
@@ -242,6 +252,7 @@ export async function parseCallResponse(
       combined.fill(0);
     }
   } catch (error) {
+    await cancelBody();
     for (const part of streamParts) part.fill(0);
     if (error instanceof DeviceActionError) throw error;
     throw new DeviceActionError("Invalid device response");

@@ -50,16 +50,55 @@ func (l *rotatingLifecycle) Resume(context.Context) error {
 	return nil
 }
 
-func TestAdapterRevalidatesGrantBeforeDispatchAndCachesByGeneration(t *testing.T) {
+type preparedRemoteKillLifecycle struct {
+	inner       *rotatingLifecycle
+	prepares    int
+	directKills int
+	finalizer   func(context.Context) error
+}
+
+func (l *preparedRemoteKillLifecycle) Kill(ctx context.Context) (control.Result, error) {
+	l.directKills++
+	return l.inner.Kill(ctx)
+}
+
+func (l *preparedRemoteKillLifecycle) Resume(ctx context.Context) error {
+	return l.inner.Resume(ctx)
+}
+
+func (l *preparedRemoteKillLifecycle) PrepareRemoteKill(ctx context.Context) (control.Result, func(context.Context) error, error) {
+	l.prepares++
+	result, err := l.inner.Kill(ctx)
+	return result, l.finalizer, err
+}
+
+type incompleteRemoteKillLifecycle struct{ finalized int }
+
+func (l *incompleteRemoteKillLifecycle) Kill(context.Context) (control.Result, error) {
+	return control.Result{}, nil
+}
+
+func (l *incompleteRemoteKillLifecycle) Resume(context.Context) error { return nil }
+
+func (l *incompleteRemoteKillLifecycle) PrepareRemoteKill(context.Context) (control.Result, func(context.Context) error, error) {
+	return control.Result{}, func(context.Context) error {
+		l.finalized++
+		return nil
+	}, nil
+}
+
+func TestAdapterRevalidatesGrantBeforeDispatchAndCachesByGenerationAndEndpoints(t *testing.T) {
 	t.Parallel()
 	configPath, cfg, values := relayFixture(t)
 	dispatchers := []*recordingDispatcher{}
+	dispatcherConfigs := []config.Config{}
 	adapter, err := NewAdapter(AdapterOptions{
 		ConfigPath: configPath,
 		Now:        func() time.Time { return time.Unix(1_700_000_000, 0) },
-		DispatcherFactory: func(config.Config, secrets.Values) Dispatcher {
+		DispatcherFactory: func(cfg config.Config, _ secrets.Values) Dispatcher {
 			dispatcher := &recordingDispatcher{}
 			dispatchers = append(dispatchers, dispatcher)
+			dispatcherConfigs = append(dispatcherConfigs, cfg)
 			return dispatcher
 		},
 	})
@@ -91,6 +130,19 @@ func TestAdapterRevalidatesGrantBeforeDispatchAndCachesByGeneration(t *testing.T
 	if len(dispatchers) != 1 || len(dispatchers[0].calls) != 2 {
 		t.Fatal("same generation did not reuse the dispatcher and capture state")
 	}
+	cfg.BrokerEndpoint += ".replacement"
+	cfg.DesktopEndpoint += ".replacement"
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.HandleRequest(context.Background(), "request-new-endpoints", "device_status", arguments); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatchers) != 2 || len(dispatchers[1].calls) != 1 ||
+		dispatcherConfigs[1].BrokerEndpoint != cfg.BrokerEndpoint ||
+		dispatcherConfigs[1].DesktopEndpoint != cfg.DesktopEndpoint {
+		t.Fatal("changed IPC endpoints did not rebuild the dispatcher")
+	}
 	auditBytes, err := os.ReadFile(filepath.Join(cfg.StateDir, "audit.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +159,7 @@ func TestAdapterRevalidatesGrantBeforeDispatchAndCachesByGeneration(t *testing.T
 	if _, err := adapter.HandleRequest(context.Background(), "request-old", "device_status", arguments); !errors.Is(err, ErrRequestUnauthorized) {
 		t.Fatalf("old grant error = %v", err)
 	}
-	if len(dispatchers) != 1 || len(dispatchers[0].calls) != 2 {
+	if len(dispatchers) != 2 || len(dispatchers[1].calls) != 1 {
 		t.Fatal("revoked grant reached host dispatch")
 	}
 	current, err := secrets.Load(cfg.StateDir)
@@ -119,8 +171,50 @@ func TestAdapterRevalidatesGrantBeforeDispatchAndCachesByGeneration(t *testing.T
 	if _, err := adapter.HandleRequest(context.Background(), "request-new", "device_status", newArguments); err != nil {
 		t.Fatal(err)
 	}
-	if len(dispatchers) != 2 || len(dispatchers[1].calls) != 1 {
+	if len(dispatchers) != 3 || len(dispatchers[2].calls) != 1 {
 		t.Fatal("new generation did not rebuild the dispatcher")
+	}
+}
+
+func TestAdapterRebuildsDispatcherWhenStateDirectoryChanges(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, values := relayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	dispatchers := []*recordingDispatcher{}
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		DispatcherFactory: func(config.Config, secrets.Values) Dispatcher {
+			dispatcher := &recordingDispatcher{}
+			dispatchers = append(dispatchers, dispatcher)
+			return dispatcher
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{"action": "summary"})
+	if _, err := adapter.HandleRequest(context.Background(), "request-original-state", "device_status", arguments); err != nil {
+		t.Fatal(err)
+	}
+
+	newStateDir := t.TempDir()
+	newValues, err := secrets.Create(newStateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StateDir = newStateDir
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	newGrant := signGrantForTest(t, newValues, cfg, "access-1", "browser-1", now)
+	newArguments := callArgumentsForTest(t, newGrant, "access-1", "browser-1", map[string]any{"action": "summary"})
+	if _, err := adapter.HandleRequest(context.Background(), "request-new-state", "device_status", newArguments); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatchers) != 2 || len(dispatchers[0].calls) != 1 || len(dispatchers[1].calls) != 1 {
+		t.Fatalf("state directory change reused a dispatcher with stale IPC credentials: %#v", dispatchers)
 	}
 }
 
@@ -283,6 +377,177 @@ func TestAdapterEncryptsRotateAndKillMaterialForBrowserAndAuditsOnlyMetadata(t *
 				}
 			}
 		})
+	}
+}
+
+func TestAdapterDefersPreparedRemoteKillFinalizerUntilResponseHandoff(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, values := relayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	finalized := 0
+	lifecycle := &preparedRemoteKillLifecycle{
+		inner: &rotatingLifecycle{stateDir: cfg.StateDir},
+		finalizer: func(context.Context) error {
+			finalized++
+			return nil
+		},
+	}
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return lifecycle, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := relay.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{
+		"response_public_key": browser.PublicJWK(),
+	})
+
+	result, err := adapter.HandleRequest(context.Background(), "remote-kill", "control.kill", arguments)
+	if err != nil {
+		t.Fatalf("HandleRequest: %v", err)
+	}
+	if result.Finalize == nil || !result.CloseAfterWrite || result.RefreshGeneration != values.Generation+1 {
+		t.Fatalf("remote Kill result = %#v", result)
+	}
+	if lifecycle.prepares != 1 || lifecycle.directKills != 0 || finalized != 0 {
+		t.Fatalf("remote Kill state before handoff = prepares:%d direct:%d finalized:%d", lifecycle.prepares, lifecycle.directKills, finalized)
+	}
+	if err := result.Finalize(context.Background()); err != nil {
+		t.Fatalf("remote Kill finalizer: %v", err)
+	}
+	if finalized != 1 {
+		t.Fatalf("remote Kill finalizer count = %d, want 1", finalized)
+	}
+}
+
+func TestAdapterFinalizesPreparedRemoteKillWhenResultCannotBeDelivered(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, values := relayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	lifecycle := &incompleteRemoteKillLifecycle{}
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return lifecycle, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := relay.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{
+		"response_public_key": browser.PublicJWK(),
+	})
+
+	result, err := adapter.HandleRequest(context.Background(), "incomplete-remote-kill", "control.kill", arguments)
+	if err == nil {
+		t.Fatalf("incomplete remote Kill unexpectedly succeeded: %#v", result)
+	}
+	if lifecycle.finalized != 1 {
+		t.Fatalf("incomplete remote Kill finalizer count = %d, want 1", lifecycle.finalized)
+	}
+}
+
+func TestAdapterUsesFullLifecycleForRemoteRotateToReloadAgentSecrets(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, values := relayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	finalized := 0
+	lifecycle := &preparedRemoteKillLifecycle{
+		inner: &rotatingLifecycle{stateDir: cfg.StateDir},
+		finalizer: func(context.Context) error {
+			finalized++
+			return nil
+		},
+	}
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return lifecycle, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := relay.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{
+		"response_public_key": browser.PublicJWK(),
+	})
+
+	result, err := adapter.HandleRequest(context.Background(), "remote-rotate", "control.rotate", arguments)
+	if err != nil {
+		t.Fatalf("HandleRequest: %v", err)
+	}
+	if result.Finalize != nil || result.CloseAfterWrite || result.RefreshGeneration != values.Generation+1 {
+		t.Fatalf("remote Rotate result = %#v", result)
+	}
+	if lifecycle.prepares != 0 || lifecycle.directKills != 1 || lifecycle.inner.resumes != 1 || finalized != 0 {
+		t.Fatalf(
+			"remote Rotate restart path = prepares:%d direct:%d resumes:%d finalized:%d",
+			lifecycle.prepares,
+			lifecycle.directKills,
+			lifecycle.inner.resumes,
+			finalized,
+		)
+	}
+}
+
+func TestLifecycleRevalidatesGrantAfterWaitingForSerializedAction(t *testing.T) {
+	t.Parallel()
+	configPath, cfg, values := relayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	lifecycle := &rotatingLifecycle{stateDir: cfg.StateDir}
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return lifecycle, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{})
+	call, err := adapter.verifyCall(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secrets.Rotate(cfg.StateDir); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.handleLifecycle(
+		context.Background(),
+		"stale-resume",
+		"control.resume",
+		call,
+		actorHash("access-1", "browser-1"),
+	)
+	if !errors.Is(err, ErrRequestUnauthorized) || len(result.Payload) != 0 {
+		t.Fatalf("stale queued lifecycle result = %#v error=%v", result, err)
+	}
+	if lifecycle.resumes != 0 {
+		t.Fatalf("stale queued grant resumed Executor %d times", lifecycle.resumes)
 	}
 }
 

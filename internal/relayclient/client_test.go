@@ -399,6 +399,58 @@ func TestClientNegotiatesOneBeforeSendingDeviceAuthentication(t *testing.T) {
 	}
 }
 
+func TestClientTimesOutStalledHandshakeBeforeReconnectBackoff(t *testing.T) {
+	configPath, _, _ := connectedRelayFixture(t)
+	socket := newFakeSocket()
+	delayObserved := make(chan time.Duration, 1)
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", HeartbeatInterval: time.Hour,
+		HandshakeTimeout: 25 * time.Millisecond,
+		Dial: func(context.Context, string, *http.Client) (relaySocket, error) {
+			return socket, nil
+		},
+		Sleep: func(ctx context.Context, delay time.Duration) error {
+			select {
+			case delayObserved <- delay:
+			default:
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	select {
+	case delay := <-delayObserved:
+		if delay < 800*time.Millisecond || delay > 1200*time.Millisecond {
+			cancel()
+			t.Fatalf("first reconnect delay = %v, want approximately 1s", delay)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("stalled relay handshake did not time out")
+	}
+	select {
+	case <-socket.closed:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("timed-out relay handshake did not close its socket")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client did not stop after stalled handshake test")
+	}
+}
+
 func TestClientUsesRealTLSWebSocketTransportForHandshakeRefreshAndHeartbeat(t *testing.T) {
 	configPath, cfg, values := connectedRelayFixture(t)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -610,6 +662,139 @@ func TestClientRefreshesBeforeEncryptedRotateOrKillResponseAndKillDisconnects(t 
 	}
 }
 
+func TestPreparedRemoteKillStopsAgentOnlyAfterEncryptedResponseAndSocketClose(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	socket := newFakeSocket()
+	type finalizerObservation struct {
+		responseQueued bool
+		socketClosed   bool
+	}
+	finalized := make(chan finalizerObservation, 1)
+	lifecycle := &preparedRemoteKillLifecycle{
+		inner: &rotatingLifecycle{stateDir: cfg.StateDir},
+		finalizer: func(context.Context) error {
+			closed := false
+			select {
+			case <-socket.closed:
+				closed = true
+			default:
+			}
+			finalized <- finalizerObservation{
+				responseQueued: len(socket.writes) > 0,
+				socketClosed:   closed,
+			}
+			return nil
+		},
+	}
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return lifecycle, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", Adapter: adapter,
+		HeartbeatInterval: time.Hour, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConnection(client, socket, cfg)
+	browser, err := relay.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{
+		"response_public_key": browser.PublicJWK(),
+	})
+
+	connection.startRequest(context.Background(), "prepared-remote-kill", "control.kill", arguments, nil)
+	refreshWire := nextFakeWrite(t, socket)
+	var refresh signedDeviceRefresh
+	if err := json.Unmarshal(refreshWire, &refresh); err != nil || refresh.Generation != values.Generation+1 {
+		t.Fatalf("remote Kill refresh = %s err=%v", refreshWire, err)
+	}
+	ack := []byte(`{"version":1,"type":"device_refreshed","generation":2}`)
+	if err := connection.handleMessage(context.Background(), ack); err != nil {
+		t.Fatalf("remote Kill refresh acknowledgement: %v", err)
+	}
+	select {
+	case observed := <-finalized:
+		if !observed.responseQueued || !observed.socketClosed {
+			t.Fatalf("remote Kill finalizer ordering = %#v", observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("remote Kill finalizer did not run")
+	}
+	response := nextEnvelopeOfType(t, socket, relay.MessageTypeResponse)
+	payload, err := relay.DecodePayload[relay.ResponsePayload](response)
+	if err != nil || payload.Failure != nil || bytes.Contains(payload.Result, []byte("recovery_key")) ||
+		!bytes.Contains(payload.Result, []byte("ciphertext")) {
+		t.Fatalf("prepared remote Kill response = %#v err=%v", payload, err)
+	}
+	waitForRequests(t, connection)
+	if lifecycle.prepares != 1 || lifecycle.directKills != 0 {
+		t.Fatalf("prepared remote Kill path = prepares:%d direct:%d", lifecycle.prepares, lifecycle.directKills)
+	}
+}
+
+func TestLifecycleRefreshTimeoutStillReturnsEncryptedRecoveryResultAndReconnects(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	now := time.Unix(1_700_000_000, 0)
+	adapter, err := NewAdapter(AdapterOptions{
+		ConfigPath: configPath,
+		Now:        func() time.Time { return now },
+		LifecycleFactory: func(string) (Lifecycle, error) {
+			return &rotatingLifecycle{stateDir: cfg.StateDir}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", Adapter: adapter,
+		HeartbeatInterval: time.Hour, RefreshTimeout: 25 * time.Millisecond, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := newFakeSocket()
+	connection := newConnection(client, socket, cfg)
+	browser, err := relay.GenerateDeviceIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "access-1", "browser-1", now)
+	arguments := callArgumentsForTest(t, grant, "access-1", "browser-1", map[string]any{
+		"response_public_key": browser.PublicJWK(),
+	})
+
+	connection.startRequest(context.Background(), "request-refresh-timeout", "control.rotate", arguments, nil)
+	refreshWire := nextFakeWrite(t, socket)
+	var refresh signedDeviceRefresh
+	if err := json.Unmarshal(refreshWire, &refresh); err != nil || refresh.Generation != values.Generation+1 {
+		t.Fatalf("lifecycle refresh = %s err=%v", refreshWire, err)
+	}
+	response := nextEnvelopeOfType(t, socket, relay.MessageTypeResponse)
+	payload, err := relay.DecodePayload[relay.ResponsePayload](response)
+	if err != nil || payload.Failure != nil || bytes.Contains(payload.Result, []byte("recovery_key")) ||
+		!bytes.Contains(payload.Result, []byte("ciphertext")) {
+		t.Fatalf("refresh-timeout lifecycle response = %#v err=%v", payload, err)
+	}
+	select {
+	case <-socket.closed:
+	case <-time.After(time.Second):
+		t.Fatal("refresh-timeout lifecycle response did not force a clean reconnect")
+	}
+	waitForRequests(t, connection)
+}
+
 func TestRequestCancellationReleasesLifecycleRefreshAndRequestState(t *testing.T) {
 	configPath, cfg, values := connectedRelayFixture(t)
 	now := time.Unix(1_700_000_000, 0)
@@ -661,6 +846,11 @@ func TestRequestCancellationReleasesLifecycleRefreshAndRequestState(t *testing.T
 	payload, err := relay.DecodePayload[relay.ResponsePayload](response)
 	if err != nil || payload.Failure == nil || payload.Failure.Code != "cancelled" {
 		t.Fatalf("cancelled lifecycle response = %#v err=%v", payload, err)
+	}
+	select {
+	case <-socket.closed:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled lifecycle refresh left a stale relay connection open")
 	}
 	waitForRequests(t, connection)
 	if connection.lifecycleInFlight.Load() != 0 {
@@ -727,6 +917,71 @@ func TestLateRefreshAcknowledgementCannotSatisfyUnrelatedRefresh(t *testing.T) {
 	}
 	if err := connection.handleMessage(context.Background(), lateAck); err != nil {
 		t.Fatalf("late acknowledgement after refresh completion: %v", err)
+	}
+}
+
+func TestRefreshTimesOutWithoutAcknowledgement(t *testing.T) {
+	configPath, cfg, values := connectedRelayFixture(t)
+	client, err := NewClient(ClientOptions{
+		ConfigPath: configPath, ExecutorVersion: "test-version", RefreshTimeout: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := newFakeSocket()
+	connection := newConnection(client, socket, cfg)
+	result := make(chan error, 1)
+	go func() { result <- connection.refresh(context.Background(), values.Generation) }()
+	_ = nextFakeWrite(t, socket)
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("refresh timeout error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh without acknowledgement did not time out")
+	}
+	connection.refreshWaitMu.Lock()
+	waiter := connection.refreshWait
+	connection.refreshWaitMu.Unlock()
+	if waiter != nil {
+		t.Fatal("timed-out refresh waiter remained registered")
+	}
+}
+
+func TestConnectionRejectsStaleDashboardConfiguration(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{name: "unenrolled", mutate: func(cfg *config.Config) { cfg.UnifiedDashboard.Enrolled = false }},
+		{name: "dashboard origin", mutate: func(cfg *config.Config) { cfg.UnifiedDashboard.URL = "https://replacement.example.test" }},
+		{name: "device identity", mutate: func(cfg *config.Config) { cfg.UnifiedDashboard.DeviceID = "replacement-device" }},
+		{name: "state directory", mutate: func(cfg *config.Config) { cfg.StateDir = t.TempDir() }},
+		{name: "public hostname", mutate: func(cfg *config.Config) { cfg.Domain = "replacement.example.test" }},
+		{name: "broker endpoint", mutate: func(cfg *config.Config) { cfg.BrokerEndpoint += ".replacement" }},
+		{name: "desktop endpoint", mutate: func(cfg *config.Config) { cfg.DesktopEndpoint += ".replacement" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configPath, cfg, _ := connectedRelayFixture(t)
+			client, err := NewClient(ClientOptions{ConfigPath: configPath, ExecutorVersion: "test-version"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			connection := newConnection(client, newFakeSocket(), cfg)
+			if _, err := connection.loadMatchingConfig(); err != nil {
+				t.Fatalf("unchanged connection configuration rejected: %v", err)
+			}
+			test.mutate(&cfg)
+			if err := config.Save(configPath, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := connection.loadMatchingConfig(); err == nil {
+				t.Fatal("stale relay connection accepted changed configuration")
+			}
+		})
 	}
 }
 

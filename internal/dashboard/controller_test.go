@@ -191,6 +191,9 @@ func TestRuntimeControllerSnapshotReportsAuthenticatedReachabilityAndDisabledMar
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		snapshot, err = controller.Snapshot(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
 		if snapshot.Agent == "reachable" && snapshot.Broker == "reachable" && snapshot.Desktop == "reachable" {
 			break
 		}

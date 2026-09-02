@@ -102,6 +102,17 @@ func NewController(cfg config.Config, values secrets.Values, services ServiceMan
 // OAuth grants, replaces every secret, and finally stops the agent. Every step
 // is attempted even when earlier steps fail.
 func (c *Controller) Kill(ctx context.Context) (Result, error) {
+	result, finalize, err := c.PrepareRemoteKill(ctx)
+	if finalize != nil {
+		err = errors.Join(err, finalize(ctx))
+	}
+	return result, err
+}
+
+// PrepareRemoteKill performs every Kill step except stopping the agent process
+// that must still deliver the encrypted one-time result. The returned finalizer
+// stops that agent and must be called after the result has been written.
+func (c *Controller) PrepareRemoteKill(ctx context.Context) (Result, func(context.Context) error, error) {
 	var result Result
 	var errs []error
 	steps := []func(context.Context) error{
@@ -123,14 +134,16 @@ func (c *Controller) Kill(ctx context.Context) (Result, error) {
 			}
 			return err
 		},
-		func(ctx context.Context) error { return c.services.Stop(ctx, Agent) },
 	}
 	for _, step := range steps {
 		if err := step(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return result, errors.Join(errs...)
+	finalize := func(finalizeCtx context.Context) error {
+		return c.services.Stop(finalizeCtx, Agent)
+	}
+	return result, finalize, errors.Join(errs...)
 }
 
 func dashboardBootstrapURL(address, key string) string {

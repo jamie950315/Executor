@@ -97,6 +97,37 @@ func TestKillRunsEveryStepAndReturnsRotatedRecoveryMaterial(t *testing.T) {
 	}
 }
 
+func TestPrepareRemoteKillDefersAgentStopUntilFinalizer(t *testing.T) {
+	cfg, values := controlFixture(t)
+	var events []string
+	services := &recordingServices{events: &events}
+	controller := NewController(cfg, values, services, &recordingCaller{events: &events})
+
+	result, finalize, err := controller.PrepareRemoteKill(context.Background())
+	if err != nil {
+		t.Fatalf("PrepareRemoteKill: %v", err)
+	}
+	if result.RecoveryKey == "" || result.URLSecret == "" || result.Dashboard == "" {
+		t.Fatal("PrepareRemoteKill did not return replacement one-time material")
+	}
+	if finalize == nil {
+		t.Fatal("PrepareRemoteKill omitted the agent-stop finalizer")
+	}
+	wantBeforeFinalize := []string{
+		"stop:cloudflared", "kill:broker", "kill:desktop", "stop:desktop", "stop:broker",
+	}
+	if !reflect.DeepEqual(events, wantBeforeFinalize) {
+		t.Fatalf("pre-finalize side effects = %#v, want %#v", events, wantBeforeFinalize)
+	}
+	if err := finalize(context.Background()); err != nil {
+		t.Fatalf("remote Kill finalizer: %v", err)
+	}
+	wantAfterFinalize := append(append([]string(nil), wantBeforeFinalize...), "stop:agent")
+	if !reflect.DeepEqual(events, wantAfterFinalize) {
+		t.Fatalf("post-finalize side effects = %#v, want %#v", events, wantAfterFinalize)
+	}
+}
+
 func TestKillContinuesAfterFailuresAndRevokesPersistedOAuth(t *testing.T) {
 	cfg, values := controlFixture(t)
 	accessToken := writeOAuthState(t, cfg, values)

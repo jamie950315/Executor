@@ -166,9 +166,10 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 			return errors.New("dashboard enrollment credentials unavailable")
 		}
 		if hmac.Equal([]byte(fingerprint), []byte(cfg.UnifiedDashboard.EnrollmentCleanupFingerprint)) {
+			cleanupErr := cleanupEnrollmentToken(options.TokenFile, token, operations.RemoveToken)
 			clear(token)
-			if err := cleanupEnrollmentToken(options.TokenFile, operations.RemoveToken); err != nil {
-				return err
+			if cleanupErr != nil {
+				return cleanupErr
 			}
 			cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
 			if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
@@ -240,7 +241,7 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 	if err := operations.SaveConfig(options.ConfigPath, cfg); err != nil {
 		return errors.New("dashboard enrollment state save failed")
 	}
-	if err := cleanupEnrollmentToken(options.TokenFile, operations.RemoveToken); err != nil {
+	if err := cleanupEnrollmentToken(options.TokenFile, token, operations.RemoveToken); err != nil {
 		return err
 	}
 	cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = ""
@@ -250,7 +251,7 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 	return nil
 }
 
-func cleanupEnrollmentToken(path string, remove func(string) error) error {
+func cleanupEnrollmentToken(path string, expected []byte, remove func(string) error) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -260,6 +261,14 @@ func cleanupEnrollmentToken(path string, remove func(string) error) error {
 	if !info.Mode().IsRegular() {
 		return errors.New("dashboard enrollment token cleanup failed")
 	}
+	current, err := readEnrollmentToken(path)
+	if err != nil {
+		return errors.New("dashboard enrollment token cleanup failed")
+	}
+	defer clear(current)
+	if len(expected) == 0 || !hmac.Equal(current, expected) {
+		return errors.New("dashboard enrollment token cleanup failed")
+	}
 	if err := remove(path); err != nil {
 		return errors.New("dashboard enrollment token cleanup failed")
 	}
@@ -267,7 +276,7 @@ func cleanupEnrollmentToken(path string, remove func(string) error) error {
 }
 
 func readEnrollmentToken(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm() != fs.FileMode(0o600) {
 		return nil, errors.New("dashboard enrollment token file is invalid")
 	}
@@ -276,6 +285,11 @@ func readEnrollmentToken(path string) ([]byte, error) {
 		return nil, errors.New("dashboard enrollment token file is invalid")
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) ||
+		runtime.GOOS != "windows" && openedInfo.Mode().Perm() != fs.FileMode(0o600) {
+		return nil, errors.New("dashboard enrollment token file is invalid")
+	}
 	data, err := io.ReadAll(io.LimitReader(file, 513))
 	if err != nil || len(data) > 512 {
 		clear(data)

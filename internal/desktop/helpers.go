@@ -1,11 +1,15 @@
 package desktop
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const x11CleanupTimeout = 2 * time.Second
 
 type availableTools map[string]bool
 
@@ -57,7 +61,27 @@ func chooseWaylandKeyboardCommand(tools availableTools, action KeyboardAction) (
 		return command, nil
 	}
 	if tools["ydotool"] {
-		return []string{"ydotool", "key", strconv.Itoa(action.KeyCode)}, nil
+		if action.KeyCode < 1 {
+			return nil, fmt.Errorf("invalid key code %d", action.KeyCode)
+		}
+		modifiers, err := normalizeModifiers(action.Modifiers)
+		if err != nil {
+			return nil, err
+		}
+		if len(modifiers) == 0 {
+			return []string{"ydotool", "key", strconv.Itoa(action.KeyCode)}, nil
+		}
+		command := []string{"ydotool", "key"}
+		for _, modifier := range modifiers {
+			code, _ := linuxInputKeyCode(modifier)
+			command = append(command, strconv.Itoa(code)+":1")
+		}
+		command = append(command, strconv.Itoa(action.KeyCode)+":1", strconv.Itoa(action.KeyCode)+":0")
+		for index := len(modifiers) - 1; index >= 0; index-- {
+			code, _ := linuxInputKeyCode(modifiers[index])
+			command = append(command, strconv.Itoa(code)+":0")
+		}
+		return command, nil
 	}
 	return nil, &UnavailableError{Reason: "wayland keyboard input unavailable: install ydotool for key events"}
 }
@@ -155,6 +179,70 @@ func buildX11MouseCommands(action MouseAction) ([][]string, error) {
 	return commands, nil
 }
 
+func x11FailureCleanup(commands [][]string, failedIndex int) [][]string {
+	if failedIndex < 0 || failedIndex >= len(commands) {
+		return nil
+	}
+	held := map[string]int{}
+	track := func(command []string) {
+		identifier, down, ok := x11HeldInput(command)
+		if !ok {
+			return
+		}
+		if down {
+			held[identifier]++
+			return
+		}
+		if held[identifier] > 0 {
+			held[identifier]--
+		}
+	}
+	for _, command := range commands[:failedIndex] {
+		track(command)
+	}
+	if _, down, ok := x11HeldInput(commands[failedIndex]); ok && down {
+		// A failed xdotool down command may have injected the input before
+		// returning an error. Treat it as held so cleanup remains fail-safe.
+		track(commands[failedIndex])
+	}
+	cleanup := make([][]string, 0)
+	for _, command := range commands[failedIndex:] {
+		identifier, down, ok := x11HeldInput(command)
+		if !ok || down || held[identifier] == 0 {
+			continue
+		}
+		cleanup = append(cleanup, command)
+		held[identifier]--
+	}
+	return cleanup
+}
+
+func x11HeldInput(command []string) (identifier string, down bool, ok bool) {
+	if len(command) < 2 {
+		return "", false, false
+	}
+	switch command[0] {
+	case "keydown":
+		return "key:" + command[1], true, true
+	case "keyup":
+		return "key:" + command[1], false, true
+	case "mousedown":
+		return "mouse:" + command[1], true, true
+	case "mouseup":
+		return "mouse:" + command[1], false, true
+	default:
+		return "", false, false
+	}
+}
+
+func runX11FailureCleanup(ctx context.Context, runner commandRunner, commands [][]string, failedIndex int) {
+	for _, cleanup := range x11FailureCleanup(commands, failedIndex) {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), x11CleanupTimeout)
+		_, _ = runner.Run(cleanupCtx, "xdotool", cleanup...)
+		cancel()
+	}
+}
+
 func xdotoolScrollButtons(scrollX, scrollY int) []string {
 	buttons := make([]string, 0)
 	appendButtons := func(delta int, negative, positive string) {
@@ -228,6 +316,25 @@ func buildX11KeypressCommand(keys []string) ([]string, error) {
 	return []string{"key", strings.Join(names, "+")}, nil
 }
 
+func buildX11LegacyKeyboardCommands(action KeyboardAction) ([][]string, error) {
+	if action.KeyCode < 1 {
+		return nil, fmt.Errorf("invalid key code %d", action.KeyCode)
+	}
+	modifiers, err := normalizeModifiers(action.Modifiers)
+	if err != nil {
+		return nil, err
+	}
+	commands := make([][]string, 0, len(modifiers)*2+1)
+	for _, modifier := range modifiers {
+		commands = append(commands, []string{"keydown", xdotoolKey(modifier)})
+	}
+	commands = append(commands, []string{"key", strconv.Itoa(action.KeyCode)})
+	for index := len(modifiers) - 1; index >= 0; index-- {
+		commands = append(commands, []string{"keyup", xdotoolKey(modifiers[index])})
+	}
+	return commands, nil
+}
+
 func darwinKeyCode(key keyName) (int, error) {
 	codes := map[keyName]int{
 		"A": 0, "S": 1, "D": 2, "F": 3, "H": 4, "G": 5, "Z": 6, "X": 7,
@@ -276,15 +383,20 @@ public static class ExecutorDesktopProbe {
 '@; if(-not [ExecutorDesktopProbe]::CurrentSessionActive()){exit 1}; $desktop=[ExecutorDesktopProbe]::OpenInputDesktop(0,$false,1); if($desktop -eq [IntPtr]::Zero){exit 1}; try{$name=New-Object System.Text.StringBuilder 256; $needed=0; if(-not [ExecutorDesktopProbe]::GetUserObjectInformation($desktop,2,$name,$name.Capacity,[ref]$needed)){exit 1}; if($name.ToString() -ne 'Default'){exit 1}} finally{[void][ExecutorDesktopProbe]::CloseDesktop($desktop)}`
 }
 
+func windowsJSONOutputScript(body string) string {
+	return "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; " + body
+}
+
 func buildWindowsEnumWindowsScript() string {
-	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Text;\nusing System.Runtime.InteropServices;\npublic static class ExecutorWin32 {\n  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);\n  [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);\n  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);\n  [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);\n}\n'@; $items=New-Object System.Collections.Generic.List[object]; $callback=[ExecutorWin32+EnumWindowsProc]{ param($hWnd,$lParam) if(-not [ExecutorWin32]::IsWindowVisible($hWnd)){ return $true } $len=[ExecutorWin32]::GetWindowTextLength($hWnd); if($len -le 0){ return $true } $sb=New-Object System.Text.StringBuilder ($len+1); [void][ExecutorWin32]::GetWindowText($hWnd,$sb,$sb.Capacity); $processId=0; [void][ExecutorWin32]::GetWindowThreadProcessId($hWnd,[ref]$processId); $procName=''; try { $procName=(Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {} $items.Add([pscustomobject]@{ app=$procName; title=$sb.ToString(); id=[int]$hWnd }) | Out-Null; return $true }; [ExecutorWin32]::EnumWindows($callback,[IntPtr]::Zero) | Out-Null; ConvertTo-Json -InputObject $items.ToArray() -Compress"
+	return windowsJSONOutputScript("Add-Type @'\nusing System;\nusing System.Text;\nusing System.Runtime.InteropServices;\npublic static class ExecutorWin32 {\n  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);\n  [DllImport(\"user32.dll\")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);\n  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);\n  [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);\n}\n'@; $items=New-Object System.Collections.Generic.List[object]; $callback=[ExecutorWin32+EnumWindowsProc]{ param($hWnd,$lParam) if(-not [ExecutorWin32]::IsWindowVisible($hWnd)){ return $true } $len=[ExecutorWin32]::GetWindowTextLength($hWnd); if($len -le 0){ return $true } $sb=New-Object System.Text.StringBuilder ($len+1); [void][ExecutorWin32]::GetWindowText($hWnd,$sb,$sb.Capacity); $processId=0; [void][ExecutorWin32]::GetWindowThreadProcessId($hWnd,[ref]$processId); $procName=''; try { $procName=(Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {} $items.Add([pscustomobject]@{ app=$procName; title=$sb.ToString(); id=[long]$hWnd }) | Out-Null; return $true }; [ExecutorWin32]::EnumWindows($callback,[IntPtr]::Zero) | Out-Null; ConvertTo-Json -InputObject $items.ToArray() -Compress")
 }
 
 func buildWindowsAccessibilityScript() string {
-	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Text;\nusing System.Runtime.InteropServices;\npublic static class ExecutorForeground {\n  [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();\n  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);\n}\n'@; $h=[ExecutorForeground]::GetForegroundWindow(); $title=''; if($h -ne [IntPtr]::Zero){ $len=[ExecutorForeground]::GetWindowTextLength($h); if($len -gt 0){ $sb=New-Object System.Text.StringBuilder ($len+1); [void][ExecutorForeground]::GetWindowText($h,$sb,$sb.Capacity); $title=$sb.ToString() } }; [pscustomobject]@{ application='foreground'; windows=@([pscustomobject]@{ title=$title; role='window' }) } | ConvertTo-Json -Compress"
+	return windowsJSONOutputScript("Add-Type @'\nusing System;\nusing System.Text;\nusing System.Runtime.InteropServices;\npublic static class ExecutorForeground {\n  [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();\n  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);\n  [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);\n}\n'@; $h=[ExecutorForeground]::GetForegroundWindow(); $title=''; if($h -ne [IntPtr]::Zero){ $len=[ExecutorForeground]::GetWindowTextLength($h); if($len -gt 0){ $sb=New-Object System.Text.StringBuilder ($len+1); [void][ExecutorForeground]::GetWindowText($h,$sb,$sb.Capacity); $title=$sb.ToString() } }; [pscustomobject]@{ application='foreground'; windows=@([pscustomobject]@{ title=$title; role='window' }) } | ConvertTo-Json -Compress")
 }
 
 func buildWindowsMouseScript(action MouseAction) string {
+	const extraInfo = "[UIntPtr]::Zero"
 	buttonMask := "2"
 	switch action.Button {
 	case "", MouseButtonLeft:
@@ -298,28 +410,28 @@ func buildWindowsMouseScript(action MouseAction) string {
 	modifiers, _ := normalizeModifiers(action.Keys)
 	var events strings.Builder
 	for _, modifier := range modifiers {
-		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifier) + ",0,0,0); ")
+		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifier) + ",0,0," + extraInfo + "); ")
 	}
 	for _, step := range steps {
 		switch step.Type {
 		case mouseStepMove, mouseStepDrag:
 			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + ") | Out-Null; ")
 		case mouseStepDown:
-			events.WriteString("[ExecutorMouse]::mouse_event(" + buttonMask + ",0,0,0,0); ")
+			events.WriteString("[ExecutorMouse]::mouse_event(" + buttonMask + ",0,0,0," + extraInfo + "); ")
 		case mouseStepUp:
-			events.WriteString("[ExecutorMouse]::mouse_event(" + strconv.Itoa(maskUp(buttonMask)) + ",0,0,0,0); ")
+			events.WriteString("[ExecutorMouse]::mouse_event(" + strconv.Itoa(maskUp(buttonMask)) + ",0,0,0," + extraInfo + "); ")
 		case mouseStepScroll:
 			scrollX, scrollY := nativeWheelDeltas(step.ScrollX, step.ScrollY)
 			if step.ScrollY != 0 {
-				events.WriteString("[ExecutorMouse]::mouse_event(2048,0,0," + strconv.Itoa(scrollY) + ",0); ")
+				events.WriteString("[ExecutorMouse]::mouse_event(2048,0,0," + strconv.Itoa(scrollY) + "," + extraInfo + "); ")
 			}
 			if step.ScrollX != 0 {
-				events.WriteString("[ExecutorMouse]::mouse_event(4096,0,0," + strconv.Itoa(scrollX) + ",0); ")
+				events.WriteString("[ExecutorMouse]::mouse_event(4096,0,0," + strconv.Itoa(scrollX) + "," + extraInfo + "); ")
 			}
 		}
 	}
 	for index := len(modifiers) - 1; index >= 0; index-- {
-		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifiers[index]) + ",0,2,0); ")
+		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifiers[index]) + ",0,2," + extraInfo + "); ")
 	}
 	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class ExecutorMouse {\n  [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int X, int Y);\n  [DllImport(\"user32.dll\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, UIntPtr dwExtraInfo);\n  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n}\n'@; " + events.String()
 }
@@ -385,6 +497,7 @@ func maskUp(downMask string) int {
 }
 
 func buildWindowsKeyboardScript(action KeyboardAction) string {
+	const extraInfo = "[UIntPtr]::Zero"
 	if action.Text != "" {
 		return "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('" + psSingleQuote(sendKeysEscape(action.Text)) + "')"
 	}
@@ -393,37 +506,32 @@ func buildWindowsKeyboardScript(action KeyboardAction) string {
 		var events strings.Builder
 		for _, key := range keys {
 			virtualKey := windowsVirtualKey(key)
-			events.WriteString("[ExecutorKeyboard]::keybd_event(" + virtualKey + ",0,0,0); ")
+			events.WriteString("[ExecutorKeyboard]::keybd_event(" + virtualKey + ",0,0," + extraInfo + "); ")
 		}
 		for index := len(keys) - 1; index >= 0; index-- {
 			virtualKey := windowsVirtualKey(keys[index])
-			events.WriteString("[ExecutorKeyboard]::keybd_event(" + virtualKey + ",0,2,0); ")
+			events.WriteString("[ExecutorKeyboard]::keybd_event(" + virtualKey + ",0,2," + extraInfo + "); ")
 		}
 		return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class ExecutorKeyboard {\n  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n}\n'@; " + events.String()
 	}
+	modifiers, _ := normalizeModifiers(action.Modifiers)
 	modifierScript := ""
-	for _, modifier := range action.Modifiers {
-		switch strings.ToLower(modifier) {
-		case "shift":
-			modifierScript += "[ExecutorKeyboard]::keybd_event(0x10,0,0,0); "
-		case "control", "ctrl":
-			modifierScript += "[ExecutorKeyboard]::keybd_event(0x11,0,0,0); "
-		case "alt", "option":
-			modifierScript += "[ExecutorKeyboard]::keybd_event(0x12,0,0,0); "
-		}
+	for _, modifier := range modifiers {
+		modifierScript += "[ExecutorKeyboard]::keybd_event(" + windowsVirtualKey(modifier) + ",0,0," + extraInfo + "); "
 	}
 	releaseScript := ""
-	for index := len(action.Modifiers) - 1; index >= 0; index-- {
-		switch strings.ToLower(action.Modifiers[index]) {
-		case "shift":
-			releaseScript += "[ExecutorKeyboard]::keybd_event(0x10,0,2,0); "
-		case "control", "ctrl":
-			releaseScript += "[ExecutorKeyboard]::keybd_event(0x11,0,2,0); "
-		case "alt", "option":
-			releaseScript += "[ExecutorKeyboard]::keybd_event(0x12,0,2,0); "
-		}
+	for index := len(modifiers) - 1; index >= 0; index-- {
+		releaseScript += "[ExecutorKeyboard]::keybd_event(" + windowsVirtualKey(modifiers[index]) + ",0,2," + extraInfo + "); "
 	}
-	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class ExecutorKeyboard {\n  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n}\n'@; " + modifierScript + "[ExecutorKeyboard]::keybd_event(" + strconv.Itoa(action.KeyCode) + ",0,0,0); [ExecutorKeyboard]::keybd_event(" + strconv.Itoa(action.KeyCode) + ",0,2,0); " + releaseScript
+	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class ExecutorKeyboard {\n  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n}\n'@; " + modifierScript + "[ExecutorKeyboard]::keybd_event(" + strconv.Itoa(action.KeyCode) + ",0,0," + extraInfo + "); [ExecutorKeyboard]::keybd_event(" + strconv.Itoa(action.KeyCode) + ",0,2," + extraInfo + "); " + releaseScript
+}
+
+func validateWindowsLegacyKeyboardAction(action KeyboardAction) error {
+	if action.KeyCode < 1 || action.KeyCode > 255 {
+		return fmt.Errorf("invalid Windows key code %d", action.KeyCode)
+	}
+	_, err := normalizeModifiers(action.Modifiers)
+	return err
 }
 
 func buildWindowsAppScript(action AppAction) string {

@@ -25,7 +25,11 @@ import (
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
-const deviceChallengeLifetime = 30 * time.Second
+const (
+	deviceChallengeLifetime      = 30 * time.Second
+	defaultRelayHandshakeTimeout = 30 * time.Second
+	defaultRelayRefreshTimeout   = 30 * time.Second
+)
 
 type relaySocket interface {
 	Read(context.Context) ([]byte, error)
@@ -42,6 +46,8 @@ type ClientOptions struct {
 	HTTPClient        *http.Client
 	Adapter           *Adapter
 	HeartbeatInterval time.Duration
+	HandshakeTimeout  time.Duration
+	RefreshTimeout    time.Duration
 	Now               func() time.Time
 	Dial              DialFunc
 	Sleep             func(context.Context, time.Duration) error
@@ -53,6 +59,8 @@ type Client struct {
 	httpClient        *http.Client
 	adapter           *Adapter
 	heartbeatInterval time.Duration
+	handshakeTimeout  time.Duration
+	refreshTimeout    time.Duration
 	now               func() time.Time
 	dial              DialFunc
 	sleep             func(context.Context, time.Duration) error
@@ -70,6 +78,12 @@ func NewClient(options ClientOptions) (*Client, error) {
 	if options.HeartbeatInterval <= 0 {
 		options.HeartbeatInterval = 30 * time.Second
 	}
+	if options.HandshakeTimeout <= 0 {
+		options.HandshakeTimeout = defaultRelayHandshakeTimeout
+	}
+	if options.RefreshTimeout <= 0 {
+		options.RefreshTimeout = defaultRelayRefreshTimeout
+	}
 	if options.Adapter == nil {
 		adapter, err := NewAdapter(AdapterOptions{ConfigPath: options.ConfigPath, Now: options.Now})
 		if err != nil {
@@ -85,7 +99,8 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}
 	client := &Client{
 		configPath: options.ConfigPath, executorVersion: options.ExecutorVersion, httpClient: options.HTTPClient,
-		adapter: options.Adapter, heartbeatInterval: options.HeartbeatInterval, now: options.Now,
+		adapter: options.Adapter, heartbeatInterval: options.HeartbeatInterval,
+		handshakeTimeout: options.HandshakeTimeout, refreshTimeout: options.RefreshTimeout, now: options.Now,
 		dial: options.Dial, sleep: options.Sleep,
 	}
 	client.setRelayState("disconnected")
@@ -141,7 +156,7 @@ func (c *Client) Run(ctx context.Context) error {
 		socket, err := c.dial(ctx, endpoint, c.httpClient)
 		if err == nil {
 			connection := newConnection(c, socket, cfg)
-			err = connection.run(ctx)
+			_ = connection.run(ctx)
 			if connection.authenticated {
 				attempt = 0
 			}
@@ -189,7 +204,13 @@ func newConnection(client *Client, socket relaySocket, cfg config.Config) *conne
 
 func (c *connection) run(ctx context.Context) error {
 	c.socket.SetReadLimit(maximumRelayMessageBytes)
-	if err := c.handshake(ctx); err != nil {
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, c.client.handshakeTimeout)
+	err := c.handshake(handshakeCtx)
+	cancelHandshake()
+	if err != nil {
+		return err
+	}
+	if _, err := c.loadMatchingConfig(); err != nil {
 		return err
 	}
 	c.authenticated = true
@@ -219,6 +240,9 @@ func (c *connection) run(ctx context.Context) error {
 		if len(message) > maximumRelayMessageBytes {
 			return errors.New("relay message too large")
 		}
+		if _, err := c.loadMatchingConfig(); err != nil {
+			return err
+		}
 		if err := c.handleMessage(connectionCtx, message); err != nil {
 			return err
 		}
@@ -238,7 +262,11 @@ func (c *connection) handshake(ctx context.Context) error {
 		c.client.now().Sub(time.Unix(challenge.IssuedAt, 0)).Abs() > deviceChallengeLifetime {
 		return errors.New("invalid device challenge")
 	}
-	values, identity, err := loadRelayIdentity(c.initialConfig.StateDir)
+	cfg, err := c.loadMatchingConfig()
+	if err != nil {
+		return err
+	}
+	values, identity, err := loadRelayIdentity(cfg.StateDir)
 	if err != nil {
 		return errors.New("relay identity unavailable")
 	}
@@ -257,7 +285,7 @@ func (c *connection) handshake(ctx context.Context) error {
 	if err != nil || !isDeviceAuthenticated(authenticated) {
 		return errors.New("device authentication failed")
 	}
-	refresh, err := c.signedRefresh(values, identity)
+	refresh, err := c.signedRefresh(cfg, values, identity)
 	if err != nil {
 		return err
 	}
@@ -326,9 +354,9 @@ func (c *connection) heartbeat(ctx context.Context) error {
 			if c.lifecycleInFlight.Load() > 0 {
 				continue
 			}
-			cfg, err := config.Load(c.client.configPath)
+			cfg, err := c.loadMatchingConfig()
 			if err != nil {
-				return errors.New("relay configuration unavailable")
+				return err
 			}
 			if disabled(filepath.Join(cfg.StateDir, "disabled")) {
 				return ErrExecutorDisabled
@@ -431,13 +459,21 @@ func (c *connection) startRequest(ctx context.Context, requestID, method string,
 			_ = c.writeFailure(ctx, requestID, code)
 			return
 		}
+		if result.Finalize != nil {
+			defer runLifecycleFinalizer(result.Finalize)
+		}
 		if result.RefreshGeneration > 0 {
 			if err := c.refresh(requestCtx, result.RefreshGeneration); err != nil {
-				code := "refresh_failed"
 				if requestCtx.Err() != nil {
-					code = "cancelled"
+					_ = c.writeFailure(ctx, requestID, "cancelled")
+				} else {
+					// The host-side lifecycle action already rotated the recovery
+					// material. Preserve that one-time encrypted result even when the
+					// relay refresh acknowledgement is lost, then reconnect so the new
+					// generation is synchronized before more requests are accepted.
+					_ = c.writeResult(ctx, requestID, result.Payload)
 				}
-				_ = c.writeFailure(ctx, requestID, code)
+				_ = c.socket.Close(int(websocket.StatusNormalClosure), "relay refresh incomplete")
 				return
 			}
 		}
@@ -453,7 +489,9 @@ func (c *connection) startRequest(ctx context.Context, requestID, method string,
 func (c *connection) refresh(ctx context.Context, expectedGeneration uint64) error {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
-	cfg, err := config.Load(c.client.configPath)
+	refreshCtx, cancelRefresh := context.WithTimeout(ctx, c.client.refreshTimeout)
+	defer cancelRefresh()
+	cfg, err := c.loadMatchingConfig()
 	if err != nil {
 		return errors.New("device refresh failed")
 	}
@@ -461,11 +499,11 @@ func (c *connection) refresh(ctx context.Context, expectedGeneration uint64) err
 	if err != nil || values.Generation != expectedGeneration {
 		return errors.New("device refresh failed")
 	}
-	message, err := c.signedRefresh(values, identity)
+	message, err := c.signedRefresh(cfg, values, identity)
 	if err != nil {
 		return err
 	}
-	waiter := &refreshWaiter{generation: expectedGeneration, result: make(chan uint64, 1), ctx: ctx}
+	waiter := &refreshWaiter{generation: expectedGeneration, result: make(chan uint64, 1), ctx: refreshCtx}
 	c.refreshWaitMu.Lock()
 	c.refreshWait = waiter
 	c.refreshWaitMu.Unlock()
@@ -474,28 +512,24 @@ func (c *connection) refresh(ctx context.Context, expectedGeneration uint64) err
 		c.refreshWait = nil
 		c.refreshWaitMu.Unlock()
 	}()
-	if err := c.write(ctx, message); err != nil {
+	if err := c.write(refreshCtx, message); err != nil {
 		return err
 	}
 	select {
 	case generation := <-waiter.result:
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if refreshCtx.Err() != nil {
+			return refreshCtx.Err()
 		}
 		if generation != expectedGeneration {
 			return errors.New("device refresh failed")
 		}
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-refreshCtx.Done():
+		return refreshCtx.Err()
 	}
 }
 
-func (c *connection) signedRefresh(values secrets.Values, identity *relay.DeviceIdentity) ([]byte, error) {
-	cfg, err := config.Load(c.client.configPath)
-	if err != nil {
-		return nil, errors.New("device refresh failed")
-	}
+func (c *connection) signedRefresh(cfg config.Config, values secrets.Values, identity *relay.DeviceIdentity) ([]byte, error) {
 	name, err := os.Hostname()
 	if err != nil || strings.TrimSpace(name) == "" {
 		name = "Executor Device"
@@ -510,6 +544,24 @@ func (c *connection) signedRefresh(values secrets.Values, identity *relay.Device
 		return nil, errors.New("device refresh failed")
 	}
 	return json.Marshal(signedDeviceRefresh{Version: relay.ProtocolVersion, Type: "device_refresh", DeviceRefresh: refresh, Signature: signature})
+}
+
+func (c *connection) loadMatchingConfig() (config.Config, error) {
+	cfg, err := config.Load(c.client.configPath)
+	if err != nil {
+		return config.Config{}, errors.New("relay configuration unavailable")
+	}
+	initial := c.initialConfig
+	if !cfg.UnifiedDashboard.Enrolled ||
+		cfg.UnifiedDashboard.URL != initial.UnifiedDashboard.URL ||
+		cfg.UnifiedDashboard.DeviceID != initial.UnifiedDashboard.DeviceID ||
+		cfg.StateDir != initial.StateDir ||
+		cfg.Domain != initial.Domain ||
+		cfg.BrokerEndpoint != initial.BrokerEndpoint ||
+		cfg.DesktopEndpoint != initial.DesktopEndpoint {
+		return config.Config{}, errors.New("relay configuration changed")
+	}
+	return cfg, nil
 }
 
 func (c *connection) writeResult(ctx context.Context, requestID string, result json.RawMessage) error {

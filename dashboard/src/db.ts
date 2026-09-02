@@ -60,13 +60,15 @@ export async function enrollDevice(
           AND (public_jwk <> ? OR revoked_generation >= ?)
       )
       ON CONFLICT(device_id) DO UPDATE SET
-        name = excluded.name,
-        platform = excluded.platform,
-        arch = excluded.arch,
-        version = excluded.version,
-        mcp_url = excluded.mcp_url,
+        name = CASE WHEN excluded.generation > devices.generation THEN excluded.name ELSE devices.name END,
+        platform = CASE WHEN excluded.generation > devices.generation THEN excluded.platform ELSE devices.platform END,
+        arch = CASE WHEN excluded.generation > devices.generation THEN excluded.arch ELSE devices.arch END,
+        version = CASE WHEN excluded.generation > devices.generation THEN excluded.version ELSE devices.version END,
+        mcp_url = CASE WHEN excluded.generation > devices.generation THEN excluded.mcp_url ELSE devices.mcp_url END,
+        state = CASE WHEN excluded.generation > devices.generation THEN 'offline' ELSE devices.state END,
+        last_seen_at = CASE WHEN excluded.generation > devices.generation THEN NULL ELSE devices.last_seen_at END,
         generation = MAX(devices.generation, excluded.generation),
-        updated_at = excluded.updated_at
+        updated_at = CASE WHEN excluded.generation > devices.generation THEN excluded.updated_at ELSE devices.updated_at END
       WHERE devices.public_jwk = excluded.public_jwk
       RETURNING ${deviceColumns}`,
     )
@@ -157,12 +159,18 @@ export async function writeAudit(
   outcome: string,
   now: number,
 ): Promise<void> {
-  await db
-    .prepare(
-      "INSERT INTO audits (device_id, access_subject, action, outcome, created_at) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(deviceID, accessSubject, action, outcome, now)
-    .run();
+  try {
+    await db
+      .prepare(
+        "INSERT INTO audits (device_id, access_subject, action, outcome, created_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .bind(deviceID, accessSubject, action, outcome, now)
+      .run();
+  } catch {
+    // Audit telemetry must not replace the result of an action that may have
+    // already completed on the host or in the device registry.
+    console.error("dashboard audit write failed");
+  }
 }
 
 function decodeDevice(stored: StoredDevice): DeviceRecord {

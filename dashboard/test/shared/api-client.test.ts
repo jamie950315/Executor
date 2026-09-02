@@ -94,6 +94,30 @@ describe("Dashboard call client", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it("cancels the relay response body after a protocol parsing failure", async () => {
+    let cancelled = false;
+    const invalid = `${JSON.stringify(makeEnvelope("stream_chunk", "message-invalid", {
+      request_id: "request-invalid",
+      sequence: 1,
+      data: btoa("{}"),
+      final: true,
+    }))}\n`;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(invalid));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = new Response(stream, {
+      headers: { "content-type": "application/x-ndjson; charset=utf-8" },
+    });
+
+    await expect(parseCallResponse(response)).rejects.toThrow("Invalid device response");
+    expect(cancelled).toBe(true);
+  });
+
   it("cancels active streaming response consumption through the caller-owned fetch signal", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     let fetchSignal: AbortSignal | null | undefined;

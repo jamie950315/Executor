@@ -3,6 +3,7 @@ import { deleteDeviceConditionally, getDevice, writeAudit, type DeviceRecord } f
 import type { RelayFailureCode, RelayStreamResult } from "./device-relay";
 import {
   browserIdentity,
+  browserIdentitySetCookie,
   cookieValue,
   deviceGrantCookieName,
   deviceGrantSetCookie,
@@ -151,7 +152,9 @@ async function handleUnlock(
     return errorResponse("unlock rejected", 401);
   }
 
-  const headers = new Headers({ "set-cookie": await deviceGrantSetCookie(deviceID, grant) });
+  const headers = new Headers();
+  headers.append("set-cookie", browserIdentitySetCookie(browser.id));
+  headers.append("set-cookie", await deviceGrantSetCookie(deviceID, grant));
   await writeAudit(env.DB, deviceID, access.subject, "device.unlock", "success", Date.now());
   return jsonResponse({ unlocked: true }, 200, headers);
 }
@@ -229,9 +232,22 @@ async function handleDelete(
     await writeAudit(env.DB, deviceID, access.subject, "device.delete", "changed", Date.now());
     return errorResponse("device changed", 409);
   }
-  await env.DEVICE_RELAY.getByName(deviceID).disconnect(unlocked.device.generation);
+  await disconnectDeletedDevice(env.DEVICE_RELAY.getByName(deviceID), unlocked.device.generation);
   await writeAudit(env.DB, deviceID, access.subject, "device.delete", "success", Date.now());
   return jsonResponse({ deleted: true });
+}
+
+export async function disconnectDeletedDevice(
+  relay: { disconnect(generation: number): Promise<void> },
+  generation: number,
+): Promise<void> {
+  try {
+    await relay.disconnect(generation);
+  } catch {
+    // The registry deletion is authoritative. A temporary Durable Object
+    // failure must not turn that completed deletion into an ambiguous 500.
+    console.error("deleted device relay disconnect failed");
+  }
 }
 
 async function verifyUnlocked(

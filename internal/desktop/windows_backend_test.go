@@ -42,6 +42,29 @@ func TestWindowsEnumWindowsScriptProducesJSONArray(t *testing.T) {
 	}
 }
 
+func TestWindowsJSONOutputPreservesUTF8Text(t *testing.T) {
+	output, err := exec.CommandContext(
+		context.Background(),
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		windowsJSONOutputScript(`[pscustomobject]@{title='繁體中文視窗'} | ConvertTo-Json -Compress`),
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("UTF-8 JSON script failed: %v\n%s", err, output)
+	}
+	var value struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(output, &value); err != nil {
+		t.Fatalf("UTF-8 JSON output is invalid: %v\n%x", err, output)
+	}
+	if value.Title != "繁體中文視窗" {
+		t.Fatalf("UTF-8 JSON title = %q", value.Title)
+	}
+}
+
 func TestWindowsBackend_UsesExpectedPowerShellCommands(t *testing.T) {
 	runner := &windowsTestRunner{
 		outputs: map[string][]byte{

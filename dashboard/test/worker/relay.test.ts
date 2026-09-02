@@ -181,7 +181,7 @@ describe("DeviceRelay WebSocket", () => {
       arch: "arm64",
       executor_version: "dev",
       mcp_url: "https://device.example/mcp",
-      issued_at: sameGeneration.issued_at + 1,
+      issued_at: sameGeneration.issued_at,
     };
     const signature = await signDeviceRefresh(refresh);
     const message = JSON.stringify({ version: 1, type: "device_refresh", ...refresh, signature });
@@ -405,6 +405,90 @@ describe("DeviceRelay WebSocket", () => {
 
     clientSocket.close(1000, "test complete");
   });
+
+  it("keeps sensitive lifecycle requests pending long enough to return one-time recovery material", async () => {
+    await enroll();
+    const clientSocket = await connectAuthenticated();
+    const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+    const request = makeEnvelope("request", "message-lifecycle-deadline", {
+      request_id: "request-lifecycle-deadline",
+      method: "control.rotate",
+      arguments: {},
+    });
+
+    await runInDurableObject(stub, async (instance: DeviceRelay) => {
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const result = instance.relayStream(request);
+        if (!result.ok) {
+          throw new Error(`unexpected relay failure: ${result.error}`);
+        }
+        expect(setTimeoutSpy.mock.calls.at(-1)?.[1]).toBe(120_000);
+        await result.stream.cancel("test complete");
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    clientSocket.close(1000, "test complete");
+  });
+
+  it("keeps resume pending beyond the host readiness-check window", async () => {
+    await enroll();
+    const clientSocket = await connectAuthenticated();
+    const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+    const request = makeEnvelope("request", "message-resume-deadline", {
+      request_id: "request-resume-deadline",
+      method: "control.resume",
+      arguments: {},
+    });
+
+    await runInDurableObject(stub, async (instance: DeviceRelay) => {
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      try {
+        const result = instance.relayStream(request);
+        if (!result.ok) {
+          throw new Error(`unexpected relay failure: ${result.error}`);
+        }
+        expect(setTimeoutSpy.mock.calls.at(-1)?.[1]).toBe(120_000);
+        await result.stream.cancel("test complete");
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    clientSocket.close(1000, "test complete");
+  });
+
+  it.each(["desktop_control", "device_permissions", "control.permissions"])(
+    "keeps interactive %s requests pending beyond the ordinary relay deadline",
+    async (method) => {
+      await enroll();
+      const clientSocket = await connectAuthenticated();
+      const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+      const request = makeEnvelope("request", `message-${method}-deadline`, {
+        request_id: `request-${method}-deadline`,
+        method,
+        arguments: {},
+      });
+
+      await runInDurableObject(stub, async (instance: DeviceRelay) => {
+        const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+        try {
+          const result = instance.relayStream(request);
+          if (!result.ok) {
+            throw new Error(`unexpected relay failure: ${result.error}`);
+          }
+          expect(setTimeoutSpy.mock.calls.at(-1)?.[1]).toBe(120_000);
+          await result.stream.cancel("test complete");
+        } finally {
+          setTimeoutSpy.mockRestore();
+        }
+      });
+
+      clientSocket.close(1000, "test complete");
+    },
+  );
 });
 
 async function enroll(generation = 7): Promise<void> {

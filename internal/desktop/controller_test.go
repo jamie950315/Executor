@@ -132,6 +132,9 @@ func TestWindowsPowerShellBuilders(t *testing.T) {
 	if strings.Contains(strings.ToLower(enumWindows), "$pid=") || !strings.Contains(enumWindows, "$processId=0") {
 		t.Fatalf("window enumeration must avoid read-only $PID: %s", enumWindows)
 	}
+	if !strings.Contains(enumWindows, "id=[long]$hWnd") {
+		t.Fatalf("window enumeration truncates 64-bit HWND values: %s", enumWindows)
+	}
 
 	keyboard := buildWindowsKeyboardScript(KeyboardAction{Text: "abc"})
 	if !strings.Contains(keyboard, "SendWait") {

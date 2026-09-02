@@ -1,6 +1,7 @@
 import { decodeBase64URL, encodeBase64URL, sha256Hex } from "./shared/crypto";
 
 const browserCookieName = "__Host-executor-browser";
+const grantLifetimeSeconds = 30 * 24 * 60 * 60;
 
 export function jsonResponse(value: unknown, status = 200, headers?: Headers): Response {
   const responseHeaders = headers ?? new Headers();
@@ -54,7 +55,12 @@ export async function readBoundedJSON(request: Request, maximumBytes: number): P
       }
       total += value.byteLength;
       if (total > maximumBytes) {
-        await reader.cancel();
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the deterministic request-too-large response even if the
+          // client transport has already failed while cancellation propagates.
+        }
         throw new Error("request too large");
       }
       chunks.push(value);
@@ -83,8 +89,15 @@ export function browserIdentity(request: Request): { id: string; setCookie: stri
   const id = encodeBase64URL(crypto.getRandomValues(new Uint8Array(32)));
   return {
     id,
-    setCookie: `${browserCookieName}=${id}; Path=/; Secure; HttpOnly; SameSite=Strict`,
+    setCookie: browserIdentitySetCookie(id),
   };
+}
+
+export function browserIdentitySetCookie(id: string): string {
+  if (!validBrowserID(id)) {
+    throw new Error("invalid browser identity");
+  }
+  return `${browserCookieName}=${id}; Path=/; Max-Age=${grantLifetimeSeconds}; Secure; HttpOnly; SameSite=Strict`;
 }
 
 export function cookieValue(request: Request, name: string): string | null {
@@ -111,7 +124,7 @@ export async function deviceGrantCookieName(deviceID: string): Promise<string> {
 
 export async function deviceGrantSetCookie(deviceID: string, grant: string): Promise<string> {
   const name = await deviceGrantCookieName(deviceID);
-  return `${name}=${grant}; Path=/api/devices/${encodeURIComponent(deviceID)}; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict`;
+  return `${name}=${grant}; Path=/api/devices/${encodeURIComponent(deviceID)}; Max-Age=${grantLifetimeSeconds}; Secure; HttpOnly; SameSite=Strict`;
 }
 
 function validBrowserID(value: string): boolean {

@@ -12,6 +12,7 @@ import {
 import { canonicalEnvelope, decodeEnvelope, makeEnvelope, type RelayEnvelope } from "./shared/wire";
 
 const relayTimeoutMilliseconds = 10_000;
+const longRunningRelayTimeoutMilliseconds = 120_000;
 const challengeLifetimeSeconds = 30;
 
 interface PendingOnce {
@@ -171,7 +172,7 @@ export class DeviceRelay extends DurableObject<Env> {
     if (streamController === null) {
       return { ok: false, error: "offline" };
     }
-    const timeout = this.streamTimeout(requestID, socket);
+    const timeout = this.streamTimeout(requestID, socket, relayTimeoutForRequest(envelope));
     this.pending.set(requestID, {
       mode: "stream",
       socket,
@@ -408,7 +409,9 @@ export class DeviceRelay extends DurableObject<Env> {
       message.refresh.device_id !== attachment.deviceID ||
       message.refresh.generation < attachment.generation ||
       message.refresh.generation < device.generation ||
-      message.refresh.issued_at <= attachment.lastRefreshIssuedAt ||
+      message.refresh.issued_at < attachment.lastRefreshIssuedAt ||
+      (message.refresh.issued_at === attachment.lastRefreshIssuedAt &&
+        message.refresh.generation === attachment.generation) ||
       Math.abs(now - message.refresh.issued_at) > challengeLifetimeSeconds ||
       !(await verifyDeviceRefresh(device.public_jwk, message.refresh, message.signature))
     ) {
@@ -546,13 +549,17 @@ export class DeviceRelay extends DurableObject<Env> {
     }
   }
 
-  private streamTimeout(requestID: string, socket: WebSocket): ReturnType<typeof setTimeout> {
+  private streamTimeout(
+    requestID: string,
+    socket: WebSocket,
+    timeoutMilliseconds: number,
+  ): ReturnType<typeof setTimeout> {
     return setTimeout(() => {
       if (this.pending.has(requestID)) {
         this.sendCancellation(socket, requestID);
         this.failPending(requestID, "timeout");
       }
-    }, relayTimeoutMilliseconds);
+    }, timeoutMilliseconds);
   }
 
   private async setDeviceOffline(
@@ -589,6 +596,20 @@ export class DeviceRelay extends DurableObject<Env> {
       }
     }
     return null;
+  }
+}
+
+function relayTimeoutForRequest(envelope: RelayEnvelope<"request">): number {
+  switch (envelope.payload.method) {
+    case "control.rotate":
+    case "control.kill":
+    case "control.resume":
+    case "desktop_control":
+    case "device_permissions":
+    case "control.permissions":
+      return longRunningRelayTimeoutMilliseconds;
+    default:
+      return relayTimeoutMilliseconds;
   }
 }
 

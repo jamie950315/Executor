@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,15 @@ import (
 	"strings"
 	"testing"
 )
+
+type repeatingByteReader byte
+
+func (value repeatingByteReader) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = byte(value)
+	}
+	return len(buffer), nil
+}
 
 type arrayJSONMarshaler struct{}
 
@@ -154,6 +164,10 @@ func TestDesktopToolSchemasMatchExecutableArguments(t *testing.T) {
 				if _, ok := properties[name]; !ok {
 					t.Fatalf("desktop_control property %q is missing", name)
 				}
+			}
+			keyCode := properties["keyCode"].(map[string]any)
+			if keyCode["minimum"] != 1 || keyCode["maximum"] != 255 {
+				t.Fatalf("desktop_control keyCode bounds = %#v, want 1..255", keyCode)
 			}
 		}
 	}
@@ -667,6 +681,116 @@ func TestStreamableHTTPRejectsCrossOriginBrowserRequest(t *testing.T) {
 	server.HandleStreamableHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin status = %d, want 403", response.Code)
+	}
+}
+
+func TestStreamableHTTPParseErrorIncludesNullID(t *testing.T) {
+	t.Parallel()
+	server := NewServer(ServerConfig{})
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{`))
+	response := httptest.NewRecorder()
+	server.HandleStreamableHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("parse error status = %d, want 400", response.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("parse error response is not JSON: %v", err)
+	}
+	id, exists := payload["id"]
+	if !exists || id != nil {
+		t.Fatalf("parse error id = %#v, present=%v; want explicit null", id, exists)
+	}
+}
+
+func TestStreamableHTTPRejectsTrailingJSONValues(t *testing.T) {
+	t.Parallel()
+	server := NewServer(ServerConfig{})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"initialize"} {"jsonrpc":"2.0","id":"2","method":"initialize"}`),
+	)
+	response := httptest.NewRecorder()
+	server.HandleStreamableHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON status = %d, want 400", response.Code)
+	}
+	if response.Header().Get(SessionHeader) != "" {
+		t.Fatal("trailing JSON unexpectedly created an MCP session")
+	}
+}
+
+func TestStreamableHTTPRejectsOversizedRequestBody(t *testing.T) {
+	t.Parallel()
+	server := NewServer(ServerConfig{})
+	body := io.MultiReader(
+		strings.NewReader(`{"jsonrpc":"2.0","id":"1","method":"initialize"}`),
+		io.LimitReader(repeatingByteReader(' '), maxHTTPMessage+1),
+	)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", body)
+	response := httptest.NewRecorder()
+	server.HandleStreamableHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized MCP request status = %d, want 413", response.Code)
+	}
+	if response.Header().Get(SessionHeader) != "" {
+		t.Fatal("oversized MCP request unexpectedly created a session")
+	}
+	var payload rpcResponse
+	decodeJSON(t, response.Body.Bytes(), &payload)
+	if payload.Error == nil || payload.Error.Message != "request body too large" {
+		t.Fatalf("oversized MCP request error = %#v", payload.Error)
+	}
+}
+
+func TestStreamableHTTPRejectsInvalidJSONRPCVersion(t *testing.T) {
+	t.Parallel()
+	for _, version := range []string{"", "1.0"} {
+		t.Run(version, func(t *testing.T) {
+			server := NewServer(ServerConfig{})
+			response := performHTTPRequest(t, server, "", rpcRequest{
+				JSONRPC: version,
+				ID:      "1",
+				Method:  "initialize",
+			})
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("JSON-RPC %q status = %d, want 400", version, response.Code)
+			}
+			if response.Header().Get(SessionHeader) != "" {
+				t.Fatalf("JSON-RPC %q unexpectedly created an MCP session", version)
+			}
+		})
+	}
+}
+
+func TestToolCallRejectsNonObjectArgumentsBeforeDispatch(t *testing.T) {
+	t.Parallel()
+	dispatched := false
+	server := NewServer(ServerConfig{Dispatcher: func(context.Context, ToolCall) (any, error) {
+		dispatched = true
+		return map[string]any{"ok": true}, nil
+	}})
+	initialize := performHTTPRequest(t, server, "", rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "1",
+		Method:  "initialize",
+	})
+	sessionID := initialize.Header().Get(SessionHeader)
+	response := performHTTPRequest(t, server, sessionID, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      "2",
+		Method:  "tools/call",
+		Params: map[string]any{
+			"name":      "device_status",
+			"arguments": "not-an-object",
+		},
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("non-object arguments status = %d, want 400", response.Code)
+	}
+	if dispatched {
+		t.Fatal("non-object arguments reached the tool dispatcher")
 	}
 }
 

@@ -76,16 +76,36 @@ describe("dashboard HTTP control plane", () => {
     expect(count?.count).toBe(0);
   });
 
-  it("refreshes the same device key idempotently and rejects replacement keys", async () => {
+  it("keeps newer device metadata during stale enrollment retries and rejects replacement keys", async () => {
     expect((await enrollRequest(deviceFixture(), enrollmentToken)).status).toBe(201);
 
+    const stale = await enrollRequest(
+      {
+        ...deviceFixture(),
+        name: "Stale Mac",
+        version: "0.0.1",
+        mcp_url: "https://stale-device.example/mcp",
+        generation: 7,
+      },
+      enrollmentToken,
+    );
+    expect(stale.status).toBe(200);
+    await expect(stale.json()).resolves.toMatchObject({
+      device: {
+        name: "Vector Mac",
+        version: "0.1.0",
+        mcp_url: "https://device.example/mcp",
+        generation: 7,
+      },
+    });
+
     const refresh = await enrollRequest(
-      { ...deviceFixture(), name: "Renamed Mac", version: "0.2.0", generation: 6 },
+      { ...deviceFixture(), name: "Renamed Mac", version: "0.2.0", generation: 8 },
       enrollmentToken,
     );
     expect(refresh.status).toBe(200);
     await expect(refresh.json()).resolves.toMatchObject({
-      device: { name: "Renamed Mac", version: "0.2.0", generation: 7 },
+      device: { name: "Renamed Mac", version: "0.2.0", generation: 8 },
     });
 
     const replacementPair = await generateKeyPair("ES256", { extractable: true });
@@ -104,6 +124,29 @@ describe("dashboard HTTP control plane", () => {
     );
     expect(replacement.status).toBe(409);
     await expect(replacement.json()).resolves.toEqual({ error: "device key conflict" });
+  });
+
+  it("marks a higher-generation enrollment offline until the new relay authenticates", async () => {
+    expect((await enrollRequest(deviceFixture(), enrollmentToken)).status).toBe(201);
+    await env.DB.prepare(
+      "UPDATE devices SET state = 'online', last_seen_at = ?, updated_at = ? WHERE device_id = ?",
+    )
+      .bind(1_700_000_000_001, 1_700_000_000_001, "device-vector-1")
+      .run();
+
+    const refreshed = await enrollRequest(
+      { ...deviceFixture(), generation: 8, name: "Generation Eight" },
+      enrollmentToken,
+    );
+    expect(refreshed.status).toBe(200);
+    await expect(refreshed.json()).resolves.toMatchObject({
+      device: { generation: 8, state: "offline", last_seen_at: null },
+    });
+    await expect(
+      env.DB.prepare("SELECT generation, state, last_seen_at FROM devices WHERE device_id = ?")
+        .bind("device-vector-1")
+        .first(),
+    ).resolves.toEqual({ generation: 8, state: "offline", last_seen_at: null });
   });
 
   it("rejects a non-canonical base64url P-256 enrollment key", async () => {
@@ -185,7 +228,7 @@ describe("dashboard HTTP control plane", () => {
       ],
     });
     expect(response.headers.get("set-cookie")).toMatch(
-      /^__Host-executor-browser=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Strict$/,
+      /^__Host-executor-browser=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
     );
   });
 
@@ -198,7 +241,7 @@ describe("dashboard HTTP control plane", () => {
     expect(first.headers.get("cache-control")).toBe("no-store");
     const cookie = first.headers.get("set-cookie");
     expect(cookie).toMatch(
-      /^__Host-executor-browser=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Strict$/,
+      /^__Host-executor-browser=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
     );
     const browserID = cookie?.match(/^__Host-executor-browser=([^;]+)/u)?.[1];
     expect(browserID).toBeTruthy();

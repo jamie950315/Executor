@@ -42,6 +42,10 @@ type Lifecycle interface {
 	Resume(context.Context) error
 }
 
+type remoteKillLifecycle interface {
+	PrepareRemoteKill(context.Context) (control.Result, func(context.Context) error, error)
+}
+
 type AdapterOptions struct {
 	ConfigPath        string
 	Now               func() time.Time
@@ -53,6 +57,7 @@ type HandleResult struct {
 	Payload           json.RawMessage
 	RefreshGeneration uint64
 	CloseAfterWrite   bool
+	Finalize          func(context.Context) error
 }
 
 type Adapter struct {
@@ -63,6 +68,9 @@ type Adapter struct {
 	dispatcherMu       sync.Mutex
 	dispatcher         Dispatcher
 	dispatchGeneration uint64
+	dispatchStateDir   string
+	dispatchBroker     string
+	dispatchDesktop    string
 	lifecycleMu        sync.Mutex
 }
 
@@ -235,6 +243,12 @@ func (a *Adapter) verifyCall(arguments json.RawMessage) (verifiedCall, error) {
 func (a *Adapter) handleLifecycle(ctx context.Context, requestID, method string, call verifiedCall, actor string) (HandleResult, error) {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+	currentCall, err := a.revalidateCall(call)
+	if err != nil {
+		a.appendAudit(call.config, actor, method, "rejected")
+		return HandleResult{}, ErrRequestUnauthorized
+	}
+	call = currentCall
 	if disabled(filepath.Join(call.config.StateDir, "disabled")) {
 		a.appendAudit(call.config, actor, method, "disabled")
 		return HandleResult{}, ErrExecutorDisabled
@@ -287,6 +301,23 @@ func (a *Adapter) handleLifecycle(ctx context.Context, requestID, method string,
 	}
 }
 
+func (a *Adapter) revalidateCall(call verifiedCall) (verifiedCall, error) {
+	cfg, values, identity, err := a.loadCurrent()
+	if err != nil {
+		return verifiedCall{}, ErrRequestUnauthorized
+	}
+	_, err = relay.VerifyDeviceGrant(identity.PublicJWK(), call.authorization.Grant, relay.GrantExpectation{
+		DeviceID: cfg.UnifiedDashboard.DeviceID, AccessSubject: call.authorization.AccessSubject,
+		BrowserID: call.authorization.BrowserID, Generation: values.Generation, Now: a.now(),
+	})
+	if err != nil {
+		return verifiedCall{}, ErrRequestUnauthorized
+	}
+	call.config = cfg
+	call.values = values
+	return call, nil
+}
+
 func (a *Adapter) handleSensitiveLifecycle(ctx context.Context, requestID, method string, call verifiedCall, actor string, lifecycle Lifecycle) (HandleResult, error) {
 	var input map[string]json.RawMessage
 	if err := decodeStrictJSON(call.input, &input); err != nil {
@@ -303,7 +334,24 @@ func (a *Adapter) handleSensitiveLifecycle(ctx context.Context, requestID, metho
 	if _, err := relay.ParsePublicKeyJWK(browserKey); err != nil {
 		return HandleResult{}, ErrRequestInvalid
 	}
-	result, killErr := lifecycle.Kill(ctx)
+	var finalize func(context.Context) error
+	finalizeTransferred := false
+	defer func() {
+		if finalize != nil && !finalizeTransferred {
+			runLifecycleFinalizer(finalize)
+		}
+	}()
+	var result control.Result
+	var killErr error
+	if method == "control.kill" {
+		if remoteLifecycle, ok := lifecycle.(remoteKillLifecycle); ok {
+			result, finalize, killErr = remoteLifecycle.PrepareRemoteKill(ctx)
+		} else {
+			result, killErr = lifecycle.Kill(ctx)
+		}
+	} else {
+		result, killErr = lifecycle.Kill(ctx)
+	}
 	if method == "control.rotate" && killErr == nil {
 		killErr = lifecycle.Resume(ctx)
 	}
@@ -341,9 +389,24 @@ func (a *Adapter) handleSensitiveLifecycle(ctx context.Context, requestID, metho
 		outcome = "partial"
 	}
 	a.appendAudit(currentCfg, actor, method, outcome)
-	return HandleResult{
-		Payload: encoded, RefreshGeneration: currentValues.Generation, CloseAfterWrite: method == "control.kill",
-	}, nil
+	handleResult := HandleResult{
+		Payload: encoded, RefreshGeneration: currentValues.Generation,
+		CloseAfterWrite: method == "control.kill" || killErr != nil,
+		Finalize:        finalize,
+	}
+	finalizeTransferred = finalize != nil
+	return handleResult, nil
+}
+
+const lifecycleFinalizeTimeout = 10 * time.Second
+
+func runLifecycleFinalizer(finalize func(context.Context) error) {
+	if finalize == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lifecycleFinalizeTimeout)
+	defer cancel()
+	_ = finalize(ctx)
 }
 
 func (a *Adapter) handleAudit(call verifiedCall, actor, method string) (HandleResult, error) {
@@ -379,9 +442,16 @@ func (a *Adapter) handleAudit(call verifiedCall, actor, method string) (HandleRe
 func (a *Adapter) dispatcherFor(cfg config.Config, values secrets.Values) Dispatcher {
 	a.dispatcherMu.Lock()
 	defer a.dispatcherMu.Unlock()
-	if a.dispatcher == nil || a.dispatchGeneration != values.Generation {
+	if a.dispatcher == nil ||
+		a.dispatchGeneration != values.Generation ||
+		a.dispatchStateDir != cfg.StateDir ||
+		a.dispatchBroker != cfg.BrokerEndpoint ||
+		a.dispatchDesktop != cfg.DesktopEndpoint {
 		a.dispatcher = a.dispatcherFactory(cfg, values)
 		a.dispatchGeneration = values.Generation
+		a.dispatchStateDir = cfg.StateDir
+		a.dispatchBroker = cfg.BrokerEndpoint
+		a.dispatchDesktop = cfg.DesktopEndpoint
 	}
 	return a.dispatcher
 }

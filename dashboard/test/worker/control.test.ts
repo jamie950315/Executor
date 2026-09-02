@@ -57,6 +57,10 @@ describe("unlocked device control", () => {
     expect(unlocked.grantCookie).toMatch(
       /^__Secure-executor-grant-[0-9a-f]{16}=.+; Path=\/api\/devices\/device-vector-1; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
     );
+    expect(unlocked.browserRefreshCookie).toMatch(
+      /^__Host-executor-browser=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=2592000; Secure; HttpOnly; SameSite=Strict$/,
+    );
+    expect(cookiePair(unlocked.browserRefreshCookie)).toBe(unlocked.browserCookie);
     expect(unlocked.grantCookie).not.toContain("grant-device-vector-1");
 
     const audits = await env.DB.prepare("SELECT * FROM audits ORDER BY id").all();
@@ -281,6 +285,7 @@ describe("unlocked device control", () => {
 interface UnlockedSession {
   accessToken: string;
   browserCookie: string;
+  browserRefreshCookie: string;
   grantCookie: string;
 }
 
@@ -329,10 +334,17 @@ async function unlock(socket: WebSocket): Promise<UnlockedSession> {
   const response = await unlockPromise;
   expect(response.status).toBe(200);
   await expect(response.json()).resolves.toEqual({ unlocked: true });
+  const setCookies = response.headers.getSetCookie();
+  const browserRefreshCookie = setCookies.find((value) => value.startsWith("__Host-executor-browser="));
+  const grantCookie = setCookies.find((value) => value.startsWith("__Secure-executor-grant-"));
+  if (browserRefreshCookie === undefined || grantCookie === undefined) {
+    throw new Error(`unlock response cookies = ${JSON.stringify(setCookies)}`);
+  }
   return {
     accessToken,
     browserCookie,
-    grantCookie: requiredHeader(response, "set-cookie"),
+    browserRefreshCookie,
+    grantCookie,
   };
 }
 
