@@ -251,6 +251,7 @@ Setup reports the remote Streamable HTTP endpoint and local `executor stdio` com
 - Source deployments need Go 1.24+ and `cloudflared`.
 - The packaged services install the desktop helper as an active-user startup path instead of a Windows Service.
 - Clone deployments should use `scripts/deploy-from-source.ps1`; packaged releases should use `scripts/bootstrap.ps1`.
+- Public releases should Authenticode-sign `executor.exe` with a stable publicly trusted identity. Signing improves publisher identity and reputation continuity but does not guarantee that Microsoft Defender or SmartScreen will never flag a new binary. A private owner-only deployment does not require purchasing a public certificate; if Defender needs an exception, scope it to the checksum-verified stable executable, never `%ProgramData%\Executor`, `secrets.json`, a recovery key, or an entire threat class. See [Windows code-signing options](https://learn.microsoft.com/windows/apps/package-and-deploy/code-signing-options) and the Defender recovery procedure in `docs/TROUBLESHOOTING.md`.
 
 ## Computer Use runtime
 

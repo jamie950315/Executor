@@ -137,6 +137,30 @@ OAuth, consent, recovery-key validation, state persistence, and remote DCR diagn
 
 **Correct fix:** Reinstall the current service bundle. The generated `ExecutorDesktop` task sets `ExecutionTimeLimit` to zero, which Windows represents as an unlimited duration. Start the task inside the active user's logged-in session and confirm that owner terminal and desktop IPC calls succeed.
 
+### Microsoft Defender removes Windows Executor
+
+**Observed symptom:** The Windows hostname still responds, but `executor status` is unavailable, `ExecutorAgent`, `ExecutorBroker`, and `ExecutorDashboard` are missing, and the `ExecutorDesktop` Scheduled Task no longer exists. Only `ExecutorCloudflared` remains. If WSL is installed, the Windows hostname may unexpectedly publish the WSL OAuth issuer because WSL localhost forwarding claimed the now-unused Agent and Dashboard ports.
+
+**Verified cause:** Microsoft Defender falsely classified an unsigned, locally built `executor.exe` as `Trojan:Win32/Bearfoos.B!ml`, quarantined the binary, and removed its associated services and task. A live tunnel alone did not prove that the Windows origin was healthy; it continued forwarding to whatever process owned the configured loopback port.
+
+**Confirm the boundary before changing anything:**
+
+1. Inspect Defender Protection History or `Get-MpThreatDetection` and require the detection resources to name the expected Executor binary and services.
+2. Confirm `%ProgramData%\Executor\config.json`, `secrets.json`, and the Cloudflare runtime token still exist without printing their contents.
+3. Inspect the owners of the configured Agent and Dashboard ports with `Get-NetTCPConnection`. Do not treat `wslrelay.exe` as Windows Executor.
+4. Fetch each public `/.well-known/oauth-authorization-server` document and verify that its `issuer` exactly matches that hostname. An HTTP 200 or 401 by itself is insufficient.
+
+**Correct recovery when credentials are intact:**
+
+1. Do not run Setup, Kill, or Rotate merely to restore removed runtime files. Those are credential lifecycle operations and are outside a no-rotation repair.
+2. Rebuild or obtain `executor.exe` from a trusted checkout/release, verify its SHA-256 checksum, and restore it to the stable installed path.
+3. If Defender immediately removes the verified binary, add only the exact stable executable path as an exclusion from an elevated PowerShell session. If a staging path is unavoidable, exclude that exact temporary file only for the transfer, then remove both the temporary file and its exclusion. Never exclude `%ProgramData%\Executor`, the secrets store, recovery material, or the detected threat class broadly.
+4. Re-register and start `ExecutorBroker`, `ExecutorDashboard`, `ExecutorAgent`, and the active-user `ExecutorDesktop` task using the preserved generated service scripts. Keep the existing config and secret store unchanged.
+5. If `wslrelay.exe` owns the configured loopback ports, briefly stop that relay and start the Windows Agent and Dashboard first. This interrupts Windows-to-WSL localhost forwarding, so immediately verify the WSL systemd services and WSL public hostname afterward.
+6. Run `executor doctor --full`, confirm all four Windows Executor processes, and verify the Windows public issuer plus an unauthenticated MCP HTTP 401. Verify the WSL issuer independently when both installations coexist.
+
+The exact-file Defender exclusion persists across reboot and protects ordinary operation at the stable path. It might not cover a future updater's temporary filename. Authenticode signing is recommended for public releases, but signing alone does not guarantee that Defender or SmartScreen will accept every new binary; report confirmed false positives to Microsoft as a separate remediation.
+
 ### ChatGPT initially shows a truncated or empty answer after successful tools
 
 **Observed symptom:** Executor's audit records show successful `device_status`, `terminal`, and `terminal_output` calls, but ChatGPT displays only the first word or an empty final answer.
