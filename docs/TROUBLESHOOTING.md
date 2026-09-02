@@ -49,7 +49,9 @@ If repeated setup reports that the existing recovery key remains unchanged, no n
 
 **Verified boundary:** The recovery-key form and server endpoint were working because keyboard submission reached the server. The failed interaction was the button activation path in the observed mobile Safari flow.
 
-**Applied fix:** Executor renders a native `<input type="submit">` control with mobile touch behavior instead of relying on the previous styled `<button>`. The form also preserves the OAuth `resource` parameter.
+**Verified cause:** Mobile Safari and some embedded browser flows can consume the first generated `click` while dismissing the software keyboard. Changing the element from a styled `<button>` to a native submit input did not remove that event boundary, so the earlier fix remained intermittent.
+
+**Applied fix:** Executor keeps the native `<input type="submit">` control and submits through normal form validation on the primary pointer-release event, before a browser can consume the later `click`. Keyboard submission remains native. The small fallback script is restricted by an exact Content Security Policy hash, and the form continues to preserve the OAuth `resource` parameter.
 
 ## Agent logs show permission denied after root rotation
 
