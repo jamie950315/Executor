@@ -54,8 +54,10 @@ try {
   token.fill(0);
 }
 '@
+  $HeldCredentialProgramPath = Join-Path $TemporaryRoot "held-credential.mjs"
+  [System.IO.File]::WriteAllText($HeldCredentialProgramPath, $HeldCredentialProgram, [System.Text.UTF8Encoding]::new($false))
   try {
-    & node.exe --input-type=module --eval $HeldCredentialProgram
+    & node.exe $HeldCredentialProgramPath
     if ($LASTEXITCODE -ne 0) { throw "Node held-handle credential identity validation failed." }
     & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ProtectedFileScript -Path $TokenPath -Initialize
     if ($LASTEXITCODE -ne 0) { throw "Replacement API token ACL initialization failed." }
@@ -65,7 +67,9 @@ try {
     }
   } finally {
     Remove-Item -LiteralPath $TokenPath -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $OriginalTokenPath -Destination $TokenPath -Force
+    if (Test-Path -LiteralPath $OriginalTokenPath) {
+      Move-Item -LiteralPath $OriginalTokenPath -Destination $TokenPath -Force
+    }
     Remove-Item Env:EXECUTOR_DEPLOY_CORE_URI -ErrorAction SilentlyContinue
     Remove-Item Env:EXECUTOR_TEST_TOKEN_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:EXECUTOR_TEST_ORIGINAL_TOKEN_PATH -ErrorAction SilentlyContinue
