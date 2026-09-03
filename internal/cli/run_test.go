@@ -12,13 +12,27 @@ import (
 )
 
 type fakeBackend struct {
-	called             string
-	setupOptions       SetupOptions
-	setupResult        *SetupResult
-	killErr            error
-	rotateErr          error
-	enableErr          error
-	permissionRequests []bool
+	called                 string
+	setupOptions           SetupOptions
+	setupResult            *SetupResult
+	killErr                error
+	rotateErr              error
+	enableErr              error
+	permissionRequests     []bool
+	dashboardEnrollOptions DashboardEnrollOptions
+}
+
+func (f *fakeBackend) EnrollDashboard(_ context.Context, options DashboardEnrollOptions) (DashboardEnrollResult, error) {
+	f.called = "dashboard-enroll"
+	f.dashboardEnrollOptions = options
+	return DashboardEnrollResult{DeviceID: "device-1", URL: options.URL}, nil
+}
+
+func (f *fakeBackend) DashboardStatus(context.Context) (DashboardStatusResult, error) {
+	f.called = "dashboard-status"
+	return DashboardStatusResult{
+		URL: "https://dashboard.example.test", DeviceID: "device-1", Enrolled: true, Relay: "configured",
+	}, nil
 }
 
 func (f *fakeBackend) Setup(_ context.Context, options SetupOptions) (SetupResult, error) {
@@ -238,5 +252,45 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 	code := Run(context.Background(), []string{"unknown"}, &fakeBackend{}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "Executor") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunDashboardEnrollPassesOnlyTokenFilePathAndDoesNotPrintCredential(t *testing.T) {
+	t.Parallel()
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{
+		"dashboard", "enroll", "--url", "https://dashboard.example.test", "--token-file", "/secure/enrollment.token",
+	}, backend, &stdout, &stderr)
+	if code != 0 || backend.called != "dashboard-enroll" {
+		t.Fatalf("code=%d called=%q stderr=%q", code, backend.called, stderr.String())
+	}
+	if backend.dashboardEnrollOptions.URL != "https://dashboard.example.test" || backend.dashboardEnrollOptions.TokenFile != "/secure/enrollment.token" {
+		t.Fatalf("dashboard enroll options = %#v", backend.dashboardEnrollOptions)
+	}
+	if strings.Contains(stdout.String(), "/secure/enrollment.token") || strings.Contains(stdout.String(), "token") {
+		t.Fatalf("dashboard enrollment output exposed token material: %q", stdout.String())
+	}
+}
+
+func TestRunDashboardStatusVerifiesEnrollmentWithoutCredentialMaterial(t *testing.T) {
+	t.Parallel()
+	backend := &fakeBackend{}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"dashboard", "status", "--json"}, backend, &stdout, &stderr)
+	if code != 0 || backend.called != "dashboard-status" {
+		t.Fatalf("code=%d called=%q stderr=%q", code, backend.called, stderr.String())
+	}
+	var result DashboardStatusResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("Dashboard status JSON = %q: %v", stdout.String(), err)
+	}
+	if !result.Enrolled || result.Relay != "configured" || result.URL != "https://dashboard.example.test" {
+		t.Fatalf("Dashboard status = %#v", result)
+	}
+	for _, forbidden := range []string{"token", "recovery", "credential"} {
+		if strings.Contains(strings.ToLower(stdout.String()), forbidden) {
+			t.Fatalf("Dashboard status exposed credential material: %q", stdout.String())
+		}
 	}
 }

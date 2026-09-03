@@ -186,8 +186,11 @@ func validateMouseAction(action MouseAction) error {
 }
 
 func validateKeyboardAction(action KeyboardAction) error {
-	if action.Text == "" && action.KeyCode == 0 {
-		return errors.New("keyboard action requires text or key_code")
+	if action.Text == "" && action.KeyCode == 0 && len(action.Keys) == 0 {
+		return errors.New("keyboard action requires text, key_code, or keys")
+	}
+	if action.Text == "" && len(action.Keys) == 0 && (action.KeyCode < 1 || action.KeyCode > 255) {
+		return fmt.Errorf("keyboard key_code must be between 1 and 255")
 	}
 	return nil
 }

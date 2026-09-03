@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +15,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jamie950315/executor/internal/cli"
 	"github.com/jamie950315/executor/internal/config"
 	"github.com/jamie950315/executor/internal/control"
 	"github.com/jamie950315/executor/internal/desktop"
@@ -21,6 +27,268 @@ import (
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestDashboardEnrollmentSerializesOriginConfigurationWithRelayWorkflow(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := secrets.Create(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(stateDir, "config.json")
+	if err := config.Save(configPath, config.Default(stateDir)); err != nil {
+		t.Fatal(err)
+	}
+	firstTokenPath := filepath.Join(t.TempDir(), "first-enrollment.token")
+	secondTokenPath := filepath.Join(t.TempDir(), "second-enrollment.token")
+	if err := os.WriteFile(firstTokenPath, []byte("test-only-first-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondTokenPath, []byte("test-only-second-enrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const firstURL = "https://first-dashboard.example.test"
+	const secondURL = "https://second-dashboard.example.test"
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var firstPosts atomic.Int32
+	var secondPosts atomic.Int32
+	b := newBackend(stateDir)
+	b.remoteHTTPClient = &http.Client{Transport: backendRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "first-dashboard.example.test":
+			if firstPosts.Add(1) == 1 {
+				close(firstRequest)
+			}
+			<-releaseFirst
+		case "second-dashboard.example.test":
+			secondPosts.Add(1)
+		default:
+			return nil, errors.New("unexpected Dashboard host")
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}
+	type enrollmentOutcome struct {
+		result cli.DashboardEnrollResult
+		err    error
+	}
+	firstResult := make(chan enrollmentOutcome, 1)
+	go func() {
+		result, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+			URL: firstURL, TokenFile: firstTokenPath,
+		})
+		firstResult <- enrollmentOutcome{result: result, err: err}
+	}()
+	select {
+	case <-firstRequest:
+	case <-time.After(5 * time.Second):
+		close(releaseFirst)
+		t.Fatal("first Dashboard enrollment did not reach the request boundary")
+	}
+	secondResult := make(chan enrollmentOutcome, 1)
+	go func() {
+		result, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+			URL: secondURL, TokenFile: secondTokenPath,
+		})
+		secondResult <- enrollmentOutcome{result: result, err: err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	duringFirst, err := config.Load(configPath)
+	if err != nil {
+		close(releaseFirst)
+		t.Fatal(err)
+	}
+	if duringFirst.UnifiedDashboard.URL != firstURL {
+		close(releaseFirst)
+		<-firstResult
+		<-secondResult
+		t.Fatalf("concurrent enrollment changed URL during the first workflow: %q", duringFirst.UnifiedDashboard.URL)
+	}
+	if secondPosts.Load() != 0 {
+		close(releaseFirst)
+		<-firstResult
+		<-secondResult
+		t.Fatalf("second Dashboard enrollment POST count before release = %d, want 0", secondPosts.Load())
+	}
+	close(releaseFirst)
+	first := <-firstResult
+	second := <-secondResult
+	if first.err != nil || first.result.URL != firstURL {
+		t.Fatalf("first Dashboard enrollment = %#v, %v", first.result, first.err)
+	}
+	if second.err != nil || second.result.URL != secondURL {
+		t.Fatalf("second Dashboard enrollment = %#v, %v", second.result, second.err)
+	}
+	if firstPosts.Load() != 1 || secondPosts.Load() != 1 {
+		t.Fatalf("Dashboard enrollment POST counts = %d, %d; want 1, 1", firstPosts.Load(), secondPosts.Load())
+	}
+}
+
+func TestDashboardStatusReadsLiveLoopbackRelayStateAndFailsClosedWhenStaleOrCrashed(t *testing.T) {
+	stateDir := t.TempDir()
+	values, err := secrets.Create(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(stateDir, "config.json")
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.DeviceID = "device-status-1"
+	cfg.UnifiedDashboard.Enrolled = true
+	updatedAt := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.executor/relay-status" || r.Header.Get("X-Executor-Health-Key") != values.DashboardKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"state": "connected", "updated_at": updatedAt})
+	}))
+	cfg.DashboardAddress = strings.TrimPrefix(server.URL, "http://")
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+
+	status, err := b.DashboardStatus(context.Background())
+	if err != nil || status.Relay != "connected" {
+		t.Fatalf("live Dashboard status = %#v, %v", status, err)
+	}
+
+	updatedAt = time.Now().UTC().Add(-10 * time.Minute)
+	status, err = b.DashboardStatus(context.Background())
+	if err != nil || status.Relay != "disconnected" {
+		t.Fatalf("stale Dashboard status = %#v, %v", status, err)
+	}
+
+	server.Close()
+	status, err = b.DashboardStatus(context.Background())
+	if err != nil || status.Relay != "disconnected" {
+		t.Fatalf("crashed Dashboard status = %#v, %v", status, err)
+	}
+}
+
+func TestDashboardEquivalentOriginFinishesMatchingCleanupWithoutPosting(t *testing.T) {
+	stateDir := t.TempDir()
+	values, err := secrets.Create(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	token := []byte("test-only-enrollment-token")
+	if err := os.WriteFile(tokenPath, token, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = "https://DASHBOARD.EXAMPLE.test:443"
+	cfg.UnifiedDashboard.Enrolled = true
+	mac := hmac.New(sha256.New, values.RelayPrivateJWK)
+	_, _ = mac.Write(token)
+	cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if err := config.Save(filepath.Join(stateDir, "config.json"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+	posts := 0
+	b.remoteHTTPClient = &http.Client{Transport: backendRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		posts++
+		return nil, errors.New("unexpected POST")
+	})}
+	result, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+		URL: "https://dashboard.example.test", TokenFile: tokenPath,
+	})
+	if err != nil {
+		t.Fatalf("cleanup retry: %v", err)
+	}
+	if posts != 0 {
+		t.Fatalf("equivalent-origin cleanup POST count = %d, want 0", posts)
+	}
+	if _, err := os.Stat(tokenPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleanup retry left token: %v", err)
+	}
+	if result.URL != "https://dashboard.example.test" {
+		t.Fatalf("canonical Dashboard URL = %q", result.URL)
+	}
+}
+
+func TestDashboardExplicitSameOriginEnrollmentPostsAgainAfterCleanup(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := secrets.Create(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-reenrollment-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var posts int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		posts++
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = server.URL
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(filepath.Join(stateDir, "config.json"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(stateDir)
+	b.remoteHTTPClient = server.Client()
+	if _, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+		URL: server.URL, TokenFile: tokenPath,
+	}); err != nil {
+		t.Fatalf("same-origin re-enrollment: %v", err)
+	}
+	if posts != 1 {
+		t.Fatalf("same-origin re-enrollment POST count = %d, want 1", posts)
+	}
+}
+
+func TestDashboardGenuinelyDifferentOriginStartsNewEnrollment(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := secrets.Create(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")
+	if err := os.WriteFile(tokenPath, []byte("test-only-new-origin-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default(stateDir)
+	cfg.UnifiedDashboard.URL = "https://old-dashboard.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	cfg.UnifiedDashboard.EnrollmentCleanupFingerprint = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI"
+	if err := config.Save(filepath.Join(stateDir, "config.json"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	posts := 0
+	b := newBackend(stateDir)
+	b.remoteHTTPClient = &http.Client{Transport: backendRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		posts++
+		if request.Header.Get("Origin") != "https://new-dashboard.example.test" {
+			t.Fatalf("new enrollment Origin = %q", request.Header.Get("Origin"))
+		}
+		duringRequest, err := config.Load(filepath.Join(stateDir, "config.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if duringRequest.UnifiedDashboard.URL != "https://new-dashboard.example.test" ||
+			duringRequest.UnifiedDashboard.Enrolled ||
+			duringRequest.UnifiedDashboard.EnrollmentCleanupFingerprint != "" {
+			t.Fatalf("different-origin pre-enrollment state = %#v", duringRequest.UnifiedDashboard)
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	result, err := b.EnrollDashboard(context.Background(), cli.DashboardEnrollOptions{
+		URL: "https://NEW-DASHBOARD.EXAMPLE.test:443", TokenFile: tokenPath,
+	})
+	if err != nil {
+		t.Fatalf("different-origin enrollment: %v", err)
+	}
+	if posts != 1 || result.URL != "https://new-dashboard.example.test" {
+		t.Fatalf("different-origin result = %#v, posts = %d", result, posts)
+	}
+}
 
 func TestBackendPermissionsUsesConfiguredActiveUserDesktopIPC(t *testing.T) {
 	stateDir := t.TempDir()
@@ -99,6 +367,12 @@ func TestBackendPermissionsUsesConfiguredActiveUserDesktopIPC(t *testing.T) {
 			t.Fatalf("Permissions(%v) IPC request = %v", request, got)
 		}
 	}
+}
+
+type backendRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f backendRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestSetupCreatesConfigAndSecretsWithDashboardKeyBootstrapURL(t *testing.T) {

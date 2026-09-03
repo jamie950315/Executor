@@ -19,7 +19,7 @@ For clone deployments, the documented source-deployment entrypoints are `scripts
 
 ## Permission request completed but status is not ready
 
-**Observed symptom:** `executor permissions request-all`, the Dashboard button, or MCP `device_permissions action=request_all` returns a report with `requested: true`, but one or more required permissions are still `pending`, `denied`, `manual`, or `unavailable`.
+**Observed symptom:** `executor permissions request-all`, the centralized Dashboard, or MCP `device_permissions action=request_all` returns a report with `requested: true`, but one or more required permissions are still `pending`, `denied`, `manual`, or `unavailable`.
 
 **Expected cause:** Operating systems do not allow Executor to silently approve owner consent. On macOS, the native request calls return before the owner finishes System Settings. On Linux and WSL, missing desktop tools must be installed or configured; the AT-SPI bus and `ydotoold` authorization are checked live, and X11 also requires `wmctrl`. On Windows, the active-user helper must run on the unlocked interactive `Default` desktop.
 
@@ -83,6 +83,26 @@ If repeated setup reports that the existing recovery key remains unchanged, no n
 
 **Correct fix:** Satisfy the prerequisite that failed, then rerun the source-deployment entrypoint. If bootstrap already replaced files or installed services before the failure, run the platform rollback script before retrying.
 
+## Unified Dashboard deployment or enrollment fails
+
+Diagnose the exact stage printed by `scripts/deploy-dashboard-from-source.sh` or `.ps1`. The entrypoint preserves non-secret retry state outside the repository and does not delete unrelated Cloudflare resources.
+
+- **Access JWT rejected:** confirm the Access application response AUD matches Worker `ACCESS_AUD`. Confirm `ACCESS_TEAM_DOMAIN` is the account organization `auth_domain`, such as `team.cloudflareaccess.com`, without a scheme or path. A valid Access login for another application or team does not satisfy this Worker.
+- **Access organization lookup returns 403:** either grant the API token Access organization read permission or pass the public Zero Trust team domain through `--access-team-domain` / `-AccessTeamDomain`. Apps and Policies write permission alone does not grant organization read permission.
+- **Dashboard hostname does not route:** inspect the temporary config contract and deployed Worker routes. The exact hostname must be a Workers Custom Domain with `custom_domain: true`, not a path route accidentally attached to a per-device tunnel. The centralized hostname must not replace any device MCP hostname.
+- **D1 migration failure:** verify the state-owned D1 UUID and inspect the remote `d1_migrations` names in order. Executor refuses unknown/newer names, missing older names, reordered history, and a missing migration table on an adopted database. A newly created Executor-owned D1 database may legitimately have no table before its first migration. Never point Executor migrations at a similarly named foreign database and never edit the table to force a retry.
+- **Browser works but device enrollment or WebSocket gets an Access response:** verify two separate account-level self-hosted applications. The exact hostname must have only the Executor-owned exact-email `allow` policy. The more-specific `<hostname>/api/device/*` application must have only the Executor-owned `bypass` policy. Cloudflare applies the more-specific path without inheriting the hostname policy. Never bypass `/api/devices/*`, `/api/session`, assets, or UI routes; the Worker continues to reject invalid enrollment bearers, origins, device identities, and signed challenges.
+- **Enrollment returns 401:** enrollment may be disabled, the transferred copy may be stale after `rotate-enrollment`, or the Worker secret may not contain the hash for the current protected file. Do not print the bearer to compare it. Rotate a new file centrally, transfer it securely, protect it, and retry.
+- **Enrollment succeeded but token cleanup fails:** the token path changed after Executor read it, so the replacement file was deliberately preserved instead of being deleted. Keep the replacement protected, confirm it is the intended current enrollment file, and rerun enrollment; the saved cleanup fingerprint prevents a duplicate enrollment POST when the original token is still present.
+- **Enrollment succeeded but relay is offline:** run `executor dashboard status --json`, `executor status --json`, and local service logs. `relay` is live runtime state, not a configuration marker; stale or crashed Dashboard status reports `disconnected`. Confirm the Dashboard origin is HTTPS and that only the exact `/api/device/*` Access application bypasses the owner login flow.
+- **Windows Desktop task exits with result 1 and `load config: open config lock`:** install the latest bundle and rerun `bootstrap.ps1`. The bootstrap grants only the resolved active Desktop user and Executor service identities the modification rights required on `.config.lock` and `.secrets.lock`; it does not make `config.json`, `secrets.json`, or the state directory broadly writable. Then start `ExecutorDesktop` and rerun `executor doctor --full`.
+
+Cloudflare Access login and device recovery-key unlock are separate. Access identifies the centralized user; the per-device key creates a 30-day grant bound to the device, browser, Access subject, and credential generation. A new browser, Access user, or post-Rotate generation requires another unlock.
+
+After a full Kill disconnects the relay, open the authenticated localhost rescue URL on that host. The localhost rescue page remains available on `127.0.0.1` for service state, Resume, Rotate, and Kill; it is not the centralized workspace. Save any one-time recovery result immediately.
+
+For rollback, use only the explicit Dashboard `rollback` command, an explicitly recorded Executor-owned `--version-id`, and the protected state belonging to the same account and hostname. The current remote deployment must still match state before rollback. Do not delete a D1 database, Access application, policy, Custom Domain, device Tunnel, or DNS record unless Executor state proves ownership and the owner explicitly requested destructive cleanup.
+
 ## Cloudflare account or zone selection fails
 
 **Observed symptom:** Setup fails while choosing the Cloudflare account or zone for the requested hostname.
@@ -118,6 +138,30 @@ OAuth, consent, recovery-key validation, state persistence, and remote DCR diagn
 **Cause:** `New-ScheduledTaskSettingsSet` defaults to a 72-hour execution limit. A long-running Desktop helper is terminated when that limit expires.
 
 **Correct fix:** Reinstall the current service bundle. The generated `ExecutorDesktop` task sets `ExecutionTimeLimit` to zero, which Windows represents as an unlimited duration. Start the task inside the active user's logged-in session and confirm that owner terminal and desktop IPC calls succeed.
+
+### Microsoft Defender removes Windows Executor
+
+**Observed symptom:** The Windows hostname still responds, but `executor status` is unavailable, `ExecutorAgent`, `ExecutorBroker`, and `ExecutorDashboard` are missing, and the `ExecutorDesktop` Scheduled Task no longer exists. Only `ExecutorCloudflared` remains. If WSL is installed, the Windows hostname may unexpectedly publish the WSL OAuth issuer because WSL localhost forwarding claimed the now-unused Agent and Dashboard ports.
+
+**Verified cause:** Microsoft Defender falsely classified an unsigned, locally built `executor.exe` as `Trojan:Win32/Bearfoos.B!ml`, quarantined the binary, and removed its associated services and task. A live tunnel alone did not prove that the Windows origin was healthy; it continued forwarding to whatever process owned the configured loopback port.
+
+**Confirm the boundary before changing anything:**
+
+1. Inspect Defender Protection History or `Get-MpThreatDetection` and require the detection resources to name the expected Executor binary and services.
+2. Confirm `%ProgramData%\Executor\config.json`, `secrets.json`, and the Cloudflare runtime token still exist without printing their contents.
+3. Inspect the owners of the configured Agent and Dashboard ports with `Get-NetTCPConnection`. Do not treat `wslrelay.exe` as Windows Executor.
+4. Fetch each public `/.well-known/oauth-authorization-server` document and verify that its `issuer` exactly matches that hostname. An HTTP 200 or 401 by itself is insufficient.
+
+**Correct recovery when credentials are intact:**
+
+1. Do not run Setup, Kill, or Rotate merely to restore removed runtime files. Those are credential lifecycle operations and are outside a no-rotation repair.
+2. Rebuild or obtain `executor.exe` from a trusted checkout/release, verify its SHA-256 checksum, and restore it to the stable installed path.
+3. If Defender immediately removes the verified binary, add only the exact stable executable path as an exclusion from an elevated PowerShell session. If a staging path is unavoidable, exclude that exact temporary file only for the transfer, then remove both the temporary file and its exclusion. Never exclude `%ProgramData%\Executor`, the secrets store, recovery material, or the detected threat class broadly.
+4. Re-register and start `ExecutorBroker`, `ExecutorDashboard`, `ExecutorAgent`, and the active-user `ExecutorDesktop` task using the preserved generated service scripts. Keep the existing config and secret store unchanged.
+5. If `wslrelay.exe` owns the configured loopback ports, briefly stop that relay and start the Windows Agent and Dashboard first. This interrupts Windows-to-WSL localhost forwarding, so immediately verify the WSL systemd services and WSL public hostname afterward.
+6. Run `executor doctor --full`, confirm all four Windows Executor processes, and verify the Windows public issuer plus an unauthenticated MCP HTTP 401. Verify the WSL issuer independently when both installations coexist.
+
+The exact-file Defender exclusion persists across reboot and protects ordinary operation at the stable path. It might not cover a future updater's temporary filename. Authenticode signing is recommended for public releases, but signing alone does not guarantee that Defender or SmartScreen will accept every new binary; report confirmed false positives to Microsoft as a separate remediation.
 
 ### ChatGPT initially shows a truncated or empty answer after successful tools
 

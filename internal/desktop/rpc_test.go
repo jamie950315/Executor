@@ -63,6 +63,25 @@ func TestStrictRPCParamsRejectTrailingJSONValues(t *testing.T) {
 	}
 }
 
+func TestValidateKeyboardActionKeepsLegacyKeyCodeWithinAdvertisedBounds(t *testing.T) {
+	t.Parallel()
+	for _, keyCode := range []int{-1, 256} {
+		if err := validateKeyboardAction(KeyboardAction{KeyCode: keyCode}); err == nil {
+			t.Fatalf("legacy key code %d was accepted", keyCode)
+		}
+	}
+	for _, action := range []KeyboardAction{
+		{KeyCode: 1},
+		{KeyCode: 255},
+		{Text: "hello"},
+		{Keys: []string{"CTRL", "L"}},
+	} {
+		if err := validateKeyboardAction(action); err != nil {
+			t.Fatalf("valid keyboard action %#v rejected: %v", action, err)
+		}
+	}
+}
+
 func TestHelperRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +123,11 @@ func TestHelperRPCServer_DeviceStatusAndNewMethods(t *testing.T) {
 		"perm": 493,
 	}, &struct{}{}); err != nil {
 		t.Fatalf("filesystem.mkdir: %v", err)
+	}
+	if err := client.Call(context.Background(), RPCMethodDesktopKeyboard, RPCDesktopKeyboardParams{
+		Action: KeyboardAction{Keys: []string{"CTRL", "L"}},
+	}, &struct{}{}); err != nil {
+		t.Fatalf("desktop.keyboard chord: %v", err)
 	}
 
 	var status RPCDeviceStatus
@@ -232,16 +256,20 @@ func TestHelperRPCServerSerializesDesktopMethods(t *testing.T) {
 	waitForHelperEndpoint(t, endpoint)
 	client := ipc.NewRPCClient(endpoint, key)
 
+	actionsCtx, cancelActions := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelActions()
 	actionsDone := make(chan error, 1)
 	go func() {
-		actionsDone <- client.Call(context.Background(), RPCMethodDesktopActions, RPCDesktopActionsParams{
+		actionsDone <- client.Call(actionsCtx, RPCMethodDesktopActions, RPCDesktopActionsParams{
 			Actions: []Action{{Type: ActionWait}},
 		}, &struct{}{})
 	}()
-	<-gui.actionsStarted
+	waitForDesktopActionStart(t, gui.actionsStarted, actionsDone)
+	screenshotCtx, cancelScreenshot := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelScreenshot()
 	screenshotDone := make(chan error, 1)
 	go func() {
-		screenshotDone <- client.Call(context.Background(), RPCMethodDesktopScreenshot, RPCDesktopScreenshotParams{Path: "/tmp/test.png"}, &struct{}{})
+		screenshotDone <- client.Call(screenshotCtx, RPCMethodDesktopScreenshot, RPCDesktopScreenshotParams{Path: "/tmp/test.png"}, &struct{}{})
 	}()
 	select {
 	case <-gui.screenshotCalled:
@@ -271,13 +299,15 @@ func TestHelperRPCServerDoesNotRunCanceledQueuedDesktopMethod(t *testing.T) {
 	go func() { _ = server.Serve(serverCtx) }()
 	waitForHelperEndpoint(t, endpoint)
 	client := ipc.NewRPCClient(endpoint, key)
+	actionsCtx, cancelActions := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelActions()
 	actionsDone := make(chan error, 1)
 	go func() {
-		actionsDone <- client.Call(context.Background(), RPCMethodDesktopActions, RPCDesktopActionsParams{
+		actionsDone <- client.Call(actionsCtx, RPCMethodDesktopActions, RPCDesktopActionsParams{
 			Actions: []Action{{Type: ActionWait}},
 		}, &struct{}{})
 	}()
-	<-gui.actionsStarted
+	waitForDesktopActionStart(t, gui.actionsStarted, actionsDone)
 	queuedCtx, cancelQueued := context.WithCancel(context.Background())
 	queuedDone := make(chan error, 1)
 	go func() {
@@ -300,6 +330,20 @@ func TestHelperRPCServerDoesNotRunCanceledQueuedDesktopMethod(t *testing.T) {
 	case <-gui.screenshotCalled:
 		t.Fatal("canceled queued screenshot executed after desktop lock was released")
 	default:
+	}
+}
+
+func waitForDesktopActionStart(t *testing.T, started <-chan struct{}, done <-chan error) {
+	t.Helper()
+	select {
+	case <-started:
+	case err := <-done:
+		if err == nil {
+			t.Fatal("desktop action call returned before the backend started")
+		}
+		t.Fatalf("desktop action call failed before the backend started: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("desktop action call did not reach the backend")
 	}
 }
 

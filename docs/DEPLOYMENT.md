@@ -16,6 +16,7 @@ Web ChatGPT cannot perform this first-time installation by itself. Until Executo
 ## Prerequisites
 
 - Go 1.24 or newer for source deployment
+- Git and a real checkout so source packaging can include only tracked files
 - `cloudflared` 2025.4.0 or newer installed on the target host and resolvable by the bootstrap script
 - Administrator or root access
 - Python 3 on macOS, Linux, and WSL
@@ -24,6 +25,86 @@ Web ChatGPT cannot perform this first-time installation by itself. Until Executo
 - A Cloudflare API token file kept outside the repository
 
 On Unix targets, the Cloudflare API token file must be a regular file with mode `0600`. Setup rejects broader permissions.
+
+## Centralized Unified Dashboard
+
+Deploy the centralized Dashboard before enrolling any host. A local coding agent with terminal access can complete this from a fresh clone; web ChatGPT cannot install the first MCP or privileged services before a host connection exists.
+
+Dashboard deployment additionally requires Node 20.19+, Node 22.13+, or Node 24+ and npm. Create a dedicated Cloudflare API token with only the selected account/zone and these capabilities:
+
+- Account Workers Scripts write for the `executor-dashboard` Worker and its secret.
+- Account D1 write for the exact `executor-dashboard` database and migrations.
+- Zone Workers Routes edit, including Workers Custom Domains, for the requested Dashboard hostname.
+- Access: Apps and Policies write for two self-hosted applications: the owner site at the exact hostname with one exact-email allow policy, and the more-specific `<hostname>/api/device/*` ingress path with one Executor-owned bypass policy.
+- Optional Access organization read access when `--access-team-domain` / `-AccessTeamDomain` is omitted. With an explicit public `*.cloudflareaccess.com` team domain, the deployment does not call the organization endpoint.
+
+The token file must remain outside the repository. Unix requires a regular mode-`0600` file. Windows requires an ACL restricted to the current owner, Administrators, and SYSTEM. The entrypoints reject inline token values and never print the token.
+
+```bash
+./scripts/deploy-dashboard-from-source.sh deploy \
+  --hostname dashboard.example.com \
+  --account-id 0123456789abcdef0123456789abcdef \
+  --api-token-file /secure/cloudflare-dashboard.token \
+  --allowed-email owner@example.com \
+  --access-team-domain team.cloudflareaccess.com
+```
+
+```powershell
+.\scripts\deploy-dashboard-from-source.ps1 deploy `
+  -Hostname "dashboard.example.com" `
+  -AccountId "0123456789abcdef0123456789abcdef" `
+  -ApiTokenFile "C:\secure\cloudflare-dashboard.token" `
+  -AllowedEmail "owner@example.com" `
+  -AccessTeamDomain "team.cloudflareaccess.com"
+```
+
+No tracked file needs editing. The same values can be supplied through `EXECUTOR_DASHBOARD_HOSTNAME`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN_FILE`, `EXECUTOR_DASHBOARD_ALLOWED_EMAIL`, and optional `EXECUTOR_DASHBOARD_ACCESS_TEAM_DOMAIN`; the PowerShell wrapper uses these as defaults and explicit parameters take precedence. Optional `EXECUTOR_DASHBOARD_STATE_FILE` and `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE` paths must also remain outside the repository and share one dedicated Executor-owned parent directory. Defaults use a protected `dashboard` directory below Executor's platform state directory.
+
+The canonical entrypoint opens and reads the protected API token once before its long local package validation, then uses the held bounded value without re-reading the pathname. It uses pinned Wrangler v4, checks Cloudflare authentication, creates or reuses one exact D1 database, queries the remote `d1_migrations` table by the state-owned database UUID, and refuses unknown, newer, missing, or reordered migration history before applying anything. It creates only state-owned Access resources, renders a temporary ignored Wrangler config, applies compatible remote D1 migrations, and deploys Worker + Static Assets + SQLite Durable Object with a Workers Custom Domain route using `custom_domain: true`. The general hostname application has exactly one owner-email `allow` policy. A separate, more-specific application for `<hostname>/api/device/*` has exactly one `bypass` policy; no `/api/devices/*`, `/api/session`, Static Assets, or UI route is bypassed. The Worker remains the final device boundary: enrollment still requires the hashed bearer and same-origin JSON, while WebSocket connection still requires an enrolled device identity and signed challenge. It obtains `ACCESS_AUD` from the owner Access application response. `ACCESS_TEAM_DOMAIN` comes from the explicit validated team-domain input, protected deployment state on retries, or the Access organization endpoint when neither is available. After deployment, an unauthenticated public probe must redirect through that exact team domain; a guessed or foreign valid tenant is rejected. Existing Workers receive `ENROLLMENT_TOKEN_HASH` through Wrangler stdin. Wrangler requires a secrets file for the first Worker deployment, so that one file is created only in the protected Executor state directory outside the repository, cleaned after errors, and safely reclaimed after an interrupted process. The generated bearer remains only in its protected local file.
+
+Persistent non-secret state records resource IDs, ownership, exact migration names, the last completed stage, and the current Worker deployment/version identity. Retries are idempotent. Before upgrade or rollback, the current remote deployment must match the last Executor-owned identity; replacement, manual rollback, or unknown drift fails closed. Interrupted creation can be recovered only when the latest deployment carries the exact pending Executor marker. `rollback` requires `--version-id` / `-VersionId` for a version already present in Executor-owned history. Ordinary retry never deletes Cloudflare resources. D1 and Access removal is never automatic. Any destructive cleanup must be explicit and limited to IDs proven by Executor state.
+
+### Enroll hosts
+
+Transfer the generated enrollment file with an encrypted file-transfer mechanism. Do not print it, paste it into chat or a terminal command, put it in the repository, or copy its contents through the clipboard. Protect the received file before running the host wrapper.
+
+```bash
+sudo -E ./scripts/deploy-from-source.sh \
+  --dashboard-url https://dashboard.example.com \
+  --dashboard-enrollment-token-file /secure/dashboard-enrollment.copy \
+  --dashboard-enrollment-token-temporary
+```
+
+Equivalent environment variables are `EXECUTOR_DASHBOARD_URL`, `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE`, and `EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY=1`.
+
+```powershell
+.\scripts\deploy-from-source.ps1 `
+  -DashboardUrl "https://dashboard.example.com" `
+  -DashboardEnrollmentTokenFile "C:\secure\dashboard-enrollment.copy" `
+  -DashboardEnrollmentTokenTemporary
+```
+
+The wrapper waits until local bootstrap, `executor status`, and `executor doctor --full` succeed. It always gives enrollment a separate protected helper-owned copy, then waits boundedly until `executor dashboard status --json` reports the actual relay as `connected` and local Agent/Broker state is healthy. The relay wait defaults to 30 attempts at one-second intervals, with each status command limited to four seconds; custom positive values are accepted only when the complete worst-case wait is at most 300 seconds. Only then does it delete an explicitly designated original temporary file whose captured file identity still matches. Enrollment, status, relay timeout, local-health failure, or original-file replacement retains the current path and fails closed. Without the temporary flag the source file is always preserved. Enrollment failure does not invoke local rollback and does not remove a healthy existing installation. Loading the config through the CLI safely migrates v1/v2 state before enrollment.
+
+After the last host is enrolled, close the enrollment window:
+
+```bash
+./scripts/deploy-dashboard-from-source.sh disable-enrollment \
+  --hostname dashboard.example.com \
+  --account-id 0123456789abcdef0123456789abcdef \
+  --api-token-file /secure/cloudflare-dashboard.token \
+  --allowed-email owner@example.com
+```
+
+Use `rotate-enrollment` with the same arguments to create a new protected bearer and invalidate every previous enrollment copy. Transfer the new file only to hosts that still require enrollment.
+
+An ordinary `deploy` or upgrade preserves the current enrollment state. If enrollment was disabled, it stays disabled, no bearer is recreated, and the enrollment secret is not changed. Only `rotate-enrollment` creates a new bearer and re-enables enrollment.
+
+### Authentication and rescue boundaries
+
+Cloudflare Access authentication opens the centralized workspace. The device recovery key separately unlocks sensitive operations for that one device. A control grant lasts at most 30 days and is bound to device ID, browser ID, Access subject, and credential generation. Rotate or Kill advances the generation and invalidates the old grant.
+
+The authenticated loopback page on `127.0.0.1` is labeled emergency rescue. It shows local host/service state and exposes Resume, Rotate, and Kill with one-time replacement recovery material. It intentionally has no ordinary workspace or permission-management UI. Permission initialization remains available through `executor permissions`, MCP `device_permissions`, and the centralized Dashboard.
 
 Representative clone-deployment commands:
 
@@ -59,7 +140,7 @@ Available interfaces use the same report and the same Desktop-helper boundary:
 
 - CLI: `executor permissions status [--json]` and `executor permissions request-all [--json]`
 - MCP: `device_permissions` with `action: "status"` or `action: "request_all"`
-- Local Dashboard: `GET /api/permissions/status`, `POST /api/permissions/request-all`, and the Permission Setup panel
+- Centralized Unified Dashboard after device enrollment
 
 `requested: true` means Executor invoked the available operating-system request mechanisms. It does not mean the owner approved them. A report is `ready: true` only when every required item is `granted` or `not_required`. On macOS, Screen Recording, Accessibility, and Input Control may remain `pending` until the owner approves System Settings prompts; the report may also request a helper restart. Full Disk Access has no supported automatic grant API, remains an optional `manual` item, and opens its System Settings page. Windows verifies that the helper can open the active `Default` input desktop, so a locked, disconnected, or secure desktop is not reported ready; Screen Capture and Input Control require no separate consent grant. Linux and WSL verify the live AT-SPI bus and, on Wayland, `ydotoold` access rather than trusting executable presence alone. X11 also requires `wmctrl`. When newly installed tools differ from the helper's startup inventory, the report remains not ready and requests a helper restart. The current Wayland backend does not create an unused XDG Desktop Portal session.
 
@@ -170,6 +251,7 @@ Setup reports the remote Streamable HTTP endpoint and local `executor stdio` com
 - Source deployments need Go 1.24+ and `cloudflared`.
 - The packaged services install the desktop helper as an active-user startup path instead of a Windows Service.
 - Clone deployments should use `scripts/deploy-from-source.ps1`; packaged releases should use `scripts/bootstrap.ps1`.
+- Public releases should Authenticode-sign `executor.exe` with a stable publicly trusted identity. Signing improves publisher identity and reputation continuity but does not guarantee that Microsoft Defender or SmartScreen will never flag a new binary. A private owner-only deployment does not require purchasing a public certificate; if Defender needs an exception, scope it to the checksum-verified stable executable, never `%ProgramData%\Executor`, `secrets.json`, a recovery key, or an entire threat class. See [Windows code-signing options](https://learn.microsoft.com/windows/apps/package-and-deploy/code-signing-options) and the Defender recovery procedure in `docs/TROUBLESHOOTING.md`.
 
 ## Computer Use runtime
 

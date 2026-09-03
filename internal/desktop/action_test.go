@@ -224,6 +224,70 @@ func TestBuildX11MouseCommandsHoldsModifiersAcrossDrag(t *testing.T) {
 	}
 }
 
+func TestX11FailureCleanupReleasesMouseAndModifiers(t *testing.T) {
+	commands := [][]string{
+		{"keydown", "ctrl"},
+		{"mousemove", "10", "20"},
+		{"mousedown", "1"},
+		{"mousemove", "30", "40"},
+		{"mouseup", "1"},
+		{"keyup", "ctrl"},
+	}
+	want := [][]string{{"mouseup", "1"}, {"keyup", "ctrl"}}
+	if got := x11FailureCleanup(commands, 3); !reflect.DeepEqual(got, want) {
+		t.Fatalf("x11 failure cleanup = %#v, want %#v", got, want)
+	}
+	if got := x11FailureCleanup(commands, 4); !reflect.DeepEqual(got, want) {
+		t.Fatalf("failed mouseup cleanup = %#v, want %#v", got, want)
+	}
+	if got := x11FailureCleanup(commands, 2); !reflect.DeepEqual(got, want) {
+		t.Fatalf("possibly injected mousedown cleanup = %#v, want %#v", got, want)
+	}
+	wantBeforeMouseDown := [][]string{{"keyup", "ctrl"}}
+	if got := x11FailureCleanup(commands, 1); !reflect.DeepEqual(got, wantBeforeMouseDown) {
+		t.Fatalf("pre-mousedown cleanup = %#v, want %#v", got, wantBeforeMouseDown)
+	}
+}
+
+func TestRunX11FailureCleanupUsesFreshBoundedContexts(t *testing.T) {
+	runner := &cleanupContextRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runX11FailureCleanup(ctx, runner, [][]string{
+		{"keydown", "ctrl"},
+		{"mousedown", "1"},
+		{"mouseup", "1"},
+		{"keyup", "ctrl"},
+	}, 2)
+	if len(runner.calls) != 2 {
+		t.Fatalf("cleanup calls = %d, want 2", len(runner.calls))
+	}
+	for _, call := range runner.calls {
+		if !call.hasDeadline || call.contextErr != nil {
+			t.Fatalf("cleanup context = %#v, want active bounded context", call)
+		}
+	}
+}
+
+func TestX11LegacyKeyboardCommandsHoldModifiersUntilKeyRelease(t *testing.T) {
+	commands, err := buildX11LegacyKeyboardCommands(KeyboardAction{
+		KeyCode: 65, Modifiers: []string{"CTRL", "SHIFT"},
+	})
+	if err != nil {
+		t.Fatalf("buildX11LegacyKeyboardCommands: %v", err)
+	}
+	want := [][]string{
+		{"keydown", "ctrl"},
+		{"keydown", "shift"},
+		{"key", "65"},
+		{"keyup", "shift"},
+		{"keyup", "ctrl"},
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("legacy X11 key commands = %#v, want %#v", commands, want)
+	}
+}
+
 func TestBuildX11MouseCommandsPreservesHorizontalAndVerticalScroll(t *testing.T) {
 	commands, err := buildX11MouseCommands(MouseAction{
 		Type: MouseActionScroll, X: 10, Y: 20, ScrollX: -90, ScrollY: 220,
@@ -261,12 +325,12 @@ func TestWindowsMouseScriptIncludesModifiersDoubleClickDragAndScroll(t *testing.
 	doubleClick := buildWindowsMouseScript(MouseAction{
 		Type: MouseActionDoubleClick, X: 10, Y: 20, Keys: []string{"CTRL"},
 	})
-	if strings.Count(doubleClick, "mouse_event(2,0,0,0,0)") != 2 ||
-		strings.Count(doubleClick, "mouse_event(4,0,0,0,0)") != 2 {
+	if strings.Count(doubleClick, "mouse_event(2,0,0,0,[UIntPtr]::Zero)") != 2 ||
+		strings.Count(doubleClick, "mouse_event(4,0,0,0,[UIntPtr]::Zero)") != 2 {
 		t.Fatalf("double click does not contain two down/up pairs: %s", doubleClick)
 	}
-	if strings.Index(doubleClick, "keybd_event(0x11,0,0,0)") > strings.Index(doubleClick, "mouse_event(2,0,0,0,0)") ||
-		strings.Index(doubleClick, "keybd_event(0x11,0,2,0)") < strings.LastIndex(doubleClick, "mouse_event(4,0,0,0,0)") {
+	if strings.Index(doubleClick, "keybd_event(0x11,0,0,[UIntPtr]::Zero)") > strings.Index(doubleClick, "mouse_event(2,0,0,0,[UIntPtr]::Zero)") ||
+		strings.Index(doubleClick, "keybd_event(0x11,0,2,[UIntPtr]::Zero)") < strings.LastIndex(doubleClick, "mouse_event(4,0,0,0,[UIntPtr]::Zero)") {
 		t.Fatalf("modifier is not held for complete double click: %s", doubleClick)
 	}
 
@@ -274,9 +338,9 @@ func TestWindowsMouseScriptIncludesModifiersDoubleClickDragAndScroll(t *testing.
 		Type: MouseActionDrag, Path: []Point{{X: 1, Y: 2}, {X: 3, Y: 4}},
 	})
 	down := strings.Index(drag, "SetCursorPos(1,2)")
-	down = strings.Index(drag[down:], "mouse_event(2,0,0,0,0)") + down
+	down = strings.Index(drag[down:], "mouse_event(2,0,0,0,[UIntPtr]::Zero)") + down
 	move := strings.Index(drag, "SetCursorPos(3,4)")
-	up := strings.LastIndex(drag, "mouse_event(4,0,0,0,0)")
+	up := strings.LastIndex(drag, "mouse_event(4,0,0,0,[UIntPtr]::Zero)")
 	if !(down >= 0 && down < move && move < up) {
 		t.Fatalf("drag ordering is not down -> move -> up: %s", drag)
 	}
@@ -284,8 +348,8 @@ func TestWindowsMouseScriptIncludesModifiersDoubleClickDragAndScroll(t *testing.
 	scroll := buildWindowsMouseScript(MouseAction{
 		Type: MouseActionScroll, X: 5, Y: 6, ScrollX: -30, ScrollY: 40,
 	})
-	if !strings.Contains(scroll, "mouse_event(2048,0,0,-40,0)") ||
-		!strings.Contains(scroll, "mouse_event(4096,0,0,-30,0)") {
+	if !strings.Contains(scroll, "mouse_event(2048,0,0,-40,[UIntPtr]::Zero)") ||
+		!strings.Contains(scroll, "mouse_event(4096,0,0,-30,[UIntPtr]::Zero)") {
 		t.Fatalf("scroll script lost an axis or inverted Computer Use direction: %s", scroll)
 	}
 }
@@ -310,8 +374,8 @@ func TestWindowsScreenshotUsesPrimaryDisplayCoordinateSpace(t *testing.T) {
 func TestWindowsKeyboardScriptMapsComputerUseKeyNames(t *testing.T) {
 	script := buildWindowsKeyboardScript(KeyboardAction{Keys: []string{"CTRL", "ARROWLEFT", "ENTER"}})
 	for _, virtualKey := range []string{"0x11", "0x25", "0x0D"} {
-		if !strings.Contains(script, "keybd_event("+virtualKey+",0,0,0)") ||
-			!strings.Contains(script, "keybd_event("+virtualKey+",0,2,0)") {
+		if !strings.Contains(script, "keybd_event("+virtualKey+",0,0,[UIntPtr]::Zero)") ||
+			!strings.Contains(script, "keybd_event("+virtualKey+",0,2,[UIntPtr]::Zero)") {
 			t.Fatalf("key %s was not pressed and released: %s", virtualKey, script)
 		}
 	}
@@ -319,14 +383,45 @@ func TestWindowsKeyboardScriptMapsComputerUseKeyNames(t *testing.T) {
 
 func TestWindowsKeyboardScriptHoldsChordUntilPrimaryKeyIsReleased(t *testing.T) {
 	script := buildWindowsKeyboardScript(KeyboardAction{Keys: []string{"CTRL", "SHIFT", "L"}})
-	downControl := strings.Index(script, "keybd_event(0x11,0,0,0)")
-	downShift := strings.Index(script, "keybd_event(0x10,0,0,0)")
-	downL := strings.Index(script, "keybd_event(76,0,0,0)")
-	upL := strings.Index(script, "keybd_event(76,0,2,0)")
-	upShift := strings.Index(script, "keybd_event(0x10,0,2,0)")
-	upControl := strings.Index(script, "keybd_event(0x11,0,2,0)")
+	downControl := strings.Index(script, "keybd_event(0x11,0,0,[UIntPtr]::Zero)")
+	downShift := strings.Index(script, "keybd_event(0x10,0,0,[UIntPtr]::Zero)")
+	downL := strings.Index(script, "keybd_event(76,0,0,[UIntPtr]::Zero)")
+	upL := strings.Index(script, "keybd_event(76,0,2,[UIntPtr]::Zero)")
+	upShift := strings.Index(script, "keybd_event(0x10,0,2,[UIntPtr]::Zero)")
+	upControl := strings.Index(script, "keybd_event(0x11,0,2,[UIntPtr]::Zero)")
 	if !(downControl >= 0 && downControl < downShift && downShift < downL && downL < upL && upL < upShift && upShift < upControl) {
 		t.Fatalf("keypress is not a held chord: %s", script)
+	}
+}
+
+func TestWindowsLegacyKeyboardScriptUsesExplicitUIntPtrZero(t *testing.T) {
+	script := buildWindowsKeyboardScript(KeyboardAction{KeyCode: 65, Modifiers: []string{"CTRL", "META"}})
+	for _, event := range []string{
+		"keybd_event(0x11,0,0,[UIntPtr]::Zero)",
+		"keybd_event(0x5B,0,0,[UIntPtr]::Zero)",
+		"keybd_event(65,0,0,[UIntPtr]::Zero)",
+		"keybd_event(65,0,2,[UIntPtr]::Zero)",
+		"keybd_event(0x5B,0,2,[UIntPtr]::Zero)",
+		"keybd_event(0x11,0,2,[UIntPtr]::Zero)",
+	} {
+		if !strings.Contains(script, event) {
+			t.Fatalf("legacy keyboard event %q does not pass an explicit UIntPtr: %s", event, script)
+		}
+	}
+}
+
+func TestValidateWindowsLegacyKeyboardActionRejectsInvalidInput(t *testing.T) {
+	for _, action := range []KeyboardAction{
+		{KeyCode: -1},
+		{KeyCode: 256},
+		{KeyCode: 65, Modifiers: []string{"unsupported"}},
+	} {
+		if err := validateWindowsLegacyKeyboardAction(action); err == nil {
+			t.Fatalf("invalid Windows legacy keyboard action was accepted: %#v", action)
+		}
+	}
+	if err := validateWindowsLegacyKeyboardAction(KeyboardAction{KeyCode: 65, Modifiers: []string{"CTRL", "META"}}); err != nil {
+		t.Fatalf("valid Windows legacy keyboard action rejected: %v", err)
 	}
 }
 
@@ -349,6 +444,19 @@ func TestWaylandKeypressHoldsKeysAndReleasesInReverse(t *testing.T) {
 	want := []string{"ydotool", "key", "29:1", "38:1", "38:0", "29:0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ydotool keypress = %#v, want %#v", got, want)
+	}
+}
+
+func TestWaylandLegacyKeyboardCommandHoldsModifiersUntilKeyRelease(t *testing.T) {
+	got, err := chooseWaylandKeyboardCommand(availableTools{"ydotool": true}, KeyboardAction{
+		KeyCode: 30, Modifiers: []string{"CTRL"},
+	})
+	if err != nil {
+		t.Fatalf("chooseWaylandKeyboardCommand: %v", err)
+	}
+	want := []string{"ydotool", "key", "29:1", "30:1", "30:0", "29:0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy Wayland key command = %#v, want %#v", got, want)
 	}
 }
 
@@ -394,6 +502,21 @@ type recordingActionBackend struct {
 	failAt       int
 	err          error
 	preflightErr error
+}
+
+type cleanupContextCall struct {
+	hasDeadline bool
+	contextErr  error
+}
+
+type cleanupContextRunner struct {
+	calls []cleanupContextCall
+}
+
+func (r *cleanupContextRunner) Run(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+	_, hasDeadline := ctx.Deadline()
+	r.calls = append(r.calls, cleanupContextCall{hasDeadline: hasDeadline, contextErr: ctx.Err()})
+	return nil, nil
 }
 
 func (b *recordingActionBackend) PreflightActions([]Action) error { return b.preflightErr }

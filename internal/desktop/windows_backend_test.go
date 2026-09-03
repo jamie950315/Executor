@@ -4,7 +4,9 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"reflect"
 	"testing"
 )
@@ -18,6 +20,48 @@ func TestWindowsDesktopAvailabilityProbeRealSession(t *testing.T) {
 	want := expectation == "1"
 	if got != want {
 		t.Fatalf("desktop availability = %v, want %v for this Windows session", got, want)
+	}
+}
+
+func TestWindowsEnumWindowsScriptProducesJSONArray(t *testing.T) {
+	output, err := exec.CommandContext(
+		context.Background(),
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		buildWindowsEnumWindowsScript(),
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("window enumeration script failed: %v\n%s", err, output)
+	}
+
+	var windows []Window
+	if err := json.Unmarshal(output, &windows); err != nil {
+		t.Fatalf("window enumeration script returned invalid JSON: %v\n%s", err, output)
+	}
+}
+
+func TestWindowsJSONOutputPreservesUTF8Text(t *testing.T) {
+	output, err := exec.CommandContext(
+		context.Background(),
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		windowsJSONOutputScript(`[pscustomobject]@{title='繁體中文視窗'} | ConvertTo-Json -Compress`),
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("UTF-8 JSON script failed: %v\n%s", err, output)
+	}
+	var value struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(output, &value); err != nil {
+		t.Fatalf("UTF-8 JSON output is invalid: %v\n%x", err, output)
+	}
+	if value.Title != "繁體中文視窗" {
+		t.Fatalf("UTF-8 JSON title = %q", value.Title)
 	}
 }
 

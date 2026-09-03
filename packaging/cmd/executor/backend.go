@@ -24,6 +24,7 @@ import (
 	"github.com/jamie950315/executor/internal/doctor"
 	"github.com/jamie950315/executor/internal/ipc"
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
+	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
@@ -33,6 +34,8 @@ type backend struct {
 	defaultConfig    func(string) config.Config
 	remoteBaseURL    func(string) string
 	remoteHTTPClient *http.Client
+	localHTTPClient  *http.Client
+	now              func() time.Time
 }
 
 type controlRuntime interface {
@@ -48,6 +51,8 @@ func newBackend(stateDir string) *backend {
 		loadControl:   func(path string) (controlRuntime, error) { return control.Load(path) },
 		defaultConfig: config.Default,
 		remoteBaseURL: func(domain string) string { return "https://" + domain },
+		localHTTPClient: &http.Client{Timeout: 2 * time.Second},
+		now:             time.Now,
 	}
 }
 
@@ -165,6 +170,75 @@ func (b *backend) Permissions(ctx context.Context, request bool) (permissionmode
 		return permissionmodel.Report{}, err
 	}
 	return permissionmodel.ValidateReport(report)
+}
+
+func (b *backend) EnrollDashboard(ctx context.Context, options cli.DashboardEnrollOptions) (cli.DashboardEnrollResult, error) {
+	result, err := relayclient.EnrollWithResult(ctx, relayclient.EnrollOptions{
+		ConfigPath: b.configPath(), DashboardURL: options.URL, TokenFile: options.TokenFile,
+		ExecutorVersion: "dev", HTTPClient: b.remoteHTTPClient,
+	})
+	if err != nil {
+		return cli.DashboardEnrollResult{}, err
+	}
+	return cli.DashboardEnrollResult{DeviceID: result.DeviceID, URL: result.URL}, nil
+}
+
+func (b *backend) DashboardStatus(ctx context.Context) (cli.DashboardStatusResult, error) {
+	cfg, err := config.Load(b.configPath())
+	if err != nil {
+		return cli.DashboardStatusResult{}, err
+	}
+	if cfg.UnifiedDashboard.URL == "" || cfg.UnifiedDashboard.DeviceID == "" || !cfg.UnifiedDashboard.Enrolled {
+		return cli.DashboardStatusResult{}, errors.New("Unified Dashboard enrollment is not configured")
+	}
+	values, err := secrets.Load(b.stateDir)
+	if err != nil {
+		return cli.DashboardStatusResult{}, err
+	}
+	relayState := b.currentRelayState(ctx, cfg.DashboardAddress, values.DashboardKey)
+	return cli.DashboardStatusResult{
+		URL: cfg.UnifiedDashboard.URL, DeviceID: cfg.UnifiedDashboard.DeviceID, Enrolled: true, Relay: relayState,
+	}, nil
+}
+
+func (b *backend) currentRelayState(ctx context.Context, address, key string) string {
+	if address == "" || key == "" {
+		return "disconnected"
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/.executor/relay-status", nil)
+	if err != nil {
+		return "disconnected"
+	}
+	request.Header.Set("X-Executor-Health-Key", key)
+	client := b.localHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 2 * time.Second}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return "disconnected"
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "disconnected"
+	}
+	var status struct {
+		State     string    `json:"state"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 4097))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&status) != nil || status.State != "connected" {
+		return "disconnected"
+	}
+	now := time.Now()
+	if b.now != nil {
+		now = b.now()
+	}
+	if status.UpdatedAt.IsZero() || status.UpdatedAt.After(now.Add(5*time.Second)) || now.Sub(status.UpdatedAt) > 2*time.Minute {
+		return "disconnected"
+	}
+	return "connected"
 }
 
 func (b *backend) Kill(ctx context.Context) (cli.RotateResult, error) {

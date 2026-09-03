@@ -21,6 +21,7 @@ const (
 	defaultProtocol       = "2025-06-18"
 	errCodeInvalidSession = -32001
 	errCodeToolFailure    = -32010
+	maxHTTPMessage        = 80 << 20
 )
 
 type ToolAnnotations struct {
@@ -78,7 +79,7 @@ type rpcRequest struct {
 
 type rpcResponse struct {
 	JSONRPC string    `json:"jsonrpc"`
-	ID      any       `json:"id,omitempty"`
+	ID      any       `json:"id"`
 	Result  any       `json:"result,omitempty"`
 	Error   *rpcError `json:"error,omitempty"`
 }
@@ -199,12 +200,14 @@ func (s *Server) HandleStreamableHTTP(writer http.ResponseWriter, request *http.
 	}
 
 	var rpcReq rpcRequest
-	decoder := json.NewDecoder(request.Body)
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxHTTPMessage))
 	if err := decoder.Decode(&rpcReq); err != nil {
-		writeRPCResponse(writer, http.StatusBadRequest, "", rpcResponse{
-			JSONRPC: "2.0",
-			Error:   &rpcError{Code: -32700, Message: "invalid JSON payload"},
-		})
+		writeRequestDecodeError(writer, err)
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeRequestDecodeError(writer, err)
 		return
 	}
 	if rpcReq.Method != "initialize" {
@@ -224,6 +227,15 @@ func (s *Server) HandleStreamableHTTP(writer http.ResponseWriter, request *http.
 	}
 
 	writeRPCResponse(writer, status, sessionID, *response)
+}
+
+func writeRequestDecodeError(writer http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeRPCResponse(writer, http.StatusRequestEntityTooLarge, "", *errorResponse(nil, -32600, "request body too large"))
+		return
+	}
+	writeRPCResponse(writer, http.StatusBadRequest, "", *errorResponse(nil, -32700, "invalid JSON payload"))
 }
 
 func sameRequestOrigin(origin string, request *http.Request) bool {
@@ -316,6 +328,9 @@ func WriteFrame(writer io.Writer, payload []byte) error {
 }
 
 func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcRequest) (*rpcResponse, int, string) {
+	if request.JSONRPC != "2.0" {
+		return errorResponse(request.ID, -32600, "invalid JSON-RPC version"), http.StatusBadRequest, sessionID
+	}
 	switch request.Method {
 	case "initialize":
 		protocolVersion, err := s.negotiateProtocolVersion(request.Params)
@@ -385,8 +400,12 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		}
 
 		arguments := map[string]any{}
-		if rawArguments, ok := request.Params["arguments"].(map[string]any); ok {
-			arguments = rawArguments
+		if rawArguments, present := request.Params["arguments"]; present {
+			parsedArguments, ok := rawArguments.(map[string]any)
+			if !ok {
+				return errorResponse(request.ID, -32602, "tool arguments must be an object"), http.StatusBadRequest, sessionID
+			}
+			arguments = parsedArguments
 		}
 
 		result, err := s.dispatcher(ctx, ToolCall{
@@ -617,6 +636,7 @@ func filesystemReadToolSchema() map[string]any {
 			"action":    enumProperty("string", "read_file", "read_directory", "stat"),
 			"privilege": enumProperty("string", "owner", "admin"),
 			"path":      map[string]any{"type": "string"},
+			"encoding":  enumProperty("string", "utf8", "base64"),
 			"offset":    map[string]any{"type": "integer", "minimum": 0},
 			"limit":     map[string]any{"type": "integer", "minimum": 1},
 		},
@@ -633,6 +653,7 @@ func filesystemWriteToolSchema() map[string]any {
 			"path":        map[string]any{"type": "string"},
 			"destination": map[string]any{"type": "string"},
 			"content":     map[string]any{"type": "string"},
+			"encoding":    enumProperty("string", "utf8", "base64"),
 			"recursive":   map[string]any{"type": "boolean"},
 		},
 		"action",
@@ -683,7 +704,7 @@ func desktopControlToolSchema() map[string]any {
 			"x":         map[string]any{"type": "integer"},
 			"y":         map[string]any{"type": "integer"},
 			"button":    map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}},
-			"keyCode":   map[string]any{"type": "integer", "minimum": 0},
+			"keyCode":   map[string]any{"type": "integer", "minimum": 1, "maximum": 255},
 			"modifiers": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"name":      map[string]any{"type": "string"},
 			"text":      map[string]any{"type": "string"},

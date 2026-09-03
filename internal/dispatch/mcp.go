@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jamie950315/executor/internal/agent"
 	"github.com/jamie950315/executor/internal/desktop"
@@ -222,6 +223,10 @@ func (d *MCP) filesystemRead(ctx context.Context, arguments map[string]any) (any
 	}
 	caller := d.privilegedCaller(arguments)
 	if action == "read_file" {
+		encoding, encoded, err := optionalFileEncoding(arguments)
+		if err != nil {
+			return nil, err
+		}
 		if caller == nil {
 			return nil, errors.New("Executor helper is unavailable")
 		}
@@ -229,7 +234,22 @@ func (d *MCP) filesystemRead(ctx context.Context, arguments map[string]any) (any
 		if err := caller.Call(ctx, method, desktop.RPCFilesystemPathParams{Path: path}, &data); err != nil {
 			return nil, err
 		}
-		return map[string]any{"content": string(data)}, nil
+		if !encoded {
+			return map[string]any{"content": string(data)}, nil
+		}
+		switch encoding {
+		case "utf8":
+			if !utf8.Valid(data) {
+				return nil, errors.New("file is not valid UTF-8")
+			}
+			return map[string]any{"content": string(data), "encoding": encoding, "size": len(data)}, nil
+		case "base64":
+			return map[string]any{
+				"content": base64.StdEncoding.EncodeToString(data), "encoding": encoding, "size": len(data),
+			}, nil
+		default:
+			return nil, errors.New("unsupported filesystem encoding")
+		}
 	}
 	return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
 }
@@ -257,7 +277,18 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 	switch action {
 	case "write_file":
 		content, _ := arguments["content"].(string)
-		return d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: []byte(content), Perm: fs.FileMode(0o644)})
+		data, encoding, encoded, err := decodeFileContent(arguments, content)
+		if err != nil {
+			return nil, err
+		}
+		result, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)})
+		if err != nil {
+			return nil, err
+		}
+		if encoded {
+			return map[string]any{"encoding": encoding, "size": len(data)}, nil
+		}
+		return result, nil
 	case "move":
 		destination, err := requiredString(arguments, "destination")
 		if err != nil {
@@ -268,12 +299,51 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 		return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
 	case "append_file":
 		content, _ := arguments["content"].(string)
-		return d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: []byte(content), Perm: fs.FileMode(0o644)})
+		data, encoding, encoded, err := decodeFileContent(arguments, content)
+		if err != nil {
+			return nil, err
+		}
+		result, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)})
+		if err != nil {
+			return nil, err
+		}
+		if encoded {
+			return map[string]any{"encoding": encoding, "size": len(data)}, nil
+		}
+		return result, nil
 	case "mkdir":
 		return d.call(ctx, caller, method, desktop.RPCFilesystemMkdirParams{Path: path, Perm: fs.FileMode(0o755)})
 	default:
 		return nil, fmt.Errorf("unsupported filesystem write action %q", action)
 	}
+}
+
+func optionalFileEncoding(arguments map[string]any) (string, bool, error) {
+	raw, exists := arguments["encoding"]
+	if !exists {
+		return "", false, nil
+	}
+	encoding, ok := raw.(string)
+	if !ok || (encoding != "utf8" && encoding != "base64") {
+		return "", false, errors.New("filesystem encoding must be utf8 or base64")
+	}
+	return encoding, true, nil
+}
+
+func decodeFileContent(arguments map[string]any, content string) ([]byte, string, bool, error) {
+	encoding, encoded, err := optionalFileEncoding(arguments)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if !encoded || encoding == "utf8" {
+		return []byte(content), encoding, encoded, nil
+	}
+	data, err := base64.StdEncoding.Strict().DecodeString(content)
+	if err != nil || base64.StdEncoding.EncodeToString(data) != content {
+		clear(data)
+		return nil, "", false, errors.New("file content is not strict standard base64")
+	}
+	return data, encoding, true, nil
 }
 
 func (d *MCP) desktopObserve(ctx context.Context, sessionID string, arguments map[string]any) (any, error) {

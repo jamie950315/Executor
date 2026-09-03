@@ -11,3 +11,11 @@ executor-state/
 /executor
 /executor-kill
 /.worktrees/
+/.playwright-cli/
+**/.wrangler/
+**/.wrangler.executor.generated-*.jsonc
+**/dashboard-deployment*.json
+*.token
+*.token.copy
+**/playwright-report/
+**/test-results/

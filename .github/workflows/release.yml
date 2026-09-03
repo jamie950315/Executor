@@ -7,7 +7,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  dashboard:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install Dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+      - name: Test and build Dashboard
+        working-directory: dashboard
+        run: npm test && npm run check && npm run build
+      - name: Test Windows Dashboard deployment entrypoint and ACLs
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./dashboard/test/deploy/windows-deployment.tests.ps1
+
   build:
+    needs: dashboard
     strategy:
       fail-fast: false
       matrix:

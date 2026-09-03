@@ -4,9 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PREPARE_ONLY=""
+DASHBOARD_URL="${EXECUTOR_DASHBOARD_URL:-}"
+DASHBOARD_ENROLLMENT_TOKEN_FILE="${EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE:-}"
+DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY="${EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY:-0}"
 
 usage() {
-  printf 'Usage: %s [--prepare-only <empty-directory>]\n' "$0"
+  printf 'Usage: %s [--prepare-only <empty-directory>] [--dashboard-url <https-origin> --dashboard-enrollment-token-file <protected-file> [--dashboard-enrollment-token-temporary]]\n' "$0"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -15,6 +18,20 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       PREPARE_ONLY="$2"
       shift 2
+      ;;
+    --dashboard-url)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      DASHBOARD_URL="$2"
+      shift 2
+      ;;
+    --dashboard-enrollment-token-file)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      DASHBOARD_ENROLLMENT_TOKEN_FILE="$2"
+      shift 2
+      ;;
+    --dashboard-enrollment-token-temporary)
+      DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY=1
+      shift
       ;;
     -h|--help)
       usage
@@ -27,9 +44,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "${DASHBOARD_URL}" && -z "${DASHBOARD_ENROLLMENT_TOKEN_FILE}" ]] ||
+   [[ -z "${DASHBOARD_URL}" && -n "${DASHBOARD_ENROLLMENT_TOKEN_FILE}" ]]; then
+  printf 'Dashboard URL and enrollment token file must be supplied together.\n' >&2
+  exit 2
+fi
+if [[ "${DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY}" != "0" && "${DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY}" != "1" ]]; then
+  printf 'EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY must be 0 or 1.\n' >&2
+  exit 2
+fi
+
 export PATH="/opt/homebrew/bin:/usr/local/go/bin:/usr/local/bin:${PATH}"
 
-for command_name in go tar; do
+for command_name in git go tar; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     printf 'required command is not installed or not in PATH: %s\n' "${command_name}" >&2
     exit 1
@@ -130,3 +157,15 @@ bash "${BUNDLE_DIR}/scripts/bootstrap.sh"
 installed_executor="${EXECUTOR_INSTALL_BINARY_PATH:-/usr/local/bin/executor}"
 "${installed_executor}" status
 "${installed_executor}" doctor --full
+
+if [[ -n "${DASHBOARD_URL}" ]]; then
+  enrollment_args=(
+    --executor "${installed_executor}"
+    --url "${DASHBOARD_URL}"
+    --token-file "${DASHBOARD_ENROLLMENT_TOKEN_FILE}"
+  )
+  if [[ "${DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY}" == "1" ]]; then
+    enrollment_args+=(--temporary-token)
+  fi
+  bash "${BUNDLE_DIR}/scripts/enroll-dashboard.sh" "${enrollment_args[@]}"
+fi

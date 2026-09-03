@@ -24,7 +24,7 @@ Desktop control requires an active, unlocked graphical login. macOS and Windows 
 
 On macOS, grant Screen Recording and Accessibility to the installed `Executor Desktop.app`, not to Terminal or the standalone `executor` binary. Release bundles install this signed helper at `/Library/Application Support/Executor/Executor Desktop.app` so macOS can retain permissions across service restarts. See [Deployment](docs/DEPLOYMENT.md) for release-signing requirements.
 
-After installing the services, bootstrap waits briefly for the active-user Desktop helper and calls `executor permissions request-all` through it. This is the process that needs the desktop permissions, so macOS prompts are assigned to `Executor Desktop.app` instead of Terminal, the CLI, or the Dashboard daemon. The command reports `pending` until the owner actually approves each operating-system prompt; sending a request never counts as approval. Recheck with `executor permissions status`, the loopback Dashboard's Permission Setup panel, or the MCP tool `device_permissions` with `action: "status"`. An authenticated AI can repeat the request with `action: "request_all"`.
+After installing the services, bootstrap waits briefly for the active-user Desktop helper and calls `executor permissions request-all` through it. This is the process that needs the desktop permissions, so macOS prompts are assigned to `Executor Desktop.app` instead of Terminal, the CLI, or the Dashboard daemon. The command reports `pending` until the owner actually approves each operating-system prompt; sending a request never counts as approval. Recheck with `executor permissions status`, the centralized Unified Dashboard, or the MCP tool `device_permissions` with `action: "status"`. An authenticated AI can repeat the request with `action: "request_all"`.
 
 Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Registration (DCR) for current ChatGPT compatibility and retains implemented support for Client ID Metadata Documents (CIMD), public-client `none`, and ChatGPT-signed `private_key_jwt` token exchange.
 
@@ -33,12 +33,14 @@ Before linking ChatGPT, run `executor doctor --full`. The full check sends an in
 ## Deployment prerequisites
 
 - Go 1.24 or newer for source builds
+- Git and a real checkout for clone/source packaging
 - `cloudflared` 2025.4.0 or newer on the target machine
 - Administrator or root privileges for service installation
 - Python 3 on macOS, Linux, and WSL because the Unix bootstrap path uses it while validating Cloudflare metadata
 - `systemd` on Linux and WSL for the packaged services
 - A Cloudflare API token stored in a dedicated file; on macOS, Linux, and WSL that file must be a regular file with mode `0600`
 - A hostname in a Cloudflare zone that you control
+- Node 20.19+, Node 22.13+, or Node 24+ and npm for the centralized Unified Dashboard
 
 Desktop control also needs an active graphical login:
 
@@ -57,7 +59,7 @@ cd Executor
 
 Then ask a local coding agent on that machine to read `AGENTS.md` and deploy Executor on the current machine.
 
-Do not ask web ChatGPT to self-install Executor from a fresh clone. Before Executor exists, ChatGPT on the web has no MCP connection to the target host, cannot install privileged services, cannot satisfy the local secret-handling requirements, and cannot inspect or restart the resulting host services. Use a local coding agent, terminal session, or another already-installed host tool to perform the first deployment.
+Do not ask web ChatGPT to self-install Executor from a fresh clone: web ChatGPT cannot perform the first installation. Before Executor exists, ChatGPT on the web has no MCP connection to the target host, cannot install privileged services, cannot satisfy the local secret-handling requirements, and cannot inspect or restart the resulting host services. Use a local coding agent, terminal session, or another already-installed host tool to perform the first deployment.
 
 Executor supports two deployment entry paths:
 
@@ -65,6 +67,54 @@ Executor supports two deployment entry paths:
 2. Clone deployment: use the source-deployment entrypoints `scripts/deploy-from-source.sh` on macOS, Linux, or WSL and `scripts/deploy-from-source.ps1` on Windows. Those wrappers are the canonical source-build entrypoints for a cloned repository. They are expected to build the local `executor` and `executor-kill` binaries, prepare the macOS helper app when required, and then invoke the existing bootstrap logic.
 
 If a local checkout predates those source-deployment wrappers, the coding agent should treat that clone as not yet self-contained for source deployment and either use a release archive or perform the same build-plus-bootstrap flow explicitly before claiming deployment support.
+
+## Deploy the Unified Dashboard first
+
+The Unified Dashboard is one Cloudflare Worker, Static Assets bundle, SQLite Durable Object, D1 database, and two path-scoped Cloudflare Access applications. The exact hostname has the owner's exact-email allow policy. Only the more-specific `<hostname>/api/device/*` ingress application has an Executor-owned bypass policy; the Worker still authenticates enrollment and signed device connections. It does not replace or rename any per-device MCP hostname, OAuth client, named Tunnel, unrestricted host capability, Broker/Desktop boundary, or local Kill Switch.
+
+Create a dedicated Cloudflare API token file outside the clone. On Unix it must be a regular mode-`0600` file. On Windows its ACL must allow only the current owner, Administrators, and SYSTEM. The token needs Workers Scripts write, D1 write, Workers Routes/Custom Domains access for the selected zone, and Access: Apps and Policies write. Either provide the public Zero Trust team domain explicitly, as shown below, or also grant Access organization read access so Executor can discover it. Never pass the token value on a command line.
+
+```bash
+./scripts/deploy-dashboard-from-source.sh deploy \
+  --hostname dashboard.example.com \
+  --account-id 0123456789abcdef0123456789abcdef \
+  --api-token-file /secure/cloudflare-dashboard.token \
+  --allowed-email owner@example.com \
+  --access-team-domain team.cloudflareaccess.com
+```
+
+```powershell
+.\scripts\deploy-dashboard-from-source.ps1 deploy `
+  -Hostname "dashboard.example.com" `
+  -AccountId "0123456789abcdef0123456789abcdef" `
+  -ApiTokenFile "C:\secure\cloudflare-dashboard.token" `
+  -AllowedEmail "owner@example.com" `
+  -AccessTeamDomain "team.cloudflareaccess.com"
+```
+
+The entrypoint installs the pinned Dashboard package from its lockfile, runs tests/check/build/dry-run validation, authenticates Cloudflare, reuses or creates the exact Executor D1 database, compares exact remote migration names and order, reconciles only state-owned Access resources, and deploys the Custom Domain. It verifies that the live Access redirect belongs to the configured team domain, records the current remote Worker deployment/version identity, and refuses manual replacement or rollback drift. It generates the enrollment bearer once in a protected file outside the repository and prints only that file's path. Deployment state is also protected outside the repository; incompatible newer state or migrations are rejected. A disabled enrollment window remains disabled across ordinary upgrades; only `rotate-enrollment` re-enables it.
+
+Transfer the enrollment file to each target through an encrypted file-transfer channel without opening, printing, pasting, or placing it in shell history. Mark the target copy as temporary so the host wrapper deletes that exact copy only after successful enrollment and config/service verification:
+
+```bash
+sudo -E ./scripts/deploy-from-source.sh \
+  --dashboard-url https://dashboard.example.com \
+  --dashboard-enrollment-token-file /secure/dashboard-enrollment.copy \
+  --dashboard-enrollment-token-temporary
+```
+
+```powershell
+.\scripts\deploy-from-source.ps1 `
+  -DashboardUrl "https://dashboard.example.com" `
+  -DashboardEnrollmentTokenFile "C:\secure\dashboard-enrollment.copy" `
+  -DashboardEnrollmentTokenTemporary
+```
+
+The wrapper always enrolls from its own protected copy and waits for actual relay connectivity plus healthy local services. The configurable relay wait is capped at a conservative 300 seconds. It deletes an explicitly designated original temporary file only after both checks pass and its captured file identity still matches; enrollment, status, timeout, or replacement failure retains the current file. Without the temporary flag, the supplied source file is preserved. A failed optional enrollment never rolls back a healthy pre-existing local Executor install. After all hosts are enrolled, use the centralized deployment entrypoint's `disable-enrollment` command. Use `rotate-enrollment` when another enrollment window is required; securely redistribute only the new protected file.
+
+Cloudflare Access signs the owner into the centralized workspace. A per-device recovery key is a separate factor that unlocks sensitive control for only that device. The resulting 30-day grant is bound to the device, browser, Cloudflare Access subject, and current credential generation; another browser, user, device, or post-Rotate generation requires a new unlock.
+
+The authenticated `127.0.0.1` page is an emergency rescue surface only. Use it after a full Kill to inspect host/service state and perform local Resume, Rotate, or Kill while the centralized relay is unavailable. Permission initialization remains available through `executor permissions`, MCP `device_permissions`, and the centralized Dashboard.
 
 ## Clone deployment summary
 

@@ -142,11 +142,7 @@ func (b linuxBackend) Mouse(ctx context.Context, action MouseAction) error {
 		}
 		for index, command := range commands {
 			if _, err := b.runner.Run(ctx, "xdotool", command...); err != nil {
-				for _, remaining := range commands[index+1:] {
-					if len(remaining) > 0 && remaining[0] == "keyup" {
-						_, _ = b.runner.Run(context.WithoutCancel(ctx), "xdotool", remaining...)
-					}
-				}
+				runX11FailureCleanup(ctx, b.runner, commands, index)
 				return wrapDesktopError("x11 mouse input unavailable", err)
 			}
 		}
@@ -187,8 +183,15 @@ func (b linuxBackend) Keyboard(ctx context.Context, action KeyboardAction) error
 			}
 			return nil
 		}
-		if _, err := b.runner.Run(ctx, "xdotool", "key", fmt.Sprintf("%d", action.KeyCode)); err != nil {
-			return wrapDesktopError("x11 keyboard input unavailable", err)
+		commands, err := buildX11LegacyKeyboardCommands(action)
+		if err != nil {
+			return err
+		}
+		for index, command := range commands {
+			if _, err := b.runner.Run(ctx, "xdotool", command...); err != nil {
+				runX11FailureCleanup(ctx, b.runner, commands, index)
+				return wrapDesktopError("x11 keyboard input unavailable", err)
+			}
 		}
 		return nil
 	case backendWayland:

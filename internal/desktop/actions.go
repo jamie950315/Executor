@@ -141,7 +141,7 @@ func normalizeModifiers(keys []string) ([]keyName, error) {
 		switch key {
 		case keyControl, keyAlt, keyShift, keyMeta:
 		default:
-			return nil, fmt.Errorf("mouse action key %q is not a modifier", key)
+			return nil, fmt.Errorf("key %q is not a modifier", key)
 		}
 	}
 	return normalized, nil

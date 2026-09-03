@@ -1,13 +1,27 @@
 [CmdletBinding()]
 param(
-  [string]$PrepareOnly = ""
+  [string]$PrepareOnly = "",
+  [string]$DashboardUrl = $env:EXECUTOR_DASHBOARD_URL,
+  [string]$DashboardEnrollmentTokenFile = $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_FILE,
+  [switch]$DashboardEnrollmentTokenTemporary
 )
 
 $ErrorActionPreference = "Stop"
 $RootDir = Split-Path $PSScriptRoot -Parent
+$TemporaryDashboardEnrollment = $DashboardEnrollmentTokenTemporary.IsPresent -or $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -eq "1"
+
+if ([string]::IsNullOrWhiteSpace($DashboardUrl) -xor [string]::IsNullOrWhiteSpace($DashboardEnrollmentTokenFile)) {
+  throw "Dashboard URL and enrollment token file must be supplied together."
+}
+if ($env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -and $env:EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY -notin @("0", "1")) {
+  throw "EXECUTOR_DASHBOARD_ENROLLMENT_TOKEN_TEMPORARY must be 0 or 1."
+}
 
 if (-not (Get-Command "go.exe" -ErrorAction SilentlyContinue)) {
   throw "Required command is not installed or not in PATH: go.exe"
+}
+if (-not (Get-Command "git.exe" -ErrorAction SilentlyContinue)) {
+  throw "Required command is not installed or not in PATH: git.exe"
 }
 
 $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
@@ -55,8 +69,21 @@ try {
     Pop-Location
   }
 
-  Copy-Item -Recurse -Path (Join-Path $RootDir "scripts") -Destination (Join-Path $BundleDir "scripts")
-  Copy-Item -Recurse -Path (Join-Path $RootDir "docs") -Destination (Join-Path $BundleDir "docs")
+  $TrackedPayload = & git.exe -C $RootDir ls-files -- scripts docs dashboard
+  if ($LASTEXITCODE -ne 0 -or -not $TrackedPayload) { throw "Unable to enumerate the tracked source payload." }
+  foreach ($RelativePath in $TrackedPayload) {
+    if ($RelativePath -notmatch '^(scripts|docs|dashboard)/' -or $RelativePath.Contains("..")) {
+      throw "Tracked source payload contains an unsafe path."
+    }
+    $SourcePath = Join-Path $RootDir ($RelativePath -replace '/', '\')
+    $SourceItem = Get-Item -LiteralPath $SourcePath -Force
+    if ($SourceItem.PSIsContainer -or ($SourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "Tracked source payload contains a non-regular file."
+    }
+    $DestinationPath = Join-Path $BundleDir ($RelativePath -replace '/', '\')
+    New-Item -ItemType Directory -Path (Split-Path $DestinationPath -Parent) -Force | Out-Null
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+  }
   Copy-Item -Path (Join-Path $RootDir "THIRD_PARTY_NOTICES.md") -Destination $BundleDir
 
   if ($PrepareOnly) {
@@ -76,6 +103,24 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Executor status failed with exit code $LASTEXITCODE" }
   & $InstalledExecutor doctor --full
   if ($LASTEXITCODE -ne 0) { throw "Executor doctor --full failed with exit code $LASTEXITCODE" }
+
+  if ($DashboardUrl) {
+    $EnrollmentScript = Join-Path $BundleDir "scripts\enroll-dashboard.ps1"
+    $EnrollmentArguments = @(
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      "-File", $EnrollmentScript,
+      "-Executor", $InstalledExecutor,
+      "-Url", $DashboardUrl,
+      "-TokenFile", $DashboardEnrollmentTokenFile
+    )
+    if ($TemporaryDashboardEnrollment) {
+      $EnrollmentArguments += "-TemporaryToken"
+    }
+    & powershell.exe @EnrollmentArguments
+    if ($LASTEXITCODE -ne 0) { throw "Unified Dashboard enrollment failed with exit code $LASTEXITCODE" }
+  }
 } finally {
   if ($WorkDir -and (Test-Path $WorkDir)) {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force

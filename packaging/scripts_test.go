@@ -10,6 +10,215 @@ import (
 	"testing"
 )
 
+func TestDashboardEnrollmentHelperUsesOnlyDesignatedTemporaryCopies(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	executorPath := filepath.Join(tmp, "executor")
+	commandLog := filepath.Join(tmp, "commands.log")
+	passedTokenPath := filepath.Join(tmp, "passed-token-path")
+	writeStub(t, executorPath, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+if [[ "$1" == "dashboard" && "$2" == "enroll" ]]; then
+  if [[ "${FAIL_ENROLL:-}" == "1" ]]; then exit 9; fi
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--token-file" ]]; then printf '%s\n' "$2" > "$PASSED_TOKEN_PATH"; rm -f -- "$2"; break; fi
+    shift
+  done
+  printf 'enrolled\n'
+  exit 0
+fi
+if [[ "$1" == "dashboard" && "$2" == "status" ]]; then
+  if [[ "${STALL_STATUS:-}" == "1" ]]; then sleep 30; fi
+  if [[ -n "${REPLACE_TOKEN_PATH:-}" && ! -e "${REPLACE_TOKEN_PATH}.replaced" ]]; then
+    mv -- "$REPLACE_TOKEN_PATH" "${REPLACE_TOKEN_PATH}.original"
+    printf 'test-only-replacement-bearer\n' > "$REPLACE_TOKEN_PATH"
+    chmod 0600 "$REPLACE_TOKEN_PATH"
+    : > "${REPLACE_TOKEN_PATH}.replaced"
+  fi
+  if [[ "${RELAY_DOWN:-}" == "1" ]]; then printf '{"enrolled":true,"relay":"disconnected"}\n'; else printf '{"enrolled":true,"relay":"connected"}\n'; fi
+  exit 0
+fi
+if [[ "$1" == "status" ]]; then printf '{"state":"armed","agent":"online","broker":"online","dashboard":"online"}\n'; exit 0; fi
+exit 2
+`)
+	environment := append(os.Environ(), "COMMAND_LOG="+commandLog, "PASSED_TOKEN_PATH="+passedTokenPath)
+	realTokenDirectory := filepath.Join(tmp, "real-token-directory")
+	linkedTokenDirectory := filepath.Join(tmp, "linked-token-directory")
+	if err := os.MkdirAll(realTokenDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ancestorToken := filepath.Join(realTokenDirectory, "ancestor-enrollment.token")
+	if err := os.WriteFile(ancestorToken, []byte("test-only-enrollment-bearer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realTokenDirectory, linkedTokenDirectory); err != nil {
+		t.Fatal(err)
+	}
+	unsafeCommand := exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", filepath.Join(linkedTokenDirectory, "ancestor-enrollment.token"),
+	)
+	unsafeCommand.Env = environment
+	if output, err := unsafeCommand.CombinedOutput(); err == nil {
+		t.Fatalf("enrollment helper accepted a symlinked token ancestor: %s", output)
+	}
+	assertFileExists(t, ancestorToken)
+
+	sourceToken := filepath.Join(tmp, "source-enrollment.token")
+	const tokenValue = "test-only-enrollment-bearer"
+	if err := os.WriteFile(sourceToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", sourceToken,
+	)
+	command.Env = environment
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("enroll with protected copy: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), tokenValue) {
+		t.Fatalf("enrollment helper exposed bearer: %s", output)
+	}
+	assertFileExists(t, sourceToken)
+	passed := strings.TrimSpace(readFile(t, passedTokenPath))
+	if passed == sourceToken {
+		t.Fatal("helper passed the persistent source token to the consuming enrollment command")
+	}
+	if _, err := os.Stat(passed); !os.IsNotExist(err) {
+		t.Fatalf("helper-owned enrollment copy remains: %v", err)
+	}
+	log := readFile(t, commandLog)
+	for _, want := range []string{"dashboard enroll --url https://dashboard.example.test", "dashboard status --json", "status --json"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("enrollment verification log missing %q:\n%s", want, log)
+		}
+	}
+
+	temporaryToken := filepath.Join(tmp, "temporary-enrollment.token")
+	if err := os.WriteFile(temporaryToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", temporaryToken,
+		"--temporary-token",
+	)
+	command.Env = environment
+	if output, err = command.CombinedOutput(); err != nil {
+		t.Fatalf("enroll designated temporary token: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(temporaryToken); !os.IsNotExist(err) {
+		t.Fatalf("designated temporary token remains after success: %v", err)
+	}
+	passed = strings.TrimSpace(readFile(t, passedTokenPath))
+	if passed == temporaryToken {
+		t.Fatal("helper passed the designated original temporary token to enrollment")
+	}
+
+	replacedToken := filepath.Join(tmp, "replaced-temporary-enrollment.token")
+	if err := os.WriteFile(replacedToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", replacedToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "REPLACE_TOKEN_PATH="+replacedToken)
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("replacement race unexpectedly deleted by enrollment helper: %s", output)
+	}
+	if got := readFile(t, replacedToken); got != "test-only-replacement-bearer\n" {
+		t.Fatalf("enrollment helper changed or deleted replacement file: %q", got)
+	}
+	assertFileExists(t, replacedToken+".original")
+
+	timedOutToken := filepath.Join(tmp, "timed-out-temporary-enrollment.token")
+	if err := os.WriteFile(timedOutToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", timedOutToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "RELAY_DOWN=1", "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=0.001")
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("disconnected relay unexpectedly passed enrollment verification: %s", output)
+	}
+	if !strings.Contains(string(output), "relay did not become connected") {
+		t.Fatalf("normal bounded timeout did not reach relay verification: %s", output)
+	}
+	assertFileExists(t, timedOutToken)
+
+	hungToken := filepath.Join(tmp, "hung-status-enrollment.token")
+	if err := os.WriteFile(hungToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", hungToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "STALL_STATUS=1", "EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=1", "EXECUTOR_DASHBOARD_WAIT_DELAY=0.001", "EXECUTOR_DASHBOARD_COMMAND_TIMEOUT=1")
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("hung status command unexpectedly passed enrollment verification: %s", output)
+	}
+	assertFileExists(t, hungToken)
+
+	failedToken := filepath.Join(tmp, "failed-temporary-enrollment.token")
+	if err := os.WriteFile(failedToken, []byte(tokenValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command = exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+		"--executor", executorPath,
+		"--url", "https://dashboard.example.test",
+		"--token-file", failedToken,
+		"--temporary-token",
+	)
+	command.Env = append(environment, "FAIL_ENROLL=1")
+	if output, err = command.CombinedOutput(); err == nil {
+		t.Fatalf("failed enrollment unexpectedly succeeded: %s", output)
+	}
+	assertFileExists(t, failedToken)
+	if strings.Contains(readFile(t, commandLog), "rollback") {
+		t.Fatal("failed optional enrollment rolled back a healthy local install")
+	}
+
+	for name, settings := range map[string][]string{
+		"zero attempts":        {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=0", "EXECUTOR_DASHBOARD_WAIT_DELAY=1"},
+		"negative attempts":    {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=-1", "EXECUTOR_DASHBOARD_WAIT_DELAY=1"},
+		"huge attempts":        {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=999999999999", "EXECUTOR_DASHBOARD_WAIT_DELAY=1"},
+		"zero delay":           {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=0"},
+		"negative delay":       {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=-1"},
+		"huge delay":           {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=2", "EXECUTOR_DASHBOARD_WAIT_DELAY=999999999999"},
+		"excessive total wait": {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=300", "EXECUTOR_DASHBOARD_WAIT_DELAY=2"},
+		"huge command timeout": {"EXECUTOR_DASHBOARD_WAIT_ATTEMPTS=1", "EXECUTOR_DASHBOARD_WAIT_DELAY=1", "EXECUTOR_DASHBOARD_COMMAND_TIMEOUT=999999"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			command := exec.Command("bash", filepath.Join(root, "scripts", "enroll-dashboard.sh"),
+				"--executor", executorPath,
+				"--url", "https://dashboard.example.test",
+				"--token-file", sourceToken,
+			)
+			command.Env = append(environment, settings...)
+			if output, err := command.CombinedOutput(); err == nil {
+				t.Fatalf("invalid wall-clock wait settings were accepted: %s", output)
+			}
+		})
+	}
+}
+
 func TestBootstrapLinuxInstallsAndRollsBackManagedUnits(t *testing.T) {
 	t.Parallel()
 
@@ -716,6 +925,10 @@ func TestWindowsDesktopTaskScriptsTrackScheduledTaskLifecycle(t *testing.T) {
 		"${DesktopUser}:(OI)(CI)(RX)",
 		"icacls $ConfigPath /inheritance:r /grant:r",
 		"icacls $SecretsPath /inheritance:r /grant:r",
+		"$ConfigLockPath = Join-Path $StateDir \".config.lock\"",
+		"$SecretsLockPath = Join-Path $StateDir \".secrets.lock\"",
+		"icacls $LockPath /grant:r",
+		"${DesktopUser}:(M)",
 		"icacls $CloudflaredTokenPath /inheritance:r /grant:r",
 		"SYSTEM:(OI)(CI)(F)",
 		"Invoke-PowerShellScript -Path (Join-Path $InstallRoot 'windows\\register-desktop-startup.ps1')",

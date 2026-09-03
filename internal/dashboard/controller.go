@@ -17,10 +17,6 @@ import (
 	"github.com/jamie950315/executor/internal/secrets"
 )
 
-// ErrRotateUnsupported prevents a running Executor instance from rotating
-// credentials on disk while its services still hold the old values.
-var ErrRotateUnsupported = errors.New("dashboard credential rotation is unsupported")
-
 type lifecycleController interface {
 	Kill(context.Context) (control.Result, error)
 	Resume(context.Context) error
@@ -86,7 +82,16 @@ func (c *RuntimeController) Permissions(ctx context.Context, request bool) (perm
 	return permissionmodel.ValidateReport(report)
 }
 
-func (*RuntimeController) Rotate(context.Context) error { return ErrRotateUnsupported }
+func (c *RuntimeController) Rotate(ctx context.Context) (KillResult, error) {
+	result, err := c.Kill(ctx)
+	if err != nil {
+		return result, err
+	}
+	if err := c.Resume(ctx); err != nil {
+		return result, err
+	}
+	return result, nil
+}
 
 func (c *RuntimeController) state() string {
 	if _, err := os.Stat(filepath.Join(c.statePath, "disabled")); err == nil {

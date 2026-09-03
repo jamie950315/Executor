@@ -19,6 +19,35 @@ checksum() {
 	fi
 }
 
+copy_tracked_source_payload() {
+  local destination="$1"
+  local relative source target
+  local copied=0
+  if ! command -v git >/dev/null 2>&1 || ! git -C "${ROOT_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'a Git checkout is required to enumerate the tracked release payload\n' >&2
+    return 1
+  fi
+  while IFS= read -r relative; do
+    case "${relative}" in
+      scripts/*|docs/*|dashboard/*) ;;
+      *) printf 'tracked release path is outside the source payload allowlist: %s\n' "${relative}" >&2; return 1 ;;
+    esac
+    source="${ROOT_DIR}/${relative}"
+    if [[ ! -f "${source}" || -L "${source}" ]]; then
+      printf 'tracked release payload is not a regular file: %s\n' "${relative}" >&2
+      return 1
+    fi
+    target="${destination}/${relative}"
+    mkdir -p "$(dirname "${target}")"
+    cp -p "${source}" "${target}"
+    copied=$((copied + 1))
+  done < <(git -C "${ROOT_DIR}" ls-files -- scripts docs dashboard)
+  if [[ "${copied}" -eq 0 ]]; then
+    printf 'the tracked release payload is empty\n' >&2
+    return 1
+  fi
+}
+
 for target in ${BUILD_TARGETS}; do
   IFS=/ read -r GOOS GOARCH <<<"${target}"
   ARCHIVE_NAME="executor_${GOOS}_${GOARCH}"
@@ -50,9 +79,7 @@ for target in ${BUILD_TARGETS}; do
     fi
     codesign --verify --deep --strict "${DESKTOP_APP}"
   fi
-  cp -R "${ROOT_DIR}/scripts" "${STAGING_DIR}/scripts"
-  mkdir -p "${STAGING_DIR}/docs"
-  cp -R "${ROOT_DIR}/docs/." "${STAGING_DIR}/docs/"
+  copy_tracked_source_payload "${STAGING_DIR}"
   cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${STAGING_DIR}/THIRD_PARTY_NOTICES.md"
 
   if [[ "${GOOS}" == "windows" ]]; then

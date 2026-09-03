@@ -1,0 +1,12 @@
+.dev.vars
+.env
+.wrangler/
+dist/
+node_modules/
+.wrangler.executor.generated-*.jsonc
+dashboard-deployment*.json
+*.token
+*.token.copy
+.playwright-cli/
+playwright-report/
+test-results/

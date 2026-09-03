@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -12,15 +13,18 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jamie950315/executor/internal/audit"
 	"github.com/jamie950315/executor/internal/config"
+	"github.com/jamie950315/executor/internal/dashboard"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/oauth"
+	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 	"github.com/jamie950315/executor/internal/terminal"
 )
@@ -246,6 +250,216 @@ func TestRunDashboardServesLoopbackStatusWithoutSecretsAndStopsOnCancel(t *testi
 		t.Fatalf("dashboard status exposed secret material: %s", encoded)
 	}
 
+	cancel()
+	assertDaemonStopped(t, errCh)
+}
+
+func TestRunDashboardReloadsIPCKeysAfterCredentialRotation(t *testing.T) {
+	configPath, cfg, values := daemonFixture(t)
+	brokerCtx, cancelBroker := context.WithCancel(context.Background())
+	desktopCtx, cancelDesktop := context.WithCancel(context.Background())
+	brokerErr := startDaemon(t, func() error { return RunBroker(brokerCtx, configPath) })
+	desktopErr := startDaemon(t, func() error { return RunDesktop(desktopCtx, configPath) })
+	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
+	dashboardErr := startDaemon(t, func() error { return RunDashboard(dashboardCtx, configPath) })
+	t.Cleanup(func() {
+		cancelBroker()
+		cancelDesktop()
+		cancelDashboard()
+	})
+
+	baseURL := "http://" + cfg.DashboardAddress
+	waitFor(t, func() error {
+		snapshot, err := authenticatedDashboardSnapshot(baseURL, values.DashboardKey)
+		if err != nil {
+			return err
+		}
+		if snapshot.Broker != "reachable" || snapshot.Desktop != "reachable" {
+			return errors.New("initial IPC services are not reachable")
+		}
+		return nil
+	})
+
+	cancelBroker()
+	cancelDesktop()
+	assertDaemonStopped(t, brokerErr)
+	assertDaemonStopped(t, desktopErr)
+	rotated, err := secrets.Rotate(cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokerCtx, cancelBroker = context.WithCancel(context.Background())
+	desktopCtx, cancelDesktop = context.WithCancel(context.Background())
+	brokerErr = startDaemon(t, func() error { return RunBroker(brokerCtx, configPath) })
+	desktopErr = startDaemon(t, func() error { return RunDesktop(desktopCtx, configPath) })
+
+	waitFor(t, func() error {
+		snapshot, err := authenticatedDashboardSnapshot(baseURL, rotated.DashboardKey)
+		if err != nil {
+			return err
+		}
+		if snapshot.Broker != "reachable" || snapshot.Desktop != "reachable" {
+			return errors.New("rotated IPC services are not reachable through the existing Dashboard")
+		}
+		return nil
+	})
+
+	cancelBroker()
+	cancelDesktop()
+	cancelDashboard()
+	assertDaemonStopped(t, brokerErr)
+	assertDaemonStopped(t, desktopErr)
+	assertDaemonStopped(t, dashboardErr)
+}
+
+func authenticatedDashboardSnapshot(baseURL, token string) (dashboard.Snapshot, error) {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	bootstrap, err := client.Get(baseURL + "/?token=" + token)
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	cookies := bootstrap.Cookies()
+	_ = bootstrap.Body.Close()
+	if bootstrap.StatusCode != http.StatusSeeOther || len(cookies) != 1 {
+		return dashboard.Snapshot{}, errors.New("dashboard bootstrap failed")
+	}
+	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/status", nil)
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	request.AddCookie(cookies[0])
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return dashboard.Snapshot{}, errors.New("dashboard status failed")
+	}
+	var snapshot dashboard.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		return dashboard.Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+type fakeDashboardRelay struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+type failingDashboardRelay struct {
+	release chan struct{}
+}
+
+func (r *failingDashboardRelay) Run(context.Context) error {
+	<-r.release
+	return errors.New("relay unavailable")
+}
+
+func (r *fakeDashboardRelay) Run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	close(r.stopped)
+	return nil
+}
+
+func (r *fakeDashboardRelay) Status() dashboard.RelayStatus {
+	return dashboard.RelayStatus{State: "connected", UpdatedAt: time.Now().UTC()}
+}
+
+func (r *failingDashboardRelay) Status() dashboard.RelayStatus {
+	return dashboard.RelayStatus{State: "disconnected", UpdatedAt: time.Now().UTC()}
+}
+
+func TestRunDashboardOwnsConfiguredRelayAndStopsItWithHTTPRuntime(t *testing.T) {
+	configPath, cfg, values := daemonFixture(t)
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	relayRuntime := &fakeDashboardRelay{started: make(chan struct{}), stopped: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error {
+		return runDashboard(ctx, configPath, func(relayclient.ClientOptions) (dashboardRelay, error) {
+			return relayRuntime, nil
+		})
+	})
+	select {
+	case <-relayRuntime.started:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("configured dashboard relay did not start")
+	}
+	response := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/", nil, nil)
+	response.Body.Close()
+	relayHeaders := make(http.Header)
+	relayHeaders.Set("X-Executor-Health-Key", values.DashboardKey)
+	relayResponse := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/.executor/relay-status", nil, relayHeaders)
+	relayBody, err := io.ReadAll(relayResponse.Body)
+	relayResponse.Body.Close()
+	if err != nil || relayResponse.StatusCode != http.StatusOK || !strings.Contains(string(relayBody), `"state":"connected"`) {
+		cancel()
+		t.Fatalf("runtime relay status = %d %q, %v", relayResponse.StatusCode, relayBody, err)
+	}
+	cancel()
+	assertDaemonStopped(t, errCh)
+	select {
+	case <-relayRuntime.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard relay did not stop with RunDashboard context")
+	}
+}
+
+func TestRunDashboardStartsRelayWatcherBeforeEnrollment(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	relayRuntime := &fakeDashboardRelay{started: make(chan struct{}), stopped: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error {
+		return runDashboard(ctx, configPath, func(relayclient.ClientOptions) (dashboardRelay, error) {
+			return relayRuntime, nil
+		})
+	})
+	select {
+	case <-relayRuntime.started:
+	case <-time.After(200 * time.Millisecond):
+		cancel()
+		assertDaemonStopped(t, errCh)
+		t.Fatal("dashboard did not start the enrollment-aware relay watcher")
+	}
+	response := waitForHTTP(t, http.MethodGet, "http://"+cfg.DashboardAddress+"/", nil, nil)
+	response.Body.Close()
+	cancel()
+	assertDaemonStopped(t, errCh)
+	select {
+	case <-relayRuntime.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard relay watcher did not stop")
+	}
+}
+
+func TestRunDashboardKeepsLocalRescueAvailableAfterRelayFailure(t *testing.T) {
+	configPath, cfg, _ := daemonFixture(t)
+	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
+	cfg.UnifiedDashboard.Enrolled = true
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	relayRuntime := &failingDashboardRelay{release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := startDaemon(t, func() error {
+		return runDashboard(ctx, configPath, func(relayclient.ClientOptions) (dashboardRelay, error) {
+			return relayRuntime, nil
+		})
+	})
+	baseURL := "http://" + cfg.DashboardAddress
+	response := waitForHTTP(t, http.MethodGet, baseURL+"/", nil, nil)
+	response.Body.Close()
+	close(relayRuntime.release)
+	time.Sleep(20 * time.Millisecond)
+	response = waitForHTTP(t, http.MethodGet, baseURL+"/", nil, nil)
+	response.Body.Close()
 	cancel()
 	assertDaemonStopped(t, errCh)
 }
