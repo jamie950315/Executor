@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, open as fsOpen, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import * as deploymentCore from "../../scripts/lib/deploy-core.mjs";
@@ -32,6 +32,8 @@ import {
 const accountID = "0123456789abcdef0123456789abcdef";
 const hostname = "dashboard.example.test";
 const allowedEmail = "owner@example.test";
+const isWindows = process.platform === "win32";
+const unixTest = test.skipIf(isWindows);
 
 describe("deployment prerequisites", () => {
   test("accepts explicit non-secret deployment inputs and rejects token values", () => {
@@ -67,8 +69,8 @@ describe("deployment prerequisites", () => {
       homeDirectory: "/home/owner",
       environment: {},
     });
-    expect(normalized.stateFile).toBe("/home/owner/.local/state/executor/dashboard/deployment.json");
-    expect(normalized.enrollmentTokenFile).toBe("/home/owner/.local/state/executor/dashboard/enrollment.token");
+    expect(normalized.stateFile).toBe(resolve("/home/owner/.local/state/executor/dashboard/deployment.json"));
+    expect(normalized.enrollmentTokenFile).toBe(resolve("/home/owner/.local/state/executor/dashboard/enrollment.token"));
     expect(() => normalizeDeploymentOptions({
       command: "deploy",
       hostname,
@@ -130,7 +132,7 @@ describe("deployment prerequisites", () => {
     expect(() => assertWranglerV4("unexpected output")).toThrow(/Wrangler v4/iu);
   });
 
-  test("accepts only a regular Unix mode-0600 token file", async () => {
+  unixTest("accepts only a regular Unix mode-0600 token file", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-token-"));
     const tokenPath = join(directory, "cloudflare.token");
     await writeFile(tokenPath, "test-only-cloudflare-token\n", { mode: 0o644 });
@@ -166,7 +168,7 @@ describe("deployment prerequisites", () => {
     expect(verifyWindowsACL).toHaveBeenCalledWith(tokenPath);
   });
 
-  test("reads the protected API token exactly once from its held file identity before path replacement", async () => {
+  unixTest("reads the protected API token exactly once from its held file identity before path replacement", async () => {
     expect(deploymentCore).toHaveProperty("readProtectedCredential");
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-held-token-"));
     const tokenPath = join(directory, "cloudflare.token");
@@ -238,8 +240,8 @@ describe("temporary Wrangler config", () => {
   test("places temporary config beside Dashboard sources so relative Wrangler paths resolve", async () => {
     const dashboardRoot = await mkdtemp(join(tmpdir(), "executor-dashboard-root-"));
     const temporary = await writeTemporaryWranglerConfig(dashboardRoot, "{}\n");
-    expect(temporary.configPath.startsWith(`${dashboardRoot}/.wrangler.executor.generated-`)).toBe(true);
-    expect((await lstat(temporary.configPath)).mode & 0o777).toBe(0o600);
+    expect(temporary.configPath.startsWith(resolve(dashboardRoot, ".wrangler.executor.generated-"))).toBe(true);
+    if (!isWindows) expect((await lstat(temporary.configPath)).mode & 0o777).toBe(0o600);
     await temporary.cleanup();
     await expect(lstat(temporary.configPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -303,7 +305,7 @@ describe("temporary Wrangler config", () => {
       platform: "linux",
     })).rejects.toThrow(/killed first deployment/iu);
 
-    expect(externalSecretPath.startsWith(`${secretDirectory}/`)).toBe(true);
+    expect(externalSecretPath.startsWith(resolve(secretDirectory, ".executor-worker-secret-"))).toBe(true);
     await expect(lstat(externalSecretPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await readdir(secretDirectory)).filter((name) => name.includes("worker-secret"))).toEqual([]);
     expect((await readdir(dashboardRoot, { recursive: true })).filter((name) => String(name).includes("secret"))).toEqual([]);
@@ -311,7 +313,7 @@ describe("temporary Wrangler config", () => {
 });
 
 describe("protected deployment state and enrollment material", () => {
-  test("round-trips versioned mode-0600 state and rejects newer or mismatched state", async () => {
+  unixTest("round-trips versioned mode-0600 state and rejects newer or mismatched state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-state-"));
     const statePath = join(directory, "dashboard", "deployment.json");
     const state = {
@@ -332,7 +334,7 @@ describe("protected deployment state and enrollment material", () => {
     await expect(loadDeploymentState(statePath, { accountID: "fedcba9876543210fedcba9876543210", hostname, platform: "linux" })).rejects.toThrow(/different Cloudflare account/iu);
   });
 
-  test("refuses state writes through symlink ancestors and never chmods a shared parent", async () => {
+  unixTest("refuses state writes through symlink ancestors and never chmods a shared parent", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-state-ancestor-"));
     const sharedParent = join(directory, "secure");
     const redirected = join(directory, "redirected");
@@ -357,7 +359,7 @@ describe("protected deployment state and enrollment material", () => {
     expect(() => assertMigrationCompatible(-1, 2)).toThrow(/invalid Dashboard migration/iu);
   });
 
-  test("creates an enrollment bearer once, hashes it, and rotates only explicitly", async () => {
+  unixTest("creates an enrollment bearer once, hashes it, and rotates only explicitly", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-enrollment-"));
     const tokenPath = join(directory, "dashboard", "enrollment.token");
     const first = await ensureEnrollmentToken(tokenPath, { platform: "linux", randomBytes: () => Buffer.alloc(32, 1) });
@@ -402,7 +404,7 @@ describe("protected deployment state and enrollment material", () => {
     expect(state).toMatchObject({ enrollment_enabled: true, enrollment_token_file: tokenPath });
   });
 
-  test("reuses the same bearer on an enabled upgrade", async () => {
+  unixTest("reuses the same bearer on an enabled upgrade", async () => {
     expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
     const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-enabled-upgrade-")), "dashboard", "enrollment.token");
     const state = {};
@@ -444,7 +446,7 @@ describe("protected deployment state and enrollment material", () => {
     expect(state.enrollment_enabled).toBe(true);
   });
 
-  test("reuses a bearer left by a partial first-deployment retry", async () => {
+  unixTest("reuses a bearer left by a partial first-deployment retry", async () => {
     expect(deploymentCore).toHaveProperty("prepareEnrollmentDeployment");
     const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-partial-enrollment-")), "dashboard", "enrollment.token");
     const partialState = {};
@@ -472,7 +474,7 @@ describe("protected deployment state and enrollment material", () => {
     expect(await readFile(targetPath, "utf8")).toBe("do-not-replace\n");
   });
 
-  test("disables only the exact state-owned protected enrollment file", async () => {
+  unixTest("disables only the exact state-owned protected enrollment file", async () => {
     const directory = await mkdtemp(join(tmpdir(), "executor-dashboard-disable-enrollment-"));
     const tokenPath = join(directory, "enrollment.token");
     await writeFile(tokenPath, "test-only-enrollment-token\n", { mode: 0o600 });
@@ -910,7 +912,7 @@ describe("Cloudflare API boundaries and ownership", () => {
     expect(state.worker_deployment_id).toBe("deployment-legacy");
   });
 
-  test("recovers an accepted pending enrollment rotation before considering a new bearer", async () => {
+  unixTest("recovers an accepted pending enrollment rotation before considering a new bearer", async () => {
     expect(deploymentCore).toHaveProperty("prepareEnrollmentRotation");
     const tokenPath = join(await mkdtemp(join(tmpdir(), "executor-dashboard-pending-rotation-")), "dashboard", "enrollment.token");
     await ensureEnrollmentToken(tokenPath, { platform: "linux", randomBytes: () => Buffer.alloc(32, 21) });
