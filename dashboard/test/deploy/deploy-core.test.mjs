@@ -34,6 +34,7 @@ const hostname = "dashboard.example.test";
 const allowedEmail = "owner@example.test";
 const isWindows = process.platform === "win32";
 const unixTest = test.skipIf(isWindows);
+const windowsTest = test.skipIf(!isWindows);
 
 describe("deployment prerequisites", () => {
   test("accepts explicit non-secret deployment inputs and rejects token values", () => {
@@ -84,6 +85,21 @@ describe("deployment prerequisites", () => {
       homeDirectory: "/home/owner",
       environment: {},
     })).toThrow(/outside the repository/iu);
+  });
+
+  windowsTest("treats a different Windows volume as outside the repository", () => {
+    expect(() => normalizeDeploymentOptions({
+      command: "deploy",
+      hostname,
+      accountID,
+      apiTokenFile: "C:\\secure\\cloudflare.token",
+      allowedEmail,
+    }, {
+      dashboardRoot: "D:\\checkout\\Executor\\dashboard",
+      platform: "win32",
+      homeDirectory: "C:\\Users\\owner",
+      environment: { LOCALAPPDATA: "C:\\Users\\owner\\AppData\\Local" },
+    })).not.toThrow();
   });
 
   test("requires an explicit Worker version for rollback", () => {

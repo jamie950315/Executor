@@ -140,5 +140,5 @@ function inside(parent, child, platform) {
     childPath = childPath.toLowerCase();
   }
   const difference = relative(parentPath, childPath);
-  return difference === "" || (!difference.startsWith(`..${sep}`) && difference !== "..");
+  return difference === "" || (!isAbsolute(difference) && !difference.startsWith(`..${sep}`) && difference !== "..");
 }
