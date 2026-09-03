@@ -354,10 +354,15 @@ function safeMessage(error) {
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
+    // Windows package managers are command shims (`.cmd`), not PE executables.
+    // Run only those known internal shims through the Windows command shell;
+    // all Node and Wrangler invocations remain direct child processes.
+    const windowsCommandShim = process.platform === "win32" && command === npmBinary;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.environment ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
+      shell: windowsCommandShim,
       windowsHide: true,
     });
     const stdout = [];
