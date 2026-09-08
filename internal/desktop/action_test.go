@@ -388,6 +388,13 @@ func TestWindowsMouseRejectsUnconfirmedMovementAndReleasesHeldInput(t *testing.T
 	}
 }
 
+func TestWindowsMouseDownPreservesHoldAfterSuccessfulRequest(t *testing.T) {
+	script := buildWindowsMouseScript(MouseAction{Type: MouseActionDown, Button: MouseButtonLeft})
+	if !strings.Contains(script, "$buttonHeld=$true; $buttonHeld=$false; } finally {") {
+		t.Fatal("successful standalone mouse down must transfer the held button to the caller instead of releasing it")
+	}
+}
+
 func TestWindowsScreenshotUsesPrimaryDisplayCoordinateSpace(t *testing.T) {
 	script := buildWindowsScreenshotScript(`C:\Temp\shot.png`)
 	if !strings.Contains(script, "[System.Windows.Forms.Screen]::PrimaryScreen.Bounds") {

@@ -449,6 +449,11 @@ func buildWindowsMouseScript(action MouseAction) string {
 			}
 		}
 	}
+	if action.Type == MouseActionDown {
+		// A successful standalone down deliberately stays held until a later up.
+		// Only failures while this script owns the button should release it.
+		events.WriteString("$buttonHeld=$false; ")
+	}
 	events.WriteString("} finally { if($buttonHeld){ [ExecutorMouse]::mouse_event(" + strconv.Itoa(maskUp(buttonMask)) + ",0,0,0," + extraInfo + "); }; ")
 	for index := len(modifiers) - 1; index >= 0; index-- {
 		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifiers[index]) + ",0,2," + extraInfo + "); ")
