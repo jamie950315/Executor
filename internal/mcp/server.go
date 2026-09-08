@@ -420,7 +420,17 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 			Arguments: arguments,
 		})
 		if err != nil {
-			return errorResponse(request.ID, errCodeToolFailure, err.Error()), http.StatusInternalServerError, sessionID
+			// Execution failures belong in MCP tool results, not transport errors:
+			// clients otherwise replace the actionable message with "Internal error".
+			// Omit success-only structured output when no result was produced.
+			return &rpcResponse{
+				JSONRPC: "2.0",
+				ID:      request.ID,
+				Result: map[string]any{
+					"isError": true,
+					"content": []any{map[string]any{"type": "text", "text": err.Error()}},
+				},
+			}, http.StatusOK, sessionID
 		}
 		structuredResult := result
 		var content []any
