@@ -80,7 +80,7 @@ export class LiveDesktopConnection {
  private pc: RTCPeerConnection | undefined; private dc: RTCDataChannel | undefined; input: LiveInput | undefined;
  private abort = new AbortController(); private closed = false; private session: LiveSession | undefined; private lease: ReturnType<typeof setTimeout> | undefined; private startup: ReturnType<typeof setTimeout> | undefined; private ping: ReturnType<typeof setInterval> | undefined;
  constructor(private call: DeviceCall, private callbacks: LiveCallbacks) {}
- async start(status: LiveStatus) {
+ async start(status: LiveStatus, fps: 15 | 30 = 15) {
   if (this.closed) return;
   if (typeof RTCPeerConnection !== "function") {
    this.stop("This browser does not provide WebRTC video connections. Open this Dashboard in a WebRTC-enabled browser such as Chrome or Edge; device permissions cannot fix this browser limitation.");
@@ -111,7 +111,7 @@ export class LiveDesktopConnection {
    const offer = pc.localDescription?.sdp; if (!offer) throw new Error();
    // Do not abort a dispatched start: its late result is needed to stop the exact remote lease.
    failure = "The device could not start the live session. Check its video capture prerequisites and connection status.";
-   const response = await this.call("desktop_live", { action: "start", offer, maxWidth: 1280, fps: 15, bitrate: 2500000 });
+   const response = await this.call("desktop_live", { action: "start", offer, maxWidth: 1280, fps, bitrate: fps === 30 ? 4000000 : 2500000 });
    failure = "The device returned an invalid live-session response. Update the device and Dashboard to matching versions.";
    const s = response.result as Partial<LiveSession> | null;
    if (!s || typeof s.sessionId !== "string" || !s.sessionId || typeof s.answer !== "string" || typeof s.width !== "number" || s.width <= 0 || typeof s.height !== "number" || s.height <= 0 || typeof s.leaseSeconds !== "number" || s.leaseSeconds < 5) throw new Error();

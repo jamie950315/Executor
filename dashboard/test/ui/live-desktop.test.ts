@@ -48,6 +48,14 @@ class FakePeer extends EventTarget {
 const liveStatus={supported:true,available:true,active:false,iceServers:[]};
 const liveSession={sessionId:"session1",answer:"answer",width:1280,height:720,leaseSeconds:15};
 describe("live desktop connection",()=>{
+ it("requests bounded 30 FPS video at the smoother setting",async()=>{
+  const peer=new FakePeer();vi.stubGlobal("RTCPeerConnection",vi.fn(function(){return peer;}));
+  const call=vi.fn(async()=>({result:liveSession})) as unknown as DeviceCall;
+  const connection=new LiveDesktopConnection(call,{stream:vi.fn(),state:vi.fn(),stopped:vi.fn()});
+  await connection.start(liveStatus,30);
+  expect(call).toHaveBeenCalledWith("desktop_live",{action:"start",offer:"offer",maxWidth:1280,fps:30,bitrate:4000000});
+  connection.stop();vi.unstubAllGlobals();
+ });
  it("identifies local discovery timeout without blaming device permissions",async()=>{
   vi.useFakeTimers();const peer=new FakePeer();peer.iceGatheringState="gathering";
   vi.stubGlobal("RTCPeerConnection",vi.fn(function(){return peer;}));
