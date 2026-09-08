@@ -58,11 +58,13 @@ export class LiveInput {
  close() { this.discardMove(); this.closed = true; }
 }
 
-export function gatherICE(pc: RTCPeerConnection, signal: AbortSignal): Promise<void> {
+export function gatherICE(pc: RTCPeerConnection, signal: AbortSignal): Promise<boolean> {
  return new Promise((resolve, reject) => {
-  const finish = (error?: Error) => { clearTimeout(timer); pc.removeEventListener("icegatheringstatechange", changed); signal.removeEventListener("abort", aborted); if (error) reject(error); else resolve(); };
+  const finish = (error?: Error) => { clearTimeout(timer); pc.removeEventListener("icegatheringstatechange", changed); signal.removeEventListener("abort", aborted); if (error) reject(error); else resolve(pc.iceGatheringState === "complete"); };
   const changed = () => { if (pc.iceGatheringState === "complete") finish(); }; const aborted = () => finish(new Error("Connection cancelled"));
-  const timer = setTimeout(() => finish(new Error("Direct connection discovery timed out")), 8000);
+  // A slow interface must not discard candidates already gathered on working
+  // interfaces. ICE connectivity checks still verify whether these can connect.
+  const timer = setTimeout(() => finish(/^a=candidate:/m.test(pc.localDescription?.sdp ?? "") ? undefined : new Error("Direct connection discovery timed out without candidates")), 8000);
   pc.addEventListener("icegatheringstatechange", changed); signal.addEventListener("abort", aborted); if (signal.aborted) aborted(); else changed();
  });
 }

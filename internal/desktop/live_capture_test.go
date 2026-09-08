@@ -31,18 +31,26 @@ func TestLiveCaptureOptIn(t *testing.T) {
 	}
 	defer source.Close()
 	bytes := 0
-	for frame := 0; frame < 3; frame++ {
+	var firstFrame time.Time
+	for frame := 0; frame < 31; frame++ {
 		sample, err := source.Read(ctx)
 		if err != nil {
-			t.Fatal("native encoder did not deliver three frames before failure/deadline; no media or raw encoder diagnostics recorded")
+			t.Fatal("native encoder did not deliver frames before failure/deadline; no media or raw encoder diagnostics recorded")
 		}
 		if len(sample.Data) == 0 || sample.Duration <= 0 {
 			t.Fatal("native encoder returned an invalid sample")
 		}
 		bytes += len(sample.Data)
+		if frame == 0 {
+			firstFrame = time.Now()
+		}
+	}
+	elapsed := time.Since(firstFrame)
+	if elapsed < time.Second {
+		t.Fatalf("31 samples arrived in %s: encoder exceeds requested 15 FPS", elapsed)
 	}
 	if err := source.Close(); err != nil {
 		t.Fatal("native encoder did not close cleanly")
 	}
-	t.Logf("captured and discarded 3 H264 samples (%d total bytes); no input posted", bytes)
+	t.Logf("captured and discarded 31 H264 samples over %s (%d total bytes); no input posted", elapsed, bytes)
 }

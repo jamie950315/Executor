@@ -104,7 +104,9 @@ func liveVideoArgs(platform string, g livedesktop.Geometry, o livedesktop.Option
 	default:
 		return nil, errors.New("live desktop video is supported only on macOS and Windows")
 	}
-	args = append(args, "-an", "-vf", fmt.Sprintf("scale=w='min(%d,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", o.MaxWidth), "-pix_fmt", "yuv420p")
+	// Capture devices can report a time base that differs from the requested
+	// input rate. Bound the output rate before encoding and timestamping RTP.
+	args = append(args, "-an", "-vf", fmt.Sprintf("fps=%d,scale=w='min(%d,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", o.FPS, o.MaxWidth), "-pix_fmt", "yuv420p")
 	if platform == "darwin" {
 		args = append(args, "-c:v", "h264_videotoolbox", "-realtime", "1", "-allow_sw", "0")
 	} else {

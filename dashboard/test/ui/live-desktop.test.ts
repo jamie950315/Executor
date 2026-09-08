@@ -31,6 +31,13 @@ describe("live desktop input", () => {
  it("waits for complete ICE and rejects cancellation",async()=>{
   const pc=new EventTarget() as RTCPeerConnection;Object.defineProperty(pc,"iceGatheringState",{value:"gathering",writable:true});const abort=new AbortController();const p=gatherICE(pc,abort.signal);abort.abort();await expect(p).rejects.toThrow();
  });
+ it("uses gathered candidates at the deadline even while another interface is pending",async()=>{
+  vi.useFakeTimers();const pc=new EventTarget() as RTCPeerConnection;
+  Object.defineProperty(pc,"iceGatheringState",{value:"gathering"});
+  Object.defineProperty(pc,"localDescription",{value:{sdp:"v=0\r\na=candidate:1 1 udp 1 192.0.2.1 12345 typ host\r\n"}});
+  const pending=gatherICE(pc,new AbortController().signal);
+  await vi.advanceTimersByTimeAsync(8000);await expect(pending).resolves.toBe(false);vi.useRealTimers();
+ });
 });
 
 class FakePeer extends EventTarget {

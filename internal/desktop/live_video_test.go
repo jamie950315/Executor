@@ -64,7 +64,7 @@ func TestLiveVideoArgs(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := strings.Join(args, " ")
-		for _, want := range []string{"-f h264", "aud=insert", "1280", "-g 15"} {
+		for _, want := range []string{"-f h264", "aud=insert", "1280", "-g 15", "fps=15,"} {
 			if !strings.Contains(s, want) {
 				t.Errorf("missing %s: %s", want, s)
 			}
