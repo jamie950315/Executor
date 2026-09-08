@@ -128,8 +128,7 @@ func reachIPC(ctx context.Context, client *ipc.RPCClient) string {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	var status desktop.RPCDeviceStatus
-	if err := client.Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+	if err := client.Health(probeCtx); err != nil {
 		return "unreachable"
 	}
 	return "reachable"

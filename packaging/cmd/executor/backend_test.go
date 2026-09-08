@@ -687,6 +687,54 @@ func TestStatusRejectsForeignServiceOnAgentPort(t *testing.T) {
 	}
 }
 
+func TestIPCHealthDoesNotDependOnDesktopAvailability(t *testing.T) {
+	endpointDir, err := os.MkdirTemp("", "executor-health-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(endpointDir) })
+	endpoint := filepath.Join(endpointDir, "helper.sock")
+	if runtime.GOOS == "windows" {
+		endpoint = `\\.\pipe\` + filepath.Base(endpointDir)
+	}
+	key := "0123456789abcdef0123456789abcdef"
+	var deviceQueries atomic.Int32
+	server := ipc.NewRPCServer(endpoint, []byte(key), func(ctx context.Context, method string, _ []byte) (any, error) {
+		if method == desktop.RPCMethodDeviceStatus {
+			deviceQueries.Add(1)
+			<-ctx.Done() // A slow OS availability query must not mark IPC offline.
+			return nil, ctx.Err()
+		}
+		return struct{}{}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	client := ipc.NewRPCClient(endpoint, []byte(key))
+	readyCtx, stopReady := context.WithTimeout(ctx, 2*time.Second)
+	defer stopReady()
+	for {
+		if err := client.Call(readyCtx, "ready", nil, nil); err == nil {
+			break
+		}
+		if readyCtx.Err() != nil {
+			t.Fatal("test helper did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := probeIPC(ctx, endpoint, key); got != "online" {
+		t.Errorf("responsive IPC helper marked %s because desktop query was slow", got)
+	}
+	if got := deviceQueries.Load(); got != 0 {
+		t.Errorf("health check ran %d desktop availability queries", got)
+	}
+	if got := probeIPC(ctx, endpoint, strings.Repeat("x", 32)); got != "offline" {
+		t.Errorf("wrong IPC key reported %s", got)
+	}
+}
+
 func TestStatusAcceptsAuthenticatedExecutorHealthResponse(t *testing.T) {
 	b := newBackend(t.TempDir())
 	if _, err := b.Setup(context.Background(), setupOptions{Domain: "executor.example.com"}); err != nil {

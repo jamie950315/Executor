@@ -90,6 +90,76 @@ func TestRPCServerRejectsClientWithWrongKey(t *testing.T) {
 	}
 }
 
+func TestRPCReservedHealthBypassesHandlerAfterAuthentication(t *testing.T) {
+	endpoint := shortSocketPath(t)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	server := NewRPCServer(endpoint, key, func(context.Context, string, []byte) (any, error) {
+		return nil, errors.New("application handler must not be called for health")
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = server.Serve(ctx) }()
+	waitForEndpoint(t, endpoint)
+	var result struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := NewRPCClient(endpoint, key).Call(ctx, "executor.health", struct{}{}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Protocol != "executor-ipc-v1" {
+		t.Fatalf("unexpected IPC health marker %q", result.Protocol)
+	}
+	if err := NewRPCClient(endpoint, key).Health(ctx); err != nil {
+		t.Fatalf("valid authenticated health: %v", err)
+	}
+	if err := NewRPCClient(endpoint, []byte(strings.Repeat("x", 32))).Call(ctx, "executor.health", struct{}{}, &result); err == nil {
+		t.Fatal("health accepted unauthenticated request")
+	}
+}
+
+func TestRPCHealthRejectsInvalidAuthenticatedResponses(t *testing.T) {
+	for _, payload := range []any{
+		nil,
+		map[string]string{},
+		map[string]string{"protocol": "foreign-service"},
+		map[string]string{"protocol": healthProtocol, "unexpected": "field"},
+		"ready",
+	} {
+		endpoint := shortSocketPath(t)
+		key := []byte("0123456789abcdef0123456789abcdef")
+		listener, err := listenEndpoint(endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := NewRPCServer(endpoint, key, nil)
+		done := make(chan error, 1)
+		go func() {
+			defer listener.Close()
+			connection, err := listener.Accept()
+			if err != nil {
+				done <- err
+				return
+			}
+			defer connection.Close()
+			var request Message
+			if err := decodeLimited(connection, &request); err != nil {
+				done <- err
+				return
+			}
+			done <- server.writeResponse(connection, request, payload, "")
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = NewRPCClient(endpoint, key).Health(ctx)
+		cancel()
+		if err == nil {
+			t.Errorf("invalid health response accepted: %#v", payload)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestRPCServerCancelsHandlerWhenClientDisconnects(t *testing.T) {
 	t.Parallel()
 

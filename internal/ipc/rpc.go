@@ -16,6 +16,8 @@ const (
 	defaultRPCWindow              = 30 * time.Second
 	maxRPCMessage                 = 80 << 20
 	windowsPipeSecurityDescriptor = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+	healthMethod                  = "executor.health"
+	healthProtocol                = "executor-ipc-v1"
 )
 
 type RPCHandler func(ctx context.Context, method string, params []byte) (any, error)
@@ -95,6 +97,11 @@ func (s *RPCServer) handleConnection(ctx context.Context, connection net.Conn) {
 	}
 	if err := s.verifier.Verify(request, time.Now()); err != nil {
 		_ = s.writeResponse(connection, request, nil, "unauthorized IPC request")
+		return
+	}
+	if request.Method == healthMethod {
+		// Service liveness must not run GUI queries or acquire application locks.
+		_ = s.writeResponse(connection, request, map[string]string{"protocol": healthProtocol}, "")
 		return
 	}
 
@@ -199,6 +206,18 @@ func (c *RPCClient) Call(ctx context.Context, method string, params any, result 
 		return nil
 	}
 	return json.Unmarshal(payload.Value, result)
+}
+
+// Health checks authenticated IPC liveness without consulting desktop state.
+func (c *RPCClient) Health(ctx context.Context) error {
+	var response map[string]string
+	if err := c.Call(ctx, healthMethod, struct{}{}, &response); err != nil {
+		return err
+	}
+	if len(response) != 1 || response["protocol"] != healthProtocol {
+		return errors.New("invalid Executor IPC health response")
+	}
+	return nil
 }
 
 func newMessage(id, method string, params json.RawMessage, key []byte) (Message, error) {

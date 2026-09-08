@@ -204,11 +204,10 @@ func (runtimeReadiness) Check(ctx context.Context, cfg config.Config, values sec
 func checkRuntimeOnce(ctx context.Context, cfg config.Config, values secrets.Values) error {
 	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	var status desktop.RPCDeviceStatus
-	if err := ipc.NewRPCClient(cfg.BrokerEndpoint, []byte(values.BrokerIPCKey)).Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+	if err := ipc.NewRPCClient(cfg.BrokerEndpoint, []byte(values.BrokerIPCKey)).Health(probeCtx); err != nil {
 		return fmt.Errorf("broker readiness: %w", err)
 	}
-	if err := ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey)).Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+	if err := ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey)).Health(probeCtx); err != nil {
 		return fmt.Errorf("desktop readiness: %w", err)
 	}
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+cfg.AgentAddress+"/.executor/health", nil)

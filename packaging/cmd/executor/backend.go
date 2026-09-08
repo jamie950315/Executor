@@ -47,10 +47,10 @@ type setupOptions = cli.SetupOptions
 
 func newBackend(stateDir string) *backend {
 	return &backend{
-		stateDir:      stateDir,
-		loadControl:   func(path string) (controlRuntime, error) { return control.Load(path) },
-		defaultConfig: config.Default,
-		remoteBaseURL: func(domain string) string { return "https://" + domain },
+		stateDir:        stateDir,
+		loadControl:     func(path string) (controlRuntime, error) { return control.Load(path) },
+		defaultConfig:   config.Default,
+		remoteBaseURL:   func(domain string) string { return "https://" + domain },
 		localHTTPClient: &http.Client{Timeout: 2 * time.Second},
 		now:             time.Now,
 	}
@@ -585,8 +585,7 @@ func unavailable(component string, cause error) error {
 func probeIPC(ctx context.Context, endpoint, key string) string {
 	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	var status desktop.RPCDeviceStatus
-	if err := ipc.NewRPCClient(endpoint, []byte(key)).Call(probeCtx, desktop.RPCMethodDeviceStatus, struct{}{}, &status); err != nil {
+	if err := ipc.NewRPCClient(endpoint, []byte(key)).Health(probeCtx); err != nil {
 		return "offline"
 	}
 	return "online"
