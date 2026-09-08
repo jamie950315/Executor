@@ -91,6 +91,36 @@ func TestConcurrentSaveState(t *testing.T) {
 	t.Run("distinct_cores", func(t *testing.T) { testConcurrentSaveState(t, true) })
 }
 
+func TestConcurrentStateReadersAndWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oauth-state.json")
+	if err := newTestCore(t).SaveState(path); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for index := range 32 {
+		core := newTestCore(t)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 5 {
+				var err error
+				if index%2 == 0 {
+					err = core.LoadState(path)
+				} else {
+					err = core.SaveState(path)
+				}
+				if err != nil {
+					t.Errorf("concurrent state access failed: %v", err)
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+}
+
 func testConcurrentSaveState(t *testing.T, distinct bool) {
 	sharedCore := newTestCore(t)
 	path := filepath.Join(t.TempDir(), "oauth-state.json")

@@ -32,6 +32,11 @@ type Config struct {
 	Now                  func() time.Time
 }
 
+// Serialize state-file access across Core instances in this process. Windows
+// cannot safely replace the same file concurrently or while a reader holds it
+// open. This is not a cross-process read/modify/write lock.
+var statePersistenceMu sync.Mutex
+
 type Core struct {
 	issuer               string
 	resource             string
@@ -47,7 +52,6 @@ type Core struct {
 	now func() time.Time
 
 	mu            sync.Mutex
-	saveMu        sync.Mutex
 	clients       map[string]ClientRegistration
 	codes         map[string]authorizationCodeRecord
 	refreshTokens map[string]refreshTokenRecord
@@ -552,8 +556,8 @@ func (c *Core) SaveState(path string) error {
 		return errors.New("state path is required")
 	}
 	// Keep snapshot and replacement ordered across concurrent HTTP requests.
-	c.saveMu.Lock()
-	defer c.saveMu.Unlock()
+	statePersistenceMu.Lock()
+	defer statePersistenceMu.Unlock()
 
 	state := c.snapshotState()
 	payload, err := json.Marshal(state)
@@ -612,6 +616,8 @@ func (c *Core) LoadState(path string) error {
 	if path == "" {
 		return errors.New("state path is required")
 	}
+	statePersistenceMu.Lock()
+	defer statePersistenceMu.Unlock()
 
 	payload, err := os.ReadFile(path)
 	if err != nil {

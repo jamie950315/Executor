@@ -37,12 +37,11 @@ import {
   validAccessTeamDomain,
   verifyAccessTeamDomain,
 } from "./lib/deploy-core.mjs";
-import { normalizeDeploymentOptions, parseDeploymentArguments } from "./lib/deploy-cli.mjs";
+import { normalizeDeploymentOptions, parseDeploymentArguments, resolveNpmInvocation } from "./lib/deploy-cli.mjs";
 
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerPath = join(dashboardRoot, "node_modules", "wrangler", "bin", "wrangler.js");
 const templatePath = join(dashboardRoot, "wrangler.deploy.template.jsonc");
-const npmBinary = process.platform === "win32" ? "npm.cmd" : "npm";
 const maximumCapturedOutput = 1024 * 1024;
 
 let stage = "argument validation";
@@ -59,19 +58,21 @@ try {
 async function main(options) {
   stage = "local prerequisites";
   assertSupportedNodeVersion();
+  const npm = await resolveNpmInvocation();
+  const runNpm = (args, runOptions) => run(npm.command, [...npm.args, ...args], runOptions);
   const apiToken = await readProtectedCredential(options.apiTokenFile, { platform: options.platform });
   try {
     await assertPackagePayload();
-    await run(npmBinary, ["--version"], { cwd: dashboardRoot });
+    await runNpm(["--version"], { cwd: dashboardRoot });
 
     stage = "lockfile installation";
-    await run(npmBinary, ["ci"], { cwd: dashboardRoot });
+    await runNpm(["ci"], { cwd: dashboardRoot });
     const wranglerVersion = assertWranglerV4((await run(process.execPath, [wranglerPath, "--version"], { cwd: dashboardRoot })).stdout);
 
     stage = "Dashboard package validation";
-    await run(npmBinary, ["test"], { cwd: dashboardRoot });
-    await run(npmBinary, ["run", "check"], { cwd: dashboardRoot });
-    await run(npmBinary, ["run", "build"], { cwd: dashboardRoot });
+    await runNpm(["test"], { cwd: dashboardRoot });
+    await runNpm(["run", "check"], { cwd: dashboardRoot });
+    await runNpm(["run", "build"], { cwd: dashboardRoot });
     const template = await readFile(templatePath, "utf8");
     const localConfig = renderWranglerConfig(template, {
       accountID: options.accountID,
@@ -354,15 +355,10 @@ function safeMessage(error) {
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
-    // Windows package managers are command shims (`.cmd`), not PE executables.
-    // Run only those known internal shims through the Windows command shell;
-    // all Node and Wrangler invocations remain direct child processes.
-    const windowsCommandShim = process.platform === "win32" && command === npmBinary;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.environment ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
-      shell: windowsCommandShim,
       windowsHide: true,
     });
     const stdout = [];

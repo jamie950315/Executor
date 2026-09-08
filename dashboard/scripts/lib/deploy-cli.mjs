@@ -1,5 +1,32 @@
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+
+// npm.cmd is not an executable. Resolve the selected installation's JS entrypoint
+// and pass it directly to Node, keeping paths and arguments out of cmd.exe.
+export async function resolveNpmInvocation(options = {}) {
+  if ((options.platform ?? process.platform) !== "win32") return { command: "npm", args: [] };
+  const environment = options.environment ?? process.env;
+  const command = options.execPath ?? process.execPath;
+  const isFile = options.isFile ?? (async (path) => {
+    try { return (await stat(path)).isFile(); }
+    catch (error) { if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false; throw error; }
+  });
+  const explicit = environment.npm_execpath;
+  if (typeof explicit === "string" && win32.basename(explicit).toLowerCase() === "npm-cli.js") {
+    if (!win32.isAbsolute(explicit) || !await isFile(explicit)) throw new Error("The selected npm JavaScript entrypoint is unavailable.");
+    return { command, args: [explicit] };
+  }
+  const pathKey = Object.keys(environment).find(key => key.toLowerCase() === "path");
+  for (const rawDirectory of (environment[pathKey] ?? "").split(";")) {
+    const directory = rawDirectory.replace(/^"(.*)"$/u, "$1");
+    if (!directory || !await isFile(win32.join(directory, "npm.cmd"))) continue;
+    const entrypoint = win32.join(directory, "node_modules", "npm", "bin", "npm-cli.js");
+    if (!await isFile(entrypoint)) throw new Error("The selected npm JavaScript entrypoint is unavailable; repair npm or launch through npm run deploy:source.");
+    return { command, args: [entrypoint] };
+  }
+  throw new Error("npm is unavailable on PATH; install npm before deploying the Dashboard.");
+}
 
 const commands = new Set(["deploy", "validate", "rotate-enrollment", "disable-enrollment", "rollback"]);
 
