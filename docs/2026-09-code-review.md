@@ -7,8 +7,9 @@ filesystem and desktop boundaries, configuration and secret storage, lifecycle,
 CLI, deployment scripts, service templates, packaging, and Dashboard application.
 Changes target reproducible defects and measured costs, not a wholesale rewrite.
 The initial source review was followed by an owner-authorized deployment and
-validation cycle on Mac, Pi5, Windows CTPS, and WSL. All four now run source
-revision `b75f0fb77f50b72857fbc44440846f80d1236697` with clean build provenance.
+validation cycle on Mac, Pi5, Windows CTPS, and WSL. Mac, Pi5, and WSL run
+`b75f0fb77f50b72857fbc44440846f80d1236697`; Windows was subsequently updated to
+`db1b7e6a4c409b2d0342c05e0d98023cd4de43b9`, all with clean build provenance.
 Production configuration, enrollment, tunnels, and owner credentials were preserved.
 
 ## Corrections
@@ -64,7 +65,7 @@ binary builds (Darwin builds include native CGO), Dashboard unit/component/Worke
 tests, type checking, linting, client build and Worker dry-run, packaging tests,
 shell syntax checks, and whitespace checks.
 
-Final Dashboard results: 104 unit tests, 41 component tests, and 44 Worker tests
+Final Dashboard results: 104 unit tests, 51 component tests, and 44 Worker tests
 passed; one Windows-only unit test was skipped on macOS. The complete Go race
 suite and all six binary builds passed after integration corrections.
 
@@ -81,7 +82,7 @@ background process-tree shutdown. Production Kill/Rotate were not used.
 | Mac arm64 | `a8361e0192bacf73a19b42583acd8ac94a7b1edfd25ad6a37d150ce8659099ba` | Full doctor healthy; owner/admin UID 501/0; signed helper retains granted permissions; 1512x982 screenshot and capture-only batch returned real images. A completed terminal returned all 64 KiB plus its final marker. |
 | Pi5 arm64 | `7d0b3a7e14ee28c9319059b000b2f28e4beb6a0bcc502fc11e832042faac8d67` | Full doctor healthy; owner/admin UID 1000/0; services active; headless desktop rejection is readable. |
 | WSL amd64 | `4d84c3ae04bccfe90606d77c07331dc429142777fb239327ca7f80ecdc2952dc` | Full doctor healthy; owner/admin UID 1000/0; services active; no active Linux desktop session is reported explicitly. |
-| Windows amd64 | `31dbb02f88100192351aa10072f7838510733562574e324535784890288ecb8b` | Full doctor healthy; interactive-owner/SYSTEM calls work; services and Desktop task running; permissions ready and real 2048x1152 image returned. |
+| Windows amd64 | `2b853860280588036a631fdfde77509cfba8213b2025d748840bc82f5ccc0270` | Full doctor healthy; interactive-owner/SYSTEM calls work; services and Desktop task running; full physical 2560x1440 capture and actual input verified at 125% scaling. |
 
 All targets exercised real authenticated filesystem operations and rejected
 missing-content writes without changing the existing fixture. Public issuer
@@ -98,9 +99,9 @@ reject wrong keys and invalid authenticated health markers rather than accepting
 an unrelated listener as healthy.
 
 The existing central Dashboard was updated to Worker version
-`e8499e34-5b1f-436d-8b4d-1e3e517b118e`, deployment
-`a4247456-2a76-4fc4-9d81-3c6184454b6f`, with UI source `6df29d0` and client
-asset `index-ByBbvg_A.js`. Its bindings, custom domain, and Access
+`e220fc40-b5d0-4f3c-97ce-19a9f73923db`, deployment
+`59960d8b-7d5e-4471-b402-f3dac66ffb41`, with UI source `315d8a4` and client
+asset `index-Gm1QQDRt.js`. Its bindings, custom domain, and Access
 boundary remained unchanged; enrollment remained disabled. All four signed
 device relays reconnected with recent heartbeats. Same-source Chrome interactions
 verified delayed output, failed-preview save protection, and stale-read cancellation.
@@ -130,6 +131,43 @@ two-second delay; the published page correctly displayed the completed character
 and subsequent completion marker. No host restart or credential change was needed
 for this frontend correction.
 
+### Computer Use follow-up
+
+Actual input testing, rather than screenshot-only testing, exposed a Windows DPI
+error: at 125% scaling, a requested `(291,148)` cursor location became physical
+`(364,185)`, outside the intended button. The previous 2048x1152 capture was also
+smaller than the 2560x1440 physical primary display. Screenshot and mouse helper
+processes now opt into physical-pixel coordinates before any WinForms display
+query. Cursor movement is checked instead of discarding native failures. Native
+Windows capture-size and no-input bindings tests passed before installation.
+
+The panel also had a deferred drag-origin read, lost selected drag buttons,
+missing pointer cancellation/capture, overlapping refresh/control calls, and an
+automatic error-refresh path that obscured uncertain outcomes. Ten new component
+regressions cover the corrected gesture and request boundaries. No delay/retry
+workaround or automatic input replay was added.
+
+The deployed fixes were exercised through the public Dashboard against an
+isolated WinForms window on Windows. Verification used both returned images and
+the fixture's actual received events:
+
+- Click incremented the fixture counter and typing populated its input.
+- Right-button drag received exactly the queued `(189,363)` to `(784,482)` path;
+  event locations, not the potentially newer global cursor position, were checked.
+- A 600-unit downward scroll moved the test list from row 1 to row 16.
+- Tab followed by Enter activated the fixture button; a separate native check
+  verified CTRL+A arrived with the Control modifier. Application shortcut behavior
+  is separate from delivery and is not inferred from an expected selection change.
+- Releasing a drag outside the screenshot queued no host action.
+- Pending requests disabled refresh/input; an unconfirmed execution attempt
+  stayed visible without automatic replay. Later independent refreshed tests
+  succeeded; the unconfirmed attempt is not claimed to have completed.
+
+Only the Windows runtime and existing Dashboard were updated for this follow-up.
+Windows retained exact config/secret fingerprints and passed 20 consecutive status
+checks plus full doctor. The temporary fixture and its terminal sessions were
+closed; no personal application was clicked or typed into.
+
 Operational consequence: the initial Pi5 restart ended six pre-existing terminal
 sessions before their workload state was checked. Their session state cannot be
 recovered. Subsequent host restarts checked existing workloads first; this is not
@@ -154,9 +192,9 @@ measurements, not whole-application speedups or production throughput promises.
   skipped on other operating systems.
 - Dashboard component interactions use real React components with controlled
   slow/out-of-order responses, and Worker tests use workerd. Authenticated
-  production in-app-browser flows are verified as listed above. Arbitrary
-  desktop typing/clicking, production Kill/Rotate, uploads, and destructive
-  lifecycle changes were intentionally not exercised in the owner's live environment.
+  production in-app-browser flows are verified as listed above. Desktop input was
+  confined to the isolated Windows fixture. Arbitrary personal-app operations,
+  production Kill/Rotate, uploads, and destructive lifecycle changes were not exercised.
 - Concurrent OAuth-file tests do not establish cross-process transactional
   coordination between independent stale in-memory snapshots.
 - Network reconnect backoff, platform capability checks, safe cleanup, recovery
