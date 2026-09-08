@@ -72,3 +72,22 @@ native input layouts, cursor bounds and epochs. `npm test`, `npm run check` and
 explicitly captures and discards three actual encoded samples, without recording a
 video file. This is an opt-in live-host test, not a substitute for browser decoding
 and actual interaction checks. Deployment verification is recorded in AGENTS.md.
+
+### Installed verification, 2026-09-08
+
+Mac and Windows run source revision `b449af6`, with matching installed hashes,
+healthy services and preserved credentials. Both produced real encoded samples
+in opt-in native capture checks. The deployed Dashboard preserves all four
+device grants and relay connectivity; Pi5 explicitly displays the Linux live
+video limitation.
+
+The Codex in-app browser currently times out during browser ICE gathering,
+before dispatching the device start request. The same Mac receives a valid
+Cloudflare STUN UDP response, so a general host-network outage is not established.
+Browser-tool isolated evaluation is not proof of page-global API availability.
+Actual browser video decoding and live input are **not yet verified**. Compare
+with a separately authenticated Chrome/Edge session before attributing the
+failure to the host, changing firewall policy or adding a paid relay.
+
+Startup failures distinguish browser initialization, network discovery, device
+start, response validation and answer acceptance; raw SDP is never displayed.

@@ -80,6 +80,11 @@ export class LiveDesktopConnection {
  constructor(private call: DeviceCall, private callbacks: LiveCallbacks) {}
  async start(status: LiveStatus) {
   if (this.closed) return;
+  if (typeof RTCPeerConnection !== "function") {
+   this.stop("This browser does not provide WebRTC video connections. Open this Dashboard in a WebRTC-enabled browser such as Chrome or Edge; device permissions cannot fix this browser limitation.");
+   return;
+  }
+  let failure = "The browser could not initialize a video connection. Check browser WebRTC support.";
   try {
    const pc = new RTCPeerConnection({ iceServers: status.iceServers.map((urls) => ({ urls })) }); this.pc = pc;
    pc.addTransceiver("video", { direction: "recvonly" });
@@ -98,17 +103,22 @@ export class LiveDesktopConnection {
      else throw new Error();
     } catch { this.stop("Invalid control response. The session has stopped."); }
    };
-   await pc.setLocalDescription(await pc.createOffer()); await gatherICE(pc, this.abort.signal); if (this.closed) return;
+   await pc.setLocalDescription(await pc.createOffer());
+   failure = "Browser network discovery failed or timed out before contacting the device. Check this browser's network access; no relay is configured.";
+   await gatherICE(pc, this.abort.signal); if (this.closed) return;
    const offer = pc.localDescription?.sdp; if (!offer) throw new Error();
    // Do not abort a dispatched start: its late result is needed to stop the exact remote lease.
+   failure = "The device could not start the live session. Check its video capture prerequisites and connection status.";
    const response = await this.call("desktop_live", { action: "start", offer, maxWidth: 1280, fps: 15, bitrate: 2500000 });
+   failure = "The device returned an invalid live-session response. Update the device and Dashboard to matching versions.";
    const s = response.result as Partial<LiveSession> | null;
    if (!s || typeof s.sessionId !== "string" || !s.sessionId || typeof s.answer !== "string" || typeof s.width !== "number" || s.width <= 0 || typeof s.height !== "number" || s.height <= 0 || typeof s.leaseSeconds !== "number" || s.leaseSeconds < 5) throw new Error();
    this.session = s as LiveSession;
    if (this.closed) { this.remoteStop(); return; }
    this.renewLater(); this.startup = setTimeout(() => this.stop("A direct connection could not be established. This network may require a relay, which is not configured."), 15000);
+   failure = "The browser rejected the device's video connection answer. Check browser H264/WebRTC support.";
    await pc.setRemoteDescription({ type: "answer", sdp: s.answer });
-  } catch { if (!this.closed) this.stop("Live desktop could not start. Check device permissions and direct network connectivity, then try again."); }
+  } catch { if (!this.closed) this.stop(failure); }
  }
  private renewLater() {
   this.lease = setTimeout(() => { void this.renew(); }, 5000);

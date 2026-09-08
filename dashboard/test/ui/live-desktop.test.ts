@@ -41,6 +41,23 @@ class FakePeer extends EventTarget {
 const liveStatus={supported:true,available:true,active:false,iceServers:[]};
 const liveSession={sessionId:"session1",answer:"answer",width:1280,height:720,leaseSeconds:15};
 describe("live desktop connection",()=>{
+ it("identifies local discovery timeout without blaming device permissions",async()=>{
+  vi.useFakeTimers();const peer=new FakePeer();peer.iceGatheringState="gathering";
+  vi.stubGlobal("RTCPeerConnection",vi.fn(function(){return peer;}));
+  const call=vi.fn();const stopped=vi.fn();const connection=new LiveDesktopConnection(call,{stream:vi.fn(),state:vi.fn(),stopped});
+  const starting=connection.start(liveStatus);await vi.advanceTimersByTimeAsync(8100);await starting;
+  expect(call).not.toHaveBeenCalled();expect(stopped).toHaveBeenCalledWith(expect.stringContaining("Browser network discovery failed"));
+  vi.unstubAllGlobals();vi.useRealTimers();
+ });
+ it("reports missing browser WebRTC before contacting the device",async()=>{
+  vi.stubGlobal("RTCPeerConnection",undefined);
+  const call=vi.fn();const stopped=vi.fn();
+  const connection=new LiveDesktopConnection(call,{stream:vi.fn(),state:vi.fn(),stopped});
+  await connection.start(liveStatus);
+  expect(call).not.toHaveBeenCalled();
+  expect(stopped).toHaveBeenCalledWith("This browser does not provide WebRTC video connections. Open this Dashboard in a WebRTC-enabled browser such as Chrome or Edge; device permissions cannot fix this browser limitation.");
+  vi.unstubAllGlobals();
+ });
  it("pings once a second for the server control watchdog and stops all heartbeats on close",async()=>{
   vi.useFakeTimers();const peer=new FakePeer();vi.stubGlobal("RTCPeerConnection",vi.fn(function(){return peer;}));
   const call=vi.fn(async()=>({result:liveSession})) as unknown as DeviceCall;const connection=new LiveDesktopConnection(call,{stream:vi.fn(),state:vi.fn(),stopped:vi.fn()});await connection.start(liveStatus);
