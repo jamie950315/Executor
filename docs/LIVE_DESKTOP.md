@@ -92,12 +92,24 @@ frame. The Codex in-app browser also displays freshly decoded Mac video.
 Explicit control enable, Escape release and Stop were verified; the encoder
 exits after Stop. Actual live pointer/typing on Mac has not yet been verified.
 
-Windows signaling exchanges valid LAN/reflexive candidates, but peer connectivity
-never advances beyond checking. Existing enabled inbound Block rules target the
-installed Executor for both UDP and TCP on Private/Public profiles. They were
-not modified. Windows browser decoding and live pointer/keyboard verification
-remain blocked pending an owner-approved firewall change. No paid relay was added.
-All temporary fixtures, capture sessions and file-transfer listeners were stopped.
+Windows connectivity was blocked by existing inbound UDP/TCP Block rules for
+the installed Executor. With explicit owner approval, the UDP rule now excludes
+only this Mac's current LAN IPv4 address; all other IPv4 and all IPv6 remain
+blocked. A program-specific UDP Allow rule is restricted to that Mac address,
+the current Windows LAN address/interface, and Private/Public profiles. TCP
+blocking is unchanged. Windows rejects IPv6 `::/0` in this scope field; the
+equivalent `::/1` and `8000::/1` are used. No system-wide firewall setting changed.
+These address-bound rules must be reviewed if either LAN address changes; this
+does not authorize other clients, networks, or Internet-wide inbound access.
+
+After that change, Chrome decoded 1280x720 Windows video at ~15 FPS (387 frames
+over 25.7 seconds, no drops). Actual live click, ASCII keys, Control+A key events,
+explicit Chinese text, drag and wheel were verified in an isolated Windows
+fixture, with visible results and fixture event output. The in-app browser also
+decoded Windows video and delivered Chinese text. Escape releases input; leaving
+the tab releases control, and stalled background video stops the session.
+Stopping and starting a new session works. No paid relay was added. Temporary
+fixtures and capture sessions were stopped; no encoder process remained.
 
 Startup failures distinguish browser initialization, network discovery, device
 start, response validation and answer acceptance; raw SDP is never displayed.
