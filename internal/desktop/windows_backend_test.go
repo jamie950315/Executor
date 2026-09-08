@@ -5,11 +5,61 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"image/png"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestWindowsMouseNativeBindingsCompileWithoutSendingInput(t *testing.T) {
+	script := buildWindowsMouseScript(MouseAction{Type: MouseActionClick, X: 1, Y: 2})
+	script = strings.Split(script, "$buttonHeld=$false;")[0]
+	if output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput(); err != nil {
+		t.Fatalf("native DPI/cursor bindings failed: %v\n%s", err, output)
+	}
+}
+
+func TestWindowsScreenshotMatchesPhysicalPrimaryResolution(t *testing.T) {
+	if os.Getenv("EXECUTOR_EXPECT_WINDOWS_DESKTOP_AVAILABLE") != "1" {
+		t.Skip("requires an explicitly available interactive Windows desktop")
+	}
+	path := filepath.Join(t.TempDir(), "physical.png")
+	script := buildWindowsScreenshotScript(path) + `; Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class ExecutorDisplayResolution {
+  [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr window);
+  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr window, IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern int GetDeviceCaps(IntPtr dc, int index);
+}
+'@; $dc=[ExecutorDisplayResolution]::GetDC([IntPtr]::Zero); try {
+  [pscustomobject]@{Width=[ExecutorDisplayResolution]::GetDeviceCaps($dc,118); Height=[ExecutorDisplayResolution]::GetDeviceCaps($dc,117)} | ConvertTo-Json -Compress
+} finally { [void][ExecutorDisplayResolution]::ReleaseDC([IntPtr]::Zero,$dc) }`
+	output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("capture failed: %v\n%s", err, output)
+	}
+	var physical struct{ Width, Height int }
+	if err := json.Unmarshal(output, &physical); err != nil {
+		t.Fatalf("physical resolution invalid: %v\n%s", err, output)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	config, err := png.DecodeConfig(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Width != physical.Width || config.Height != physical.Height {
+		t.Fatalf("capture %dx%d differs from physical primary %dx%d", config.Width, config.Height, physical.Width, physical.Height)
+	}
+	t.Logf("physical primary capture: %dx%d", config.Width, config.Height)
+}
 
 func TestWindowsDesktopAvailabilityProbeRealSession(t *testing.T) {
 	expectation := os.Getenv("EXECUTOR_EXPECT_WINDOWS_DESKTOP_AVAILABLE")

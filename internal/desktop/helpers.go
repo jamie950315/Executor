@@ -357,7 +357,23 @@ func darwinKeyCode(key keyName) (int, error) {
 }
 
 func buildWindowsScreenshotScript(path string) string {
-	return "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bitmap=New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height; $graphics=[System.Drawing.Graphics]::FromImage($bitmap); $graphics.CopyFromScreen($bounds.X,$bounds.Y,0,0,$bitmap.Size); $bitmap.Save('" + psSingleQuote(path) + "',[System.Drawing.Imaging.ImageFormat]::Png); $graphics.Dispose(); $bitmap.Dispose()"
+	return windowsPhysicalPixelScript() + "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bitmap=New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height; $graphics=[System.Drawing.Graphics]::FromImage($bitmap); $graphics.CopyFromScreen($bounds.X,$bounds.Y,0,0,$bitmap.Size); $bitmap.Save('" + psSingleQuote(path) + "',[System.Drawing.Imaging.ImageFormat]::Png); $graphics.Dispose(); $bitmap.Dispose()"
+}
+
+// Each operation runs in a fresh PowerShell process. Initialize before WinForms
+// caches display bounds so capture and input both use primary-display pixels.
+func windowsPhysicalPixelScript() string {
+	return `$ErrorActionPreference='Stop'; Add-Type @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class ExecutorDPI {
+  [DllImport("user32.dll", SetLastError=true)] private static extern bool SetProcessDPIAware();
+  public static void Initialize() {
+    if (!SetProcessDPIAware()) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot initialize physical desktop coordinates");
+  }
+}
+'@; [ExecutorDPI]::Initialize(); `
 }
 
 func buildWindowsDesktopAvailabilityScript() string {
@@ -409,17 +425,20 @@ func buildWindowsMouseScript(action MouseAction) string {
 	steps, _ := expandMouseAction(action)
 	modifiers, _ := normalizeModifiers(action.Keys)
 	var events strings.Builder
+	events.WriteString("$buttonHeld=$false; try { ")
 	for _, modifier := range modifiers {
 		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifier) + ",0,0," + extraInfo + "); ")
 	}
 	for _, step := range steps {
 		switch step.Type {
 		case mouseStepMove, mouseStepDrag:
-			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + ") | Out-Null; ")
+			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + "); ")
 		case mouseStepDown:
 			events.WriteString("[ExecutorMouse]::mouse_event(" + buttonMask + ",0,0,0," + extraInfo + "); ")
+			events.WriteString("$buttonHeld=$true; ")
 		case mouseStepUp:
 			events.WriteString("[ExecutorMouse]::mouse_event(" + strconv.Itoa(maskUp(buttonMask)) + ",0,0,0," + extraInfo + "); ")
+			events.WriteString("$buttonHeld=$false; ")
 		case mouseStepScroll:
 			scrollX, scrollY := nativeWheelDeltas(step.ScrollX, step.ScrollY)
 			if step.ScrollY != 0 {
@@ -430,10 +449,29 @@ func buildWindowsMouseScript(action MouseAction) string {
 			}
 		}
 	}
+	events.WriteString("} finally { if($buttonHeld){ [ExecutorMouse]::mouse_event(" + strconv.Itoa(maskUp(buttonMask)) + ",0,0,0," + extraInfo + "); }; ")
 	for index := len(modifiers) - 1; index >= 0; index-- {
 		events.WriteString("[ExecutorMouse]::keybd_event(" + windowsVirtualKey(modifiers[index]) + ",0,2," + extraInfo + "); ")
 	}
-	return "$ErrorActionPreference='Stop'; Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class ExecutorMouse {\n  [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int X, int Y);\n  [DllImport(\"user32.dll\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, UIntPtr dwExtraInfo);\n  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);\n}\n'@; " + events.String()
+	events.WriteString("}")
+	return windowsPhysicalPixelScript() + `Add-Type @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class ExecutorMouse {
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [DllImport("user32.dll", EntryPoint="SetCursorPos", SetLastError=true)] private static extern bool NativeSetCursorPos(int X, int Y);
+  [DllImport("user32.dll", SetLastError=true)] private static extern bool GetCursorPos(out POINT point);
+  public static void SetCursorPos(int X, int Y) {
+    if (!NativeSetCursorPos(X, Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Desktop cursor movement failed");
+    POINT point;
+    if (!GetCursorPos(out point)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Desktop cursor position unavailable");
+    if (point.X != X || point.Y != Y) throw new InvalidOperationException("Desktop cursor did not reach the requested position");
+  }
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+}
+'@; ` + events.String()
 }
 
 func windowsVirtualKey(key keyName) string {

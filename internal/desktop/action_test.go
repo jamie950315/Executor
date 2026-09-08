@@ -325,8 +325,9 @@ func TestWindowsMouseScriptIncludesModifiersDoubleClickDragAndScroll(t *testing.
 	doubleClick := buildWindowsMouseScript(MouseAction{
 		Type: MouseActionDoubleClick, X: 10, Y: 20, Keys: []string{"CTRL"},
 	})
-	if strings.Count(doubleClick, "mouse_event(2,0,0,0,[UIntPtr]::Zero)") != 2 ||
-		strings.Count(doubleClick, "mouse_event(4,0,0,0,[UIntPtr]::Zero)") != 2 {
+	normalClick := strings.Split(doubleClick, "} finally {")[0]
+	if strings.Count(normalClick, "mouse_event(2,0,0,0,[UIntPtr]::Zero)") != 2 ||
+		strings.Count(normalClick, "mouse_event(4,0,0,0,[UIntPtr]::Zero)") != 2 {
 		t.Fatalf("double click does not contain two down/up pairs: %s", doubleClick)
 	}
 	if strings.Index(doubleClick, "keybd_event(0x11,0,0,[UIntPtr]::Zero)") > strings.Index(doubleClick, "mouse_event(2,0,0,0,[UIntPtr]::Zero)") ||
@@ -358,6 +359,32 @@ func TestNativeWheelDeltasInvertComputerUseVerticalDirection(t *testing.T) {
 	x, y := nativeWheelDeltas(-30, 40)
 	if x != -30 || y != -40 {
 		t.Fatalf("native wheel deltas = (%d,%d), want (-30,-40)", x, y)
+	}
+}
+
+func TestWindowsScreenshotAndMouseInitializeDPIBeforeCoordinates(t *testing.T) {
+	for name, script := range map[string]string{
+		"screenshot": buildWindowsScreenshotScript(`C:\Temp\shot.png`),
+		"mouse":      buildWindowsMouseScript(MouseAction{Type: MouseActionClick, X: 10, Y: 20}),
+	} {
+		initialize := strings.Index(script, "[ExecutorDPI]::Initialize()")
+		if initialize < 0 || !strings.Contains(script, "if (!SetProcessDPIAware())") {
+			t.Fatalf("%s must initialize checked physical-pixel coordinates", name)
+		}
+		for _, operation := range []string{"Add-Type -AssemblyName System.Windows.Forms", "[ExecutorMouse]::SetCursorPos("} {
+			if index := strings.Index(script, operation); index >= 0 && initialize > index {
+				t.Fatalf("%s initializes DPI after coordinate-sensitive operation", name)
+			}
+		}
+	}
+}
+
+func TestWindowsMouseRejectsUnconfirmedMovementAndReleasesHeldInput(t *testing.T) {
+	script := buildWindowsMouseScript(MouseAction{Type: MouseActionDrag, Path: []Point{{X: 1, Y: 2}, {X: 3, Y: 4}}, Keys: []string{"CTRL"}})
+	for _, required := range []string{"SetLastError=true", "if (!NativeSetCursorPos(X, Y))", "if (!GetCursorPos(out point))", "point.X != X || point.Y != Y", "finally {", "if($buttonHeld)", "keybd_event(0x11,0,2,[UIntPtr]::Zero)"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("mouse script missing safety check %q", required)
+		}
 	}
 }
 
