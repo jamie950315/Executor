@@ -6,6 +6,23 @@ import (
 	"time"
 )
 
+func TestVerifierRetainsFutureDatedNonceUntilMessageExpires(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	window := 30 * time.Second
+	now := time.Unix(1_760_000_000, 0)
+	message := Message{ID: "future", Timestamp: now.Add(window).Unix(), Nonce: "future-nonce", Method: "test"}
+	if err := Sign(&message, key); err != nil {
+		t.Fatal(err)
+	}
+	verifier := NewVerifier(key, window)
+	if err := verifier.Verify(message, now); err != nil {
+		t.Fatalf("initial valid message: %v", err)
+	}
+	if err := verifier.Verify(message, now.Add(window+time.Second)); err == nil {
+		t.Fatal("future-dated message replayed after cache eviction but before timestamp expiry")
+	}
+}
+
 func TestSignVerifyAcceptsFreshMessageOnce(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	now := time.Unix(1000, 0).UTC()

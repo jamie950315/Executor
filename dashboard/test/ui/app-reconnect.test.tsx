@@ -206,7 +206,7 @@ describe("fleet revalidation", () => {
     await flushAsyncWork();
 
     expect(screen.getByRole("tab", { name: "Control" })).toBeVisible();
-    expect(screen.getByText("Lifecycle action failed safely")).toBeVisible();
+    expect(screen.getByText(/Lifecycle outcome is unconfirmed/u)).toBeVisible();
     expect(screen.queryByText("sensitive upstream detail")).not.toBeInTheDocument();
     view.unmount();
   });

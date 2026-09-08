@@ -22,6 +22,29 @@ foreach ($Script in $Scripts) {
 $TemporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("executor-dashboard-windows-test-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $TemporaryRoot | Out-Null
 try {
+  # Use an isolated rollback stub: never touch host services or real state.
+  $UninstallFixture = Join-Path $TemporaryRoot "uninstall-fixture"
+  $UninstallState = Join-Path $UninstallFixture "state"
+  New-Item -ItemType Directory -Path $UninstallState -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $RepositoryRoot "scripts\uninstall.ps1") -Destination $UninstallFixture
+  [System.IO.File]::WriteAllText((Join-Path $UninstallFixture "rollback.ps1"), "exit 9`n")
+  $PreservedState = Join-Path $UninstallState "preserve.txt"
+  [System.IO.File]::WriteAllText($PreservedState, "test-only state")
+  $PreviousStateDir = $env:EXECUTOR_STATE_DIR
+  $PreviousErrorPreference = $ErrorActionPreference
+  try {
+    $env:EXECUTOR_STATE_DIR = $UninstallState
+    $ErrorActionPreference = "Continue"
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $UninstallFixture "uninstall.ps1") 2>$null
+    $ErrorActionPreference = $PreviousErrorPreference
+    if ($LASTEXITCODE -eq 0 -or -not (Test-Path -LiteralPath $PreservedState)) {
+      throw "Windows uninstall must fail and preserve state when rollback fails."
+    }
+  } finally {
+    $ErrorActionPreference = $PreviousErrorPreference
+    $env:EXECUTOR_STATE_DIR = $PreviousStateDir
+  }
+
   $TokenPath = Join-Path $TemporaryRoot "cloudflare.token"
   [System.IO.File]::WriteAllText($TokenPath, "test-only-dashboard-api-token`n")
   $ProtectedFileScript = Join-Path $DashboardRoot "scripts\protected-file.ps1"

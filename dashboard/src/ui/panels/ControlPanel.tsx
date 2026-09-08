@@ -94,7 +94,7 @@ export function ControlPanel({ call, device, session, onSensitive, onKilled, onR
       }
     } catch (error) {
       if (!controller.signal.aborted && activeLifecycle.current === controller && mounted.current) {
-        if (mode !== "remove" || !onRemoveFailure(error)) setStatus("Lifecycle action failed safely");
+        if (mode !== "remove" || !onRemoveFailure(error)) setStatus("Lifecycle outcome is unconfirmed. Check the host locally before retrying; the action may already have completed.");
       }
     } finally {
       if (activeLifecycle.current === controller) {

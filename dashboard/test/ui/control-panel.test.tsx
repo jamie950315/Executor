@@ -35,6 +35,15 @@ function renderControl(overrides: { onSensitive?: (value: SensitiveResult) => vo
 }
 
 describe("Lifecycle controls", () => {
+  it("does not claim a safe failure when the lifecycle result is lost", async () => {
+    vi.mocked(runSensitiveLifecycle).mockRejectedValue(new Error("response lost"));
+    renderControl();
+    await userEvent.click(screen.getByRole("button", { name: "Rotate credentials" }));
+    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm rotate" }));
+    expect(await screen.findByText(/outcome is unconfirmed/u)).toBeVisible();
+    expect(screen.queryByText(/failed safely/u)).not.toBeInTheDocument();
+  });
   it("requires acknowledgement plus the exact device name for Kill and keeps Resume disabled while healthy", async () => {
     const onSensitive = vi.fn(); const onKilled = vi.fn();
     const call = vi.fn(async () => ({ requestID: "status", result: { state: "armed", agent: "reachable", broker: "reachable", desktop: "reachable", tunnel: "not monitored" } }));

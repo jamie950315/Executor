@@ -47,6 +47,7 @@ type Core struct {
 	now func() time.Time
 
 	mu            sync.Mutex
+	saveMu        sync.Mutex
 	clients       map[string]ClientRegistration
 	codes         map[string]authorizationCodeRecord
 	refreshTokens map[string]refreshTokenRecord
@@ -431,7 +432,7 @@ func (c *Core) ExchangeCode(request TokenRequest) (TokenSet, error) {
 		c.mu.Unlock()
 		return TokenSet{}, errors.New("unknown authorization code")
 	}
-	if record.ExpiresAt.Before(c.now()) {
+	if !c.now().Before(record.ExpiresAt) {
 		delete(c.codes, request.Code)
 		c.mu.Unlock()
 		return TokenSet{}, errors.New("authorization code expired")
@@ -452,7 +453,7 @@ func (c *Core) ExchangeCode(request TokenRequest) (TokenSet, error) {
 	delete(c.codes, request.Code)
 	c.mu.Unlock()
 
-	return c.issueTokens(record.ClientID, record.Subject, record.Scopes)
+	return c.issueTokens(record.ClientID, record.Subject, record.Scopes, record.Generation)
 }
 
 func (c *Core) Refresh(request TokenRefreshRequest) (TokenSet, error) {
@@ -468,7 +469,7 @@ func (c *Core) Refresh(request TokenRefreshRequest) (TokenSet, error) {
 		c.mu.Unlock()
 		return TokenSet{}, errors.New("refresh token client mismatch")
 	}
-	if record.ExpiresAt.Before(c.now()) {
+	if !c.now().Before(record.ExpiresAt) {
 		delete(c.refreshTokens, hash)
 		c.mu.Unlock()
 		return TokenSet{}, errors.New("refresh token expired")
@@ -490,7 +491,7 @@ func (c *Core) Refresh(request TokenRefreshRequest) (TokenSet, error) {
 	delete(c.refreshTokens, hash)
 	c.mu.Unlock()
 
-	return c.issueTokens(record.ClientID, record.Subject, scopes)
+	return c.issueTokens(record.ClientID, record.Subject, scopes, record.Generation)
 }
 
 func (c *Core) VerifyAccessToken(token string, options VerifyOptions) (AccessTokenClaims, error) {
@@ -550,6 +551,9 @@ func (c *Core) SaveState(path string) error {
 	if path == "" {
 		return errors.New("state path is required")
 	}
+	// Keep snapshot and replacement ordered across concurrent HTTP requests.
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
 
 	state := c.snapshotState()
 	payload, err := json.Marshal(state)
@@ -565,11 +569,11 @@ func (c *Core) SaveState(path string) error {
 		return statErr
 	}
 
-	tmpPath := path + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".oauth-state-*")
 	if err != nil {
 		return err
 	}
+	tmpPath := file.Name()
 	if existing != nil {
 		if err := preserveFileOwnership(file, existing); err != nil {
 			_ = file.Close()
@@ -653,8 +657,15 @@ func (c *Core) LoadState(path string) error {
 	return nil
 }
 
-func (c *Core) issueTokens(clientID string, subject string, scopes []string) (TokenSet, error) {
+func (c *Core) issueTokens(clientID string, subject string, scopes []string, generation uint64) (TokenSet, error) {
 	now := c.now()
+	// Revocation must not upgrade an already validated grant to a new generation.
+	// Hold the lock through issuance so both tokens share the grant's generation.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.generation {
+		return TokenSet{}, errors.New("token grant revoked")
+	}
 	accessToken, err := c.signJWT(jwtClaims{
 		Issuer:     c.issuer,
 		Subject:    subject,
@@ -663,7 +674,7 @@ func (c *Core) issueTokens(clientID string, subject string, scopes []string) (To
 		Scope:      strings.Join(dedupeScopes(scopes), " "),
 		IssuedAt:   now.Unix(),
 		ExpiresAt:  now.Add(c.accessTokenTTL).Unix(),
-		Generation: c.currentGeneration(),
+		Generation: generation,
 		TokenID:    randomID("atk"),
 	})
 	if err != nil {
@@ -676,12 +687,10 @@ func (c *Core) issueTokens(clientID string, subject string, scopes []string) (To
 		Scopes:     dedupeScopes(scopes),
 		Subject:    subject,
 		ExpiresAt:  now.Add(c.refreshTokenTTL),
-		Generation: c.currentGeneration(),
+		Generation: generation,
 	}
 
-	c.mu.Lock()
 	c.refreshTokens[hashRefreshToken(refreshToken)] = refreshRecord
-	c.mu.Unlock()
 
 	return TokenSet{
 		TokenType:    "Bearer",
@@ -745,12 +754,6 @@ func (c *Core) lookupClient(clientID string) (ClientRegistration, bool) {
 
 	client, ok := c.clients[clientID]
 	return client, ok
-}
-
-func (c *Core) currentGeneration() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.generation
 }
 
 func hashRefreshToken(token string) string {

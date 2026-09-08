@@ -6,22 +6,22 @@
   <string>com.executor.dashboard</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{{ .BinaryPath }}</string>
+    <string>{{ .BinaryPath | html }}</string>
     <string>dashboard</string>
     <string>--config</string>
-    <string>{{ .ConfigPath }}</string>
+    <string>{{ .ConfigPath | html }}</string>
   </array>
   <key>UserName</key>
-  <string>{{ .BrokerUser }}</string>
+  <string>{{ .BrokerUser | html }}</string>
   <key>GroupName</key>
-  <string>{{ .BrokerGroup }}</string>
+  <string>{{ .BrokerGroup | html }}</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>{{ .LogPath }}</string>
+  <string>{{ .LogPath | html }}</string>
   <key>StandardErrorPath</key>
-  <string>{{ .LogPath }}</string>
+  <string>{{ .LogPath | html }}</string>
 </dict>
 </plist>

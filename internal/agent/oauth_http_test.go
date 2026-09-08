@@ -24,6 +24,23 @@ import (
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+func TestRegistrationRejectsTrailingDataBeforePersisting(t *testing.T) {
+	for _, suffix := range []string{` {}`, ` garbage`, strings.Repeat(" ", 64<<10)} {
+		core := testOAuthCore(t)
+		statePath := filepath.Join(t.TempDir(), "oauth-state.json")
+		h := NewOAuthHandler(core, "https://executor.example.com", nil, WithOAuthStatePath(statePath))
+		body := `{"redirect_uris":["http://127.0.0.1/callback"]}` + suffix
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(body)))
+		if res.Code != http.StatusBadRequest {
+			t.Errorf("trailing data accepted: status %d", res.Code)
+		}
+		if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+			t.Errorf("invalid registration persisted state: %v", err)
+		}
+	}
+}
+
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {

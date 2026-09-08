@@ -1000,6 +1000,16 @@ func TestWindowsBootstrapResolvesCloudflaredExecutablePathForService(t *testing.
 	}
 }
 
+func TestWindowsUninstallStopsBeforeDeletionWhenRollbackFails(t *testing.T) {
+	script := readFile(t, filepath.Join(repoRoot(t), "scripts", "uninstall.ps1"))
+	rollback := strings.Index(script, "& powershell")
+	guard := strings.Index(script, "if ($LASTEXITCODE -ne 0)")
+	deletion := strings.Index(script, "Remove-Item")
+	if rollback < 0 || guard < rollback || deletion < guard || !strings.Contains(script[guard:deletion], "throw ") {
+		t.Fatal("Windows uninstall must abort on a failed rollback before deleting state")
+	}
+}
+
 func TestUnixBootstrapResolvesCloudflaredExecutablePathForService(t *testing.T) {
 	t.Parallel()
 

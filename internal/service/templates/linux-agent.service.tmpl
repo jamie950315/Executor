@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{ .BinaryPath }} agent --config {{ .ConfigPath }}
+ExecStart={{ .BinaryPath | systemdPath }} agent --config {{ .ConfigPath | systemdArg }}
 User={{ .AgentUser }}
 Group={{ .AgentGroup }}
 Restart=always
 RestartSec=5
-WorkingDirectory={{ .DataDir }}
+WorkingDirectory={{ .DataDir | systemdWorkingDirectory }}
 
 [Install]
 WantedBy=multi-user.target

@@ -6,22 +6,22 @@
   <string>com.executor.agent</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{{ .BinaryPath }}</string>
+    <string>{{ .BinaryPath | html }}</string>
     <string>agent</string>
     <string>--config</string>
-    <string>{{ .ConfigPath }}</string>
+    <string>{{ .ConfigPath | html }}</string>
   </array>
   <key>UserName</key>
-  <string>{{ .AgentUser }}</string>
+  <string>{{ .AgentUser | html }}</string>
   <key>GroupName</key>
-  <string>{{ .AgentGroup }}</string>
+  <string>{{ .AgentGroup | html }}</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>{{ .LogPath }}</string>
+  <string>{{ .LogPath | html }}</string>
   <key>StandardErrorPath</key>
-  <string>{{ .LogPath }}</string>
+  <string>{{ .LogPath | html }}</string>
 </dict>
 </plist>

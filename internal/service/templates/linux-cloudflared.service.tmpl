@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{ .CloudflaredBinaryPath }} tunnel --logfile {{ .CloudflaredLogPath }} run --token-file {{ .CloudflaredTokenPath }}
+ExecStart={{ .CloudflaredBinaryPath | systemdPath }} tunnel --logfile {{ .CloudflaredLogPath | systemdArg }} run --token-file {{ .CloudflaredTokenPath | systemdArg }}
 Restart=on-failure
 RestartSec=5s
 

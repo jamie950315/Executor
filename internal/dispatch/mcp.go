@@ -275,8 +275,11 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 		return nil, err
 	}
 	switch action {
-	case "write_file":
-		content, _ := arguments["content"].(string)
+	case "write_file", "append_file":
+		content, ok := arguments["content"].(string)
+		if !ok {
+			return nil, errors.New("content must be a string")
+		}
 		data, encoding, encoded, err := decodeFileContent(arguments, content)
 		if err != nil {
 			return nil, err
@@ -297,20 +300,6 @@ func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (an
 		return d.call(ctx, caller, method, desktop.RPCFilesystemMoveParams{Src: path, Dst: destination})
 	case "delete":
 		return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
-	case "append_file":
-		content, _ := arguments["content"].(string)
-		data, encoding, encoded, err := decodeFileContent(arguments, content)
-		if err != nil {
-			return nil, err
-		}
-		result, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)})
-		if err != nil {
-			return nil, err
-		}
-		if encoded {
-			return map[string]any{"encoding": encoding, "size": len(data)}, nil
-		}
-		return result, nil
 	case "mkdir":
 		return d.call(ctx, caller, method, desktop.RPCFilesystemMkdirParams{Path: path, Perm: fs.FileMode(0o755)})
 	default:

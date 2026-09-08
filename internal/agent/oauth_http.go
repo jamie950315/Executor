@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -100,6 +101,11 @@ func (h *oauthHandler) register(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err := decoder.Decode(&request); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "request must contain exactly one JSON object within the size limit")
 		return
 	}
 	for _, redirectURI := range request.RedirectURIs {

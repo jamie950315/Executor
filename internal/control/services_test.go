@@ -1,10 +1,21 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestServiceFailureIdentifiesOperationWithoutCommandOutput(t *testing.T) {
+	want := errors.New("exit status 5")
+	m := systemServiceManager{platform: "darwin", run: func(context.Context, commandSpec) error { return want }}
+	err := m.Start(context.Background(), Broker)
+	if !errors.Is(err, want) || !strings.Contains(err.Error(), "start broker") || !strings.Contains(err.Error(), "launchctl") {
+		t.Fatalf("service failure lost operation context: %v", err)
+	}
+}
 
 func TestLinuxCommandsUseInstalledCloudflaredUnitAndDesktopRuntime(t *testing.T) {
 	env := func(name string) string {

@@ -90,6 +90,10 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		usage(stderr)
 		return 2
 	}
+	if (args[0] == "kill" || args[0] == "resume" || args[0] == "rotate") && len(args) != 1 {
+		usage(stderr)
+		return 2
+	}
 	switch args[0] {
 	case "dashboard":
 		if len(args) < 2 {
@@ -127,7 +131,9 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 				return printError(stderr, err)
 			}
 			if *asJSON {
-				_ = json.NewEncoder(stdout).Encode(result)
+				if err := json.NewEncoder(stdout).Encode(result); err != nil {
+					return printError(stderr, err)
+				}
 			} else {
 				fmt.Fprintf(stdout, "Unified Dashboard: enrolled\nOrigin: %s\nRelay: %s\n", result.URL, result.Relay)
 			}
@@ -145,6 +151,10 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		cloudflareZoneID := set.String("cloudflare-zone-id", "", "explicit Cloudflare zone ID")
 		cloudflareTunnelName := set.String("cloudflare-tunnel-name", "", "Cloudflare named tunnel name")
 		if err := set.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if set.NArg() != 0 {
+			usage(stderr)
 			return 2
 		}
 		result, err := backend.Setup(ctx, SetupOptions{
@@ -174,12 +184,18 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		if err := set.Parse(args[1:]); err != nil {
 			return 2
 		}
+		if set.NArg() != 0 {
+			usage(stderr)
+			return 2
+		}
 		status, err := backend.Status(ctx)
 		if err != nil {
 			return printError(stderr, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(status)
+			if err := json.NewEncoder(stdout).Encode(status); err != nil {
+				return printError(stderr, err)
+			}
 		} else {
 			fmt.Fprintf(stdout, "Executor: %s\nDomain: %s\n", status.State, status.Domain)
 		}
@@ -218,12 +234,18 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 		if err := set.Parse(args[1:]); err != nil {
 			return 2
 		}
+		if set.NArg() != 0 {
+			usage(stderr)
+			return 2
+		}
 		result, err := backend.Doctor(ctx, *full)
 		if err != nil {
 			return printError(stderr, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(result)
+			if err := json.NewEncoder(stdout).Encode(result); err != nil {
+				return printError(stderr, err)
+			}
 		} else {
 			for _, check := range result.Checks {
 				mark := "FAIL"
@@ -257,7 +279,9 @@ func Run(ctx context.Context, args []string, backend Backend, stdout, stderr io.
 			return printError(stderr, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(report)
+			if err := json.NewEncoder(stdout).Encode(report); err != nil {
+				return printError(stderr, err)
+			}
 		} else {
 			printPermissionReport(stdout, report)
 		}

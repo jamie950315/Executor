@@ -328,6 +328,12 @@ func WriteFrame(writer io.Writer, payload []byte) error {
 }
 
 func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcRequest) (*rpcResponse, int, string) {
+	switch request.ID.(type) {
+	case nil, string, float64:
+		// JSON-RPC IDs may only be strings, numbers, or null.
+	default:
+		return errorResponse(nil, -32600, "invalid JSON-RPC id"), http.StatusBadRequest, sessionID
+	}
 	if request.JSONRPC != "2.0" {
 		return errorResponse(request.ID, -32600, "invalid JSON-RPC version"), http.StatusBadRequest, sessionID
 	}

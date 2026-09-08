@@ -794,6 +794,29 @@ func TestToolCallRejectsNonObjectArgumentsBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestToolCallRejectsInvalidRequestIDBeforeDispatch(t *testing.T) {
+	for _, id := range []any{true, []any{1}, map[string]any{"id": 1}} {
+		dispatched := false
+		server := NewServer(ServerConfig{Dispatcher: func(context.Context, ToolCall) (any, error) {
+			dispatched = true
+			return nil, nil
+		}})
+		initialize := performHTTPRequest(t, server, "", rpcRequest{JSONRPC: "2.0", ID: "init", Method: "initialize"})
+		response := performHTTPRequest(t, server, initialize.Header().Get(SessionHeader), rpcRequest{
+			JSONRPC: "2.0", ID: id, Method: "tools/call",
+			Params: map[string]any{"name": "device_status"},
+		})
+		if response.Code != http.StatusBadRequest || dispatched {
+			t.Errorf("invalid id %T: status=%d dispatched=%v", id, response.Code, dispatched)
+		}
+		var body rpcResponse
+		decodeJSON(t, response.Body.Bytes(), &body)
+		if body.Error == nil || body.Error.Code != -32600 || body.ID != nil {
+			t.Errorf("invalid id %T did not return invalid-request with null id", id)
+		}
+	}
+}
+
 func TestStdioHandlerUsesMCPFramingAndRetainsSession(t *testing.T) {
 	t.Parallel()
 

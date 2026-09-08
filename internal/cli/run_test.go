@@ -255,6 +255,42 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnexpectedArgumentsBeforeCallingBackend(t *testing.T) {
+	for _, args := range [][]string{
+		{"kill", "--help"}, {"resume", "typo"}, {"rotate", "--dry-run"},
+		{"setup", "typo", "--domain", "executor.example.com"},
+		{"status", "typo"}, {"doctor", "typo"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			backend := &fakeBackend{}
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), args, backend, &stdout, &stderr)
+			if code != 2 || backend.called != "" {
+				t.Fatalf("code=%d called=%q: malformed command must not reach backend", code, backend.called)
+			}
+		})
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("output unavailable") }
+
+func TestRunReportsJSONOutputFailure(t *testing.T) {
+	for _, args := range [][]string{
+		{"status", "--json"}, {"doctor", "--json"},
+		{"dashboard", "status", "--json"}, {"permissions", "status", "--json"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := Run(context.Background(), args, &fakeBackend{}, failingWriter{}, &stderr)
+			if code != 1 || !strings.Contains(stderr.String(), "output unavailable") {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunDashboardEnrollPassesOnlyTokenFilePathAndDoesNotPrintCredential(t *testing.T) {
 	t.Parallel()
 	backend := &fakeBackend{}

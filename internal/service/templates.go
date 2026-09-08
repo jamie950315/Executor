@@ -4,6 +4,7 @@ import (
 	"embed"
 	"errors"
 	"path"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -120,7 +121,13 @@ func renderTemplate(name string, cfg InstallConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmpl, err := template.New(path.Base(name)).Parse(string(body))
+	tmpl, err := template.New(path.Base(name)).Funcs(template.FuncMap{
+		"systemdPath":             systemdPath,
+		"systemdWorkingDirectory": systemdWorkingDirectory,
+		"systemdArg": func(value string) string {
+			return systemdPath(strings.ReplaceAll(value, "$", "$$"))
+		},
+	}).Parse(string(body))
 	if err != nil {
 		return "", err
 	}
@@ -129,4 +136,20 @@ func renderTemplate(name string, cfg InstallConfig) (string, error) {
 		return "", err
 	}
 	return out.String(), nil
+}
+
+// Unit-file paths expand percent specifiers even inside quotes. ExecStart
+// arguments additionally expand dollars, which systemdArg escapes separately.
+func systemdPath(value string) string {
+	return strconv.Quote(strings.ReplaceAll(value, "%", "%%"))
+}
+
+// WorkingDirectory is a whole path, not a quoted ExecStart word. Unit-file
+// parsing strips boundary whitespace and treats trailing backslashes as line
+// continuations, so reject those names rather than silently changing them.
+func systemdWorkingDirectory(value string) (string, error) {
+	if strings.ContainsAny(value, "\r\n\x00") || strings.TrimSpace(value) != value || strings.HasSuffix(value, "\\") {
+		return "", errors.New("working directory cannot be represented literally in a systemd unit")
+	}
+	return strings.ReplaceAll(value, "%", "%%"), nil
 }

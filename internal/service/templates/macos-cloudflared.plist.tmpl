@@ -6,21 +6,21 @@
   <string>com.executor.cloudflared</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{{ .CloudflaredBinaryPath }}</string>
+    <string>{{ .CloudflaredBinaryPath | html }}</string>
     <string>tunnel</string>
     <string>--logfile</string>
-    <string>{{ .CloudflaredLogPath }}</string>
+    <string>{{ .CloudflaredLogPath | html }}</string>
     <string>run</string>
     <string>--token-file</string>
-    <string>{{ .CloudflaredTokenPath }}</string>
+    <string>{{ .CloudflaredTokenPath | html }}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>{{ .CloudflaredLogPath }}</string>
+  <string>{{ .CloudflaredLogPath | html }}</string>
   <key>StandardErrorPath</key>
-  <string>{{ .CloudflaredLogPath }}</string>
+  <string>{{ .CloudflaredLogPath | html }}</string>
 </dict>
 </plist>

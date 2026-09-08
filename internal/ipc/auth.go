@@ -68,16 +68,17 @@ func (v *Verifier) Verify(message Message, now time.Time) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	cutoff := now.Add(-v.window)
-	for nonce, seenAt := range v.seen {
-		if seenAt.Before(cutoff) {
+	for nonce, expiresAt := range v.seen {
+		if expiresAt.Before(now) {
 			delete(v.seen, nonce)
 		}
 	}
 	if _, exists := v.seen[message.Nonce]; exists {
 		return errors.New("replayed message")
 	}
-	v.seen[message.Nonce] = now
+	// Future-dated messages remain acceptable past a window from first receipt.
+	// Retain their nonce for the entire timestamp acceptance period.
+	v.seen[message.Nonce] = messageTime.Add(v.window)
 	return nil
 }
 

@@ -18,18 +18,20 @@ func newOutputBuffer(capacity int) *outputBuffer {
 }
 
 func (b *outputBuffer) Append(chunk []byte) {
-	for _, value := range chunk {
-		if b.size < len(b.data) {
-			index := (b.head + b.size) % len(b.data)
-			b.data[index] = value
-			b.size++
-		} else {
-			b.data[b.head] = value
-			b.head = (b.head + 1) % len(b.data)
-			b.startCursor++
-		}
-		b.endCursor++
+	capacity := len(b.data)
+	b.endCursor += int64(len(chunk))
+	if len(chunk) >= capacity {
+		copy(b.data, chunk[len(chunk)-capacity:])
+		b.head, b.size = 0, capacity
+	} else {
+		index := (b.head + b.size) % capacity
+		n := copy(b.data[index:], chunk)
+		copy(b.data, chunk[n:])
+		overflow := max(0, b.size+len(chunk)-capacity)
+		b.head = (b.head + overflow) % capacity
+		b.size = min(capacity, b.size+len(chunk))
 	}
+	b.startCursor = b.endCursor - int64(b.size)
 }
 
 func (b *outputBuffer) Read(cursor int64) OutputChunk {
@@ -48,9 +50,9 @@ func (b *outputBuffer) Read(cursor int64) OutputChunk {
 	length := int(b.endCursor - cursor)
 	data := make([]byte, length)
 	offset := int(cursor - b.startCursor)
-	for index := 0; index < length; index++ {
-		data[index] = b.data[(b.head+offset+index)%len(b.data)]
-	}
+	index := (b.head + offset) % len(b.data)
+	n := copy(data, b.data[index:])
+	copy(data[n:], b.data)
 
 	return OutputChunk{
 		Data:        data,

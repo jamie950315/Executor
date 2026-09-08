@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -239,11 +240,16 @@ func runDashboard(ctx context.Context, configPath string, relayFactory dashboard
 				<-relayDone
 			}
 			return httpErr
-		case <-relayDone:
+		case relayErr := <-relayDone:
 			// Relay failures must not take down the independent loopback rescue
 			// surface. Client.Run normally reconnects internally; a fatal relay
 			// return leaves the local Dashboard serving until service shutdown.
 			relayStopped = true
+			if runCtx.Err() == nil {
+				// Error text can contain remote URLs or credentials. Emit only the
+				// failing component and its operational impact.
+				slog.Error("Dashboard relay stopped; remote access is unavailable, local rescue remains available", "code", "dashboard_relay_stopped", "failed", relayErr != nil)
+			}
 		case <-ctx.Done():
 			cancel()
 			httpErr := <-httpDone
@@ -414,7 +420,11 @@ func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatc
 		} else {
 			event.Outcome = "succeeded"
 		}
-		_ = store.Append(event)
+		if err := store.Append(event); err != nil {
+			// The tool already ran: preserve its result rather than prompting a
+			// potentially destructive retry due only to an audit storage failure.
+			slog.Error("Could not record tool outcome; check audit storage", "code", "tool_audit_outcome")
+		}
 		return result, dispatchErr
 	}, nil
 }
@@ -422,6 +432,7 @@ func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatc
 func newOAuthAuditRecorder(cfg config.Config) agent.OAuthEventRecorder {
 	store, err := audit.Open(filepath.Join(cfg.StateDir, "audit.jsonl"), time.Duration(cfg.AuditRetentionH)*time.Hour)
 	if err != nil {
+		slog.Error("OAuth audit storage could not be opened; OAuth events will not be recorded", "code", "oauth_audit_open")
 		return nil
 	}
 	return func(event agent.OAuthEvent) {
@@ -432,13 +443,15 @@ func newOAuthAuditRecorder(cfg config.Config) agent.OAuthEventRecorder {
 				detail += ": " + event.Reason
 			}
 		}
-		_ = store.Append(audit.Event{
+		if err := store.Append(audit.Event{
 			Actor:    "remote-oauth",
 			Tool:     "oauth_" + event.Stage,
 			Identity: event.AuthMethod,
 			Outcome:  event.Outcome,
 			Detail:   detail,
-		})
+		}); err != nil {
+			slog.Error("Could not record OAuth event; check audit storage", "code", "oauth_audit_append")
+		}
 	}
 }
 

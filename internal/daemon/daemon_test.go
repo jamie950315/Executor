@@ -440,6 +440,7 @@ func TestRunDashboardStartsRelayWatcherBeforeEnrollment(t *testing.T) {
 }
 
 func TestRunDashboardKeepsLocalRescueAvailableAfterRelayFailure(t *testing.T) {
+	diagnostics := captureDiagnostics(t)
 	configPath, cfg, _ := daemonFixture(t)
 	cfg.UnifiedDashboard.URL = "https://dashboard.example.test"
 	cfg.UnifiedDashboard.Enrolled = true
@@ -462,6 +463,9 @@ func TestRunDashboardKeepsLocalRescueAvailableAfterRelayFailure(t *testing.T) {
 	response.Body.Close()
 	cancel()
 	assertDaemonStopped(t, errCh)
+	if !strings.Contains(diagnostics.String(), "dashboard_relay_stopped") {
+		t.Fatal("fatal relay failure left no service diagnostic")
+	}
 }
 
 func TestRunAgentQuiescesImmediatelyWhenDisabledMarkerAppears(t *testing.T) {

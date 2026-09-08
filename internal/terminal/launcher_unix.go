@@ -27,14 +27,22 @@ func (scriptLauncher) Start(spec SessionSpec) (terminalProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Own the output pipe: exec.Cmd.Wait closes StdoutPipe before a
+	// concurrent reader is guaranteed to have drained the final bytes.
+	stdout, outputWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, err
 	}
+	cmd.Stdout = outputWriter
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = outputWriter.Close()
 		return nil, err
 	}
+	_ = outputWriter.Close()
 	return &execTerminalProcess{cmd: cmd, stdin: stdin, stdout: stdout}, nil
 }
 
@@ -44,8 +52,14 @@ type execTerminalProcess struct {
 	stdout io.ReadCloser
 }
 
-func (p *execTerminalProcess) PID() int                       { return p.cmd.Process.Pid }
-func (p *execTerminalProcess) Read(data []byte) (int, error)  { return p.stdout.Read(data) }
+func (p *execTerminalProcess) PID() int { return p.cmd.Process.Pid }
+func (p *execTerminalProcess) Read(data []byte) (int, error) {
+	n, err := p.stdout.Read(data)
+	if err != nil {
+		_ = p.stdout.Close()
+	}
+	return n, err
+}
 func (p *execTerminalProcess) Write(data []byte) (int, error) { return p.stdin.Write(data) }
 func (p *execTerminalProcess) Wait() error                    { return p.cmd.Wait() }
 func (p *execTerminalProcess) CloseInput() error              { return p.stdin.Close() }

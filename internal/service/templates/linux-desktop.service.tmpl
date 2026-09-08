@@ -3,10 +3,10 @@ Description=Executor desktop helper
 
 [Service]
 Type=simple
-ExecStart={{ .BinaryPath }} desktop --config {{ .ConfigPath }}
+ExecStart={{ .BinaryPath | systemdPath }} desktop --config {{ .ConfigPath | systemdArg }}
 Restart=always
 RestartSec=5
-WorkingDirectory={{ .DataDir }}
+WorkingDirectory={{ .DataDir | systemdWorkingDirectory }}
 
 [Install]
 WantedBy=default.target

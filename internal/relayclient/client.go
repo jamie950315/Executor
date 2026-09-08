@@ -129,21 +129,25 @@ func (r *requestRegistry) Remove(requestID string) {
 func (r *requestRegistry) Cancel(requestID string) bool {
 	r.mu.Lock()
 	cancel, exists := r.cancels[requestID]
-	if exists {
-		delete(r.cancels, requestID)
+	if exists && cancel != nil {
+		// Keep the ID reserved until the handler's deferred Remove runs.
+		// Cancellation requests termination; it does not finish the handler.
+		r.cancels[requestID] = nil
 	}
 	r.mu.Unlock()
-	if exists {
+	if cancel != nil {
 		cancel()
 	}
-	return exists
+	return exists && cancel != nil
 }
 
 func (r *requestRegistry) CancelAll() {
 	r.mu.Lock()
 	cancels := make([]func(), 0, len(r.cancels))
 	for _, cancel := range r.cancels {
-		cancels = append(cancels, cancel)
+		if cancel != nil {
+			cancels = append(cancels, cancel)
+		}
 	}
 	clear(r.cancels)
 	r.mu.Unlock()

@@ -32,6 +32,10 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- The September 2026 review hardens OAuth revocation/expiry and parallel persistence, IPC replay expiry, DCR body validation, JSON-RPC IDs, destructive CLI argument validation, filesystem content validation, and relay cancellation identity retention. Operational audit/relay failures emit credential-free diagnostic codes without discarding already completed tool results or disabling the independent rescue page.
+- Terminal completion now waits for final output capture; failed or unconfirmed termination retains the session for retry. Output buffering uses bounded bulk copies, with wraparound/cursor regression tests and microbenchmarks. macOS and Pi Linux terminal runtime tests cover these changes.
+- Dashboard polling does not cancel slow output requests, stale reads cannot replace newer selections, malformed results fail visibly, and a failed file preview cannot be saved as an empty file. Transport loss reports an unconfirmed outcome, not a guarantee that the host operation failed.
+- Service templates escape macOS XML and distinguish systemd executable arguments from whole-path WorkingDirectory values. Unsupported working-directory characters are rejected before installation. Windows uninstall preserves state if rollback fails. See `docs/2026-09-code-review.md` for validation scope and remaining platform-validation limits; these review changes are not deployed to installed services.
 - Architecture approved in conversation on 2026-08-15.
 - Repository initialized on branch `main`.
 - Config, private fallback secret store, metadata-only audit store, OAuth 2.1 with CIMD/DCR, authenticated localhost dashboard, Streamable HTTP MCP, and local stdio MCP are implemented with tests.

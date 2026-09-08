@@ -1,9 +1,66 @@
 package service
 
 import (
+	"encoding/xml"
 	"strings"
 	"testing"
 )
+
+func TestMacOSServicePathsRoundTripThroughXML(t *testing.T) {
+	want := `/tmp/Executor & <test> "path"`
+	cfg := InstallConfig{
+		BinaryPath: want, DesktopBinaryPath: want, ConfigPath: want,
+		LogPath: want, CloudflaredBinaryPath: want, CloudflaredLogPath: want, CloudflaredTokenPath: want,
+	}
+	for _, source := range targetTemplates(TargetMacOS) {
+		t.Run(source, func(t *testing.T) {
+			body, err := renderTemplate(source, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var plist struct {
+				Dict struct {
+					Array struct {
+						Strings []string `xml:"string"`
+					} `xml:"array"`
+				} `xml:"dict"`
+			}
+			if err := xml.Unmarshal([]byte(body), &plist); err != nil {
+				t.Fatalf("invalid service XML: %v", err)
+			}
+			if len(plist.Dict.Array.Strings) == 0 || plist.Dict.Array.Strings[0] != want {
+				t.Fatalf("service executable path did not round trip: %#v", plist.Dict.Array.Strings)
+			}
+		})
+	}
+}
+
+func TestLinuxServicePathsAreLiteralArguments(t *testing.T) {
+	cfg := InstallConfig{BinaryPath: `/opt/Executor test/bin%name`, ConfigPath: `/tmp/$config "quoted".json`, DataDir: `/tmp/Executor %data`}
+	for _, target := range []Target{TargetLinux, TargetWSL} {
+		for name, source := range targetTemplates(target) {
+			if !strings.Contains(name, "executor-agent") {
+				continue
+			}
+			body, err := renderTemplate(source, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertContainsAll(t, body,
+				`ExecStart="/opt/Executor test/bin%%name" agent --config "/tmp/$$config \"quoted\".json"`,
+				`WorkingDirectory=/tmp/Executor %%data`,
+			)
+		}
+	}
+}
+
+func TestLinuxWorkingDirectoryRejectsUnrepresentableUnitValues(t *testing.T) {
+	for _, directory := range []string{"/tmp/path\nInjected=value", "/tmp/path\r", "/tmp/path\x00", "/tmp/trailing ", "/tmp/trailing\\"} {
+		if _, err := renderTemplate("templates/linux-agent.service.tmpl", InstallConfig{DataDir: directory}); err == nil {
+			t.Errorf("working directory %q must fail before rendering a misleading unit", directory)
+		}
+	}
+}
 
 func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 	t.Parallel()
@@ -65,22 +122,22 @@ func TestRenderBundleEncodesPlatformServiceSemantics(t *testing.T) {
 		t.Fatalf("RenderBundle linux: %v", err)
 	}
 	assertContainsAll(t, linux.Files["systemd/executor-agent.service"],
-		"ExecStart=/usr/local/bin/executor agent --config /etc/executor/config.json",
+		`ExecStart="/usr/local/bin/executor" agent --config "/etc/executor/config.json"`,
 		"User=jamie",
 		"Group=staff",
 	)
 	assertContainsAll(t, linux.Files["systemd/executor-broker.service"],
-		"ExecStart=/usr/local/bin/executor broker --config /etc/executor/config.json",
+		`ExecStart="/usr/local/bin/executor" broker --config "/etc/executor/config.json"`,
 		"User=root",
 		"Group=root",
 	)
 	assertContainsAll(t, linux.Files["systemd/executor-dashboard.service"],
-		"ExecStart=/usr/local/bin/executor dashboard --config /etc/executor/config.json",
+		`ExecStart="/usr/local/bin/executor" dashboard --config "/etc/executor/config.json"`,
 		"User=root",
 		"Group=root",
 	)
 	assertContainsAll(t, linux.Files["systemd/executor-cloudflared.service"],
-		"run --token-file /etc/cloudflared/executor.token",
+		`run --token-file "/etc/cloudflared/executor.token"`,
 	)
 	if _, exists := linux.Files["systemd/cloudflared.service"]; exists {
 		t.Fatal("Linux bundle would replace the host cloudflared service")

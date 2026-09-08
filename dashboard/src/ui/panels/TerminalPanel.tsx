@@ -14,28 +14,36 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
   const [dimensions, setDimensions] = useState({ columns: 120, rows: 36 });
   const [status, setStatus] = useState("Loading persistent sessions…");
   const cursors = useRef<Record<string, number>>({});
+  const sessionRequest = useRef<AbortController | null>(null);
 
   const refreshSessions = useCallback(async () => {
+    sessionRequest.current?.abort();
     const controller = new AbortController();
+    sessionRequest.current = controller;
     try {
       const response = await call("terminal_sessions", { action: "list", privilege }, controller.signal);
+      if (controller.signal.aborted) return;
       const next = parseSessions(response.result);
       setSessions(next);
       setStatus(`${next.length} persistent ${privilege} session${next.length === 1 ? "" : "s"}`);
     } catch {
+      if (controller.signal.aborted) return;
       setStatus("Terminal sessions unavailable");
     }
   }, [call, privilege]);
 
-  useEffect(() => { if (active) void refreshSessions(); }, [active, refreshSessions]);
+  useEffect(() => {
+    setSessions([]);
+    if (active) void refreshSessions();
+    return () => sessionRequest.current?.abort();
+  }, [active, refreshSessions]);
 
   useEffect(() => {
     if (!active || selected === null) return;
     let stopped = false;
     let inFlight: AbortController | null = null;
     const poll = async () => {
-      if (stopped || document.visibilityState !== "visible") return;
-      inFlight?.abort();
+      if (stopped || inFlight !== null || document.visibilityState !== "visible") return;
       inFlight = new AbortController();
       try {
         const response = await call("terminal_output", {
@@ -43,6 +51,7 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
           cursor: cursors.current[selected] ?? 0,
           privilege,
         }, inFlight.signal);
+        if (stopped || inFlight.signal.aborted) return;
         const chunk = parseOutput(response.result);
         cursors.current[selected] = chunk.nextCursor;
         if (chunk.text.length > 0) {
@@ -50,7 +59,9 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
         }
         if (!chunk.running) setStatus("Session exited — output retained in this page only");
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) setStatus("Terminal output unavailable");
+        if (!stopped && !(error instanceof DOMException && error.name === "AbortError")) setStatus("Terminal output unavailable");
+      } finally {
+        inFlight = null;
       }
     };
     void poll();
@@ -132,19 +143,22 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
 }
 
 function parseSessions(value: unknown): TerminalSession[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
+  if (!Array.isArray(value)) throw new Error("Invalid terminal session list");
+  return value.map((item) => {
     const entry = asRecord(item); const session = asRecord(entry?.Session ?? entry?.session);
-    const id = textField(session, "ID", "id"); if (!id) return [];
-    return [{ id, dir: textField(session, "Dir", "dir") ?? "", running: entry?.Running === true || entry?.running === true }];
+    const id = textField(session, "ID", "id");
+    const running = entry?.Running ?? entry?.running;
+    if (!id || typeof running !== "boolean") throw new Error("Invalid terminal session");
+    return { id, dir: textField(session, "Dir", "dir") ?? "", running };
   });
 }
 function parseOutput(value: unknown): { text: string; nextCursor: number; running: boolean } {
   const record = asRecord(value); if (!record) throw new Error();
-  const data = textField(record, "Data", "data") ?? "";
+  const data = textField(record, "Data", "data");
   const next = numberField(record, "NextCursor", "nextCursor", "next_cursor");
-  const running = record.Running === true || record.running === true;
-  return { text: decodeStandardBase64(data), nextCursor: next ?? 0, running };
+  const running = record.Running ?? record.running;
+  if (data === null || next === null || next < 0 || typeof running !== "boolean") throw new Error("Invalid terminal output");
+  return { text: decodeStandardBase64(data), nextCursor: next, running };
 }
 function decodeStandardBase64(value: string): string {
   if (value === "") return "";

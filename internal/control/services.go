@@ -37,7 +37,7 @@ func (m systemServiceManager) execute(ctx context.Context, action string, servic
 	}
 	for _, command := range commands {
 		if err := m.run(ctx, command); err != nil {
-			return err
+			return fmt.Errorf("%s %s using %s: %w", action, service, command.name, err)
 		}
 	}
 	return nil

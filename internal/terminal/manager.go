@@ -62,6 +62,7 @@ type sessionState struct {
 	running       bool
 	waitErr       error
 	done          chan struct{}
+	captureDone   chan struct{}
 	doneCloseOnce sync.Once
 }
 
@@ -106,10 +107,11 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 			Command: append([]string(nil), spec.Command...),
 			Dir:     spec.Dir,
 		},
-		process: process,
-		output:  newOutputBuffer(defaultOutputBufferSize),
-		running: true,
-		done:    make(chan struct{}),
+		process:     process,
+		output:      newOutputBuffer(defaultOutputBufferSize),
+		running:     true,
+		done:        make(chan struct{}),
+		captureDone: make(chan struct{}),
 	}
 
 	m.mu.Lock()
@@ -190,7 +192,9 @@ func (m *Manager) Close(sessionID string) error {
 		if killErr := state.process.Kill(); killErr != nil {
 			return killErr
 		}
-		_ = waitForDone(state.done, sessionShutdownTimeout)
+		if !waitForDone(state.done, sessionShutdownTimeout) {
+			return errors.New("timed out waiting for terminal shutdown; session retained for retry")
+		}
 	}
 	m.deleteSession(sessionID)
 	return nil
@@ -201,10 +205,14 @@ func (m *Manager) Kill(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	killErr := state.process.Kill()
-	_ = waitForDone(state.done, sessionShutdownTimeout)
+	if err := state.process.Kill(); err != nil {
+		return err
+	}
+	if !waitForDone(state.done, sessionShutdownTimeout) {
+		return errors.New("timed out waiting for terminal shutdown; session retained for retry")
+	}
 	m.deleteSession(sessionID)
-	return killErr
+	return nil
 }
 
 func (m *Manager) KillAll() error {
@@ -277,17 +285,19 @@ func (m *Manager) deleteSession(sessionID string) {
 
 func (m *Manager) awaitExit(state *sessionState) {
 	err := state.process.Wait()
+	state.closeInput()
+	<-state.captureDone
 	state.mu.Lock()
 	state.running = false
 	state.waitErr = err
 	state.mu.Unlock()
-	state.closeInput()
 	state.doneCloseOnce.Do(func() {
 		close(state.done)
 	})
 }
 
 func (s *sessionState) capture(output terminalProcess) {
+	defer close(s.captureDone)
 	buf := make([]byte, 4096)
 	for {
 		n, err := output.Read(buf)
