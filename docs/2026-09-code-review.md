@@ -64,7 +64,7 @@ binary builds (Darwin builds include native CGO), Dashboard unit/component/Worke
 tests, type checking, linting, client build and Worker dry-run, packaging tests,
 shell syntax checks, and whitespace checks.
 
-Final Dashboard results: 95 unit tests, 36 component tests, and 44 Worker tests
+Final Dashboard results: 104 unit tests, 41 component tests, and 44 Worker tests
 passed; one Windows-only unit test was skipped on macOS. The complete Go race
 suite and all six binary builds passed after integration corrections.
 
@@ -98,11 +98,37 @@ reject wrong keys and invalid authenticated health markers rather than accepting
 an unrelated listener as healthy.
 
 The existing central Dashboard was updated to Worker version
-`1f703a71-de26-4484-9328-741246fcdb4a`, deployment
-`ad104843-24d7-48ea-93b7-4ab19d6e9dc0`. Its bindings, custom domain, and Access
+`e8499e34-5b1f-436d-8b4d-1e3e517b118e`, deployment
+`a4247456-2a76-4fc4-9d81-3c6184454b6f`, with UI source `6df29d0` and client
+asset `index-ByBbvg_A.js`. Its bindings, custom domain, and Access
 boundary remained unchanged; enrollment remained disabled. All four signed
 device relays reconnected with recent heartbeats. Same-source Chrome interactions
 verified delayed output, failed-preview save protection, and stale-read cancellation.
+
+After the owner logged in and unlocked all four devices, production testing in
+the Codex in-app browser verified each host's terminal command and Files-panel
+read through the actual Dashboard relay. Mac/Windows file saves, Windows readback,
+WSL file save and administrator UID, Mac permissions, audit retrieval, and both
+Mac/Windows displayed screen captures succeeded. An absent Mac file disabled Save
+instead of offering an empty overwrite. Pi5 capture accurately reported its
+headless boundary. Only random, isolated test directories were used; those files
+and the five test sessions were removed afterward.
+
+This production test exposed raw Windows terminal escape codes in the old plain
+text display. A read-only `@xterm/headless` parser now interprets VT control and
+incremental UTF-8 without a new input surface or terminal replies to the host.
+Regression tests cover carriage-return overwrite, cursor redraw, split sequences,
+truncation reset, dimension bounds, malformed metadata, and rapid session
+reattachment. The renderer retains bounded per-session state and disposes it on
+close/unmount. Upstream MIT notices ship in `third-party-notices.txt`.
+
+The final Dashboard was tested and built with Node 24.19.0. After deployment,
+reloading the same authenticated browser retained all four unlocked devices.
+Reattaching to the same Windows session visibly rendered its original output
+without raw control codes. WSL emitted a single UTF-8 character split by a
+two-second delay; the published page correctly displayed the completed character
+and subsequent completion marker. No host restart or credential change was needed
+for this frontend correction.
 
 Operational consequence: the initial Pi5 restart ended six pre-existing terminal
 sessions before their workload state was checked. Their session state cannot be
@@ -127,10 +153,10 @@ measurements, not whole-application speedups or production throughput promises.
   Windows, not inferred from cross-compilation. Platform-inapplicable tests remain
   skipped on other operating systems.
 - Dashboard component interactions use real React components with controlled
-  slow/out-of-order responses, and Worker tests use workerd. No authenticated
-  production browser session or arbitrary desktop typing/clicking workflow was
-  exercised. The production Chrome tab reached the Cloudflare login form and
-  requires the owner to sign in before logged-in end-to-end Dashboard testing.
+  slow/out-of-order responses, and Worker tests use workerd. Authenticated
+  production in-app-browser flows are verified as listed above. Arbitrary
+  desktop typing/clicking, production Kill/Rotate, uploads, and destructive
+  lifecycle changes were intentionally not exercised in the owner's live environment.
 - Concurrent OAuth-file tests do not establish cross-process transactional
   coordination between independent stale in-memory snapshots.
 - Network reconnect backoff, platform capability checks, safe cleanup, recovery
