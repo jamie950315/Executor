@@ -8,7 +8,7 @@ CLI, deployment scripts, service templates, packaging, and Dashboard application
 Changes target reproducible defects and measured costs, not a wholesale rewrite.
 The initial source review was followed by an owner-authorized deployment and
 validation cycle on Mac, Pi5, Windows CTPS, and WSL. All four now run source
-revision `f8014c2ec3fe4922ba25ee8d5417f9ce76ccbc84` with clean build provenance.
+revision `b75f0fb77f50b72857fbc44440846f80d1236697` with clean build provenance.
 Production configuration, enrollment, tunnels, and owner credentials were preserved.
 
 ## Corrections
@@ -49,6 +49,12 @@ Production configuration, enrollment, tunnels, and owner credentials were preser
 - Native Windows deployment tests exposed Node's `shell:true` command-shim
   warning interrupting PowerShell. Windows now invokes the selected npm JavaScript
   entrypoint directly through Node, without suppressing warnings.
+- A final Mac check exposed false-offline status: a 500 ms liveness probe invoked
+  a potentially slow desktop OS query. Authenticated `executor.health` now returns
+  a strictly validated protocol marker without calling the application handler.
+  CLI status, local Dashboard reachability, and lifecycle readiness use it;
+  actual desktop availability and permissions are still queried separately.
+  Timeouts were not increased and no retry or stale-success cache was introduced.
 
 ## Verification
 
@@ -72,10 +78,10 @@ background process-tree shutdown. Production Kill/Rotate were not used.
 
 | Target | Installed executor SHA-256 | Live result |
 | --- | --- | --- |
-| Mac arm64 | `32d826f5ea37ab9c37444f9883cec8a5ed5dcd96c1c8fa78cbd92a3d4cced63f` | Full doctor healthy; owner/admin UID 501/0; signed helper retains granted permissions; 1512x982 screenshot and capture-only batch returned real images. A completed terminal returned all 64 KiB plus its final marker. |
-| Pi5 arm64 | `9816d559f784547af942a14aa3633d299a54404b165350a3c9d179320049dd2b` | Full doctor healthy; owner/admin UID 1000/0; services active; headless desktop rejection is readable. |
-| WSL amd64 | `0faa3e4303a8042ad71554ccb0640f6c7659b48b6434aba115017829f78a4737` | Full doctor healthy; owner/admin UID 1000/0; services active; no active Linux desktop session is reported explicitly. |
-| Windows amd64 | `531d355da56f1ba221c29747b1a7ef9ebfa08ecdc29f7f4407c2737880ae3713` | Full doctor healthy; interactive-owner/SYSTEM calls work; services and Desktop task running; permissions ready and real 2048x1152 image returned. |
+| Mac arm64 | `a8361e0192bacf73a19b42583acd8ac94a7b1edfd25ad6a37d150ce8659099ba` | Full doctor healthy; owner/admin UID 501/0; signed helper retains granted permissions; 1512x982 screenshot and capture-only batch returned real images. A completed terminal returned all 64 KiB plus its final marker. |
+| Pi5 arm64 | `7d0b3a7e14ee28c9319059b000b2f28e4beb6a0bcc502fc11e832042faac8d67` | Full doctor healthy; owner/admin UID 1000/0; services active; headless desktop rejection is readable. |
+| WSL amd64 | `4d84c3ae04bccfe90606d77c07331dc429142777fb239327ca7f80ecdc2952dc` | Full doctor healthy; owner/admin UID 1000/0; services active; no active Linux desktop session is reported explicitly. |
+| Windows amd64 | `31dbb02f88100192351aa10072f7838510733562574e324535784890288ecb8b` | Full doctor healthy; interactive-owner/SYSTEM calls work; services and Desktop task running; permissions ready and real 2048x1152 image returned. |
 
 All targets exercised real authenticated filesystem operations and rejected
 missing-content writes without changing the existing fixture. Public issuer
@@ -84,6 +90,12 @@ listener merely being online. Test sessions and fixture files were cleaned up.
 No Defender settings were changed; Windows retained its existing exact-binary
 exclusion. Temporary Mac upgrade jobs were removed, and prior binaries remain
 available in protected host-local rollback backups.
+
+The final health-probe revision passed its new named-pipe regression on real
+Windows and corresponding tests on WSL. Every installed host then passed 20
+consecutive status checks with all four local components online. Tests also
+reject wrong keys and invalid authenticated health markers rather than accepting
+an unrelated listener as healthy.
 
 The existing central Dashboard was updated to Worker version
 `1f703a71-de26-4484-9328-741246fcdb4a`, deployment
