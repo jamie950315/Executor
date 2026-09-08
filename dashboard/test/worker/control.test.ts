@@ -199,6 +199,27 @@ describe("unlocked device control", () => {
     socket.close(1000, "test complete");
   });
 
+  it.each(["status", "start", "renew", "stop"])("requires this browser's unlock grant for live desktop %s", async (action) => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const body = { method: "desktop_live", arguments: { action } };
+    const missingGrant = await SELF.fetch(`${dashboardOrigin}/api/devices/${deviceID}/call`, {
+      method: "POST",
+      headers: controlHeaders(unlocked.accessToken, unlocked.browserCookie),
+      body: JSON.stringify(body),
+    });
+    expect(missingGrant.status).toBe(401);
+    await expect(missingGrant.json()).resolves.toEqual({ error: "device locked" });
+    const otherBrowser = await controlRequest("call", {
+      ...unlocked,
+      browserCookie: `__Host-executor-browser=${"A".repeat(43)}`,
+    }, body);
+    expect(otherBrowser.status).toBe(401);
+    await expect(otherBrowser.json()).resolves.toEqual({ error: "device locked" });
+    await expect(noMessage(socket, 20)).resolves.toBe(true);
+    socket.close(1000, "test complete");
+  });
+
   it("invalidates an otherwise valid cookie immediately when generation changes", async () => {
     const socket = await enrolledAuthenticatedSocket();
     const unlocked = await unlock(socket);
