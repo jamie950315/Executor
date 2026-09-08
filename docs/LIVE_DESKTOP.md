@@ -18,14 +18,17 @@ FFmpeg must be separately installed and discoverable by the Desktop helper.
 paths are also checked. Windows requires a build with gdigrab and libx264. No
 FFmpeg executable is bundled or installed automatically.
 
-Default video is capped at proportional 1280x720, 15 FPS, 2.5 Mbps, with no audio.
+Dashboard video defaults to proportional 1280x720, 30 FPS and 4 Mbps, with no audio.
+The Frame rate selector offers 15 FPS / 2.5 Mbps for lower load. Stop the current
+session before changing quality; it never silently changes an active session.
 The native backend is bounded to H264 baseline level 3.1 and at most 30 FPS.
-Actual frame rate and latency depend on the host and network.
+60 FPS is not offered or verified. Actual frame rate and latency depend on the
+host and network.
 
 ## Owner flow
 
 1. Sign in and unlock the device as before.
-2. Open Live desktop and start a session. It starts in viewing-only mode.
+2. Open Live desktop, select 15 or 30 FPS, and start a session. It starts in viewing-only mode.
 3. After video has actually decoded, enable control and focus the video to send
    pointer and keyboard input. The Text/IME field sends only explicitly submitted
    text; clipboard contents are never read automatically.
@@ -118,3 +121,34 @@ fixtures and capture sessions were stopped; no encoder process remained.
 
 Startup failures distinguish browser initialization, network discovery, device
 start, response validation and answer acceptance; raw SDP is never displayed.
+
+### 30 FPS validation
+
+Dashboard source `798c066` is deployed as Worker
+`3009a7ba-2788-4e54-a167-9ca03c5d90c4`; host binaries did not need replacement.
+Mac Chrome decoded 3,003 frames in 100.1 seconds with zero dropped frames at
+1108x720. Windows decoded 2,621 frames in 87.4 seconds at 1280x720, with 78 dropped
+frames (~3%); explicit text input remained correct. Windows encoder CPU used
+2.91 CPU-seconds over a 5.01-second sample on 16 logical processors (~3.6% total),
+with a 106 MB working set. These are desktop-fixture measurements, not gaming
+or arbitrary-network performance guarantees. Mac's encoder sampled 44.7% of one
+CPU core and 137 MB RSS. The lower-load 15 FPS option remains available.
+
+### Existing A1 relay feasibility
+
+The owner approved checking A1-JP/A1-US for self-hosted relay use without adding
+paid services or disrupting existing workloads. Both ARM hosts have ample spare
+CPU/RAM. Their current DERP service owns TCP 80/443 and UDP 3478; DERP is not a
+browser WebRTC TURN server, and those listeners were not replaced or moved.
+
+Bounded tests temporarily allowed a separate TCP/UDP 5349 listener through each
+host's INPUT rules, then automatically removed the rules. Neither public 5349
+listener received the Mac's probe; public STUN 3478 also timed out, while existing
+TCP 443 was reachable. Public network/cloud ingress needs investigation before
+deployment: local listener startup alone is not proof of Internet reachability.
+No standard OCI CLI/auth configuration was available on the Mac or A1-JP to
+inspect cloud policy. No coturn service, paid relay, TLS-port replacement or
+permanent A1 firewall change was installed. Existing DERP, DNS and app services
+were rechecked as active; test listeners were stopped. A future implementation
+must use authenticated short-lived TURN credentials, restricted peer ranges and
+resource limits, and prove real browser relay traffic before claiming support.
