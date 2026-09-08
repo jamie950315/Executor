@@ -36,6 +36,46 @@ func TestLiveSyntheticEncoder(t *testing.T) {
 	}
 }
 
+func TestLiveWindowsPipelineFrameCount(t *testing.T) {
+	path, err := liveFFmpeg()
+	if err != nil {
+		t.Skip(err)
+	}
+	args, err := liveVideoArgs("windows", livedesktop.Geometry{Width: 320, Height: 240}, livedesktop.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := 0
+	for i, arg := range args {
+		if arg == "-an" {
+			output = i
+			break
+		}
+	}
+	args = append([]string{"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=320x240:r=15", "-frames:v", "4"}, args[output:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := startLiveVideo(ctx, path, args, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	frames := 0
+	for {
+		_, err = s.Read(ctx)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames++
+	}
+	if frames != 4 {
+		t.Fatalf("four encoded frames produced %d access units", frames)
+	}
+}
+
 func TestLiveAccessUnits(t *testing.T) {
 	input := []byte{0, 0, 0, 1, 9, 0xf0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 2, 0, 0, 0, 1, 9, 0xf0, 0, 0, 1, 0x41, 3}
 	r := newLiveAUReader(bytes.NewReader(input), 1024)
@@ -64,7 +104,7 @@ func TestLiveVideoArgs(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := strings.Join(args, " ")
-		for _, want := range []string{"-f h264", "aud=insert", "1280", "-g 15", "fps=15,"} {
+		for _, want := range []string{"-f h264", "1280", "-g 15", "fps=15,"} {
 			if !strings.Contains(s, want) {
 				t.Errorf("missing %s: %s", want, s)
 			}

@@ -112,7 +112,13 @@ func liveVideoArgs(platform string, g livedesktop.Geometry, o livedesktop.Option
 	} else {
 		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-x264-params", "repeat-headers=1:aud=1")
 	}
-	args = append(args, "-profile:v", "baseline", "-level:v", "3.1", "-bf", "0", "-g", fps, "-b:v", strconv.Itoa(o.Bitrate), "-maxrate", strconv.Itoa(o.Bitrate), "-bufsize", strconv.Itoa(o.Bitrate), "-bsf:v", "h264_metadata=aud=insert,dump_extra=freq=keyframe", "-f", "h264", "pipe:1")
+	args = append(args, "-profile:v", "baseline", "-level:v", "3.1", "-bf", "0", "-g", fps, "-b:v", strconv.Itoa(o.Bitrate), "-maxrate", strconv.Itoa(o.Bitrate), "-bufsize", strconv.Itoa(o.Bitrate))
+	// x264 already emits AUDs and repeated headers. Applying dump_extra again
+	// creates header-only access units and doubles the apparent frame count.
+	if platform == "darwin" {
+		args = append(args, "-bsf:v", "h264_metadata=aud=insert,dump_extra=freq=keyframe")
+	}
+	args = append(args, "-f", "h264", "pipe:1")
 	return args, nil
 }
 func liveFFmpeg() (string, error) {

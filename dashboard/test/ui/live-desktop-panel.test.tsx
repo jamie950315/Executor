@@ -47,5 +47,11 @@ it("requires video and explicit control, releases on Escape, and closes on unmou
  fireEvent.wheel(stage,{clientX:210,clientY:220,deltaY:120});expect(JSON.parse(peer.dc.send.mock.calls.at(-1)![0])).toMatchObject({type:"wheel",x:.5,y:.5,scrollY:120});
  fireEvent.keyDown(window,{key:"Escape",code:"Escape"});expect(JSON.parse(peer.dc.send.mock.calls.at(-1)![0])).toMatchObject({type:"release"});expect(screen.getByRole("button",{name:"Enable control"})).toHaveAttribute("aria-pressed","false");
  const count=peer.dc.send.mock.calls.length;fireEvent.keyDown(stage,{key:"a",code:"KeyA"});expect(peer.dc.send).toHaveBeenCalledTimes(count);
+ let rejectPlayback:(reason:Error)=>void=()=>{};
+ vi.spyOn(video,"play").mockImplementationOnce(()=>new Promise((_resolve,reject)=>{rejectPlayback=reject;}));
+ act(()=>{(peer.ontrack as unknown as (event:{streams:object[]})=>void)({streams:[{}]});});
+ fireEvent.click(screen.getByRole("button",{name:"Stop session"}));
+ await act(async()=>rejectPlayback(new Error("play interrupted by stop")));
+ expect(screen.getByText("Session stopped. No desktop input is being sent.")).toBeVisible();
  view.unmount();expect(peer.close).toHaveBeenCalledOnce();await waitFor(()=>expect(call).toHaveBeenCalledWith("desktop_live",{action:"stop",sessionId:"one"}));
 });
