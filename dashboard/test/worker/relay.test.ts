@@ -460,7 +460,7 @@ describe("DeviceRelay WebSocket", () => {
     clientSocket.close(1000, "test complete");
   });
 
-  it.each(["desktop_control", "device_permissions", "control.permissions"])(
+  it.each(["desktop_control", "desktop_live", "device_permissions", "control.permissions"])(
     "keeps interactive %s requests pending beyond the ordinary relay deadline",
     async (method) => {
       await enroll();

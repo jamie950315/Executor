@@ -605,6 +605,7 @@ function relayTimeoutForRequest(envelope: RelayEnvelope<"request">): number {
     case "control.kill":
     case "control.resume":
     case "desktop_control":
+    case "desktop_live":
     case "device_permissions":
     case "control.permissions":
       return longRunningRelayTimeoutMilliseconds;

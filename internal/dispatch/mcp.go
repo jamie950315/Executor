@@ -35,6 +35,7 @@ type MCP struct {
 }
 
 type captureState struct {
+	Epoch      uint64
 	ID         string
 	Width      int
 	Height     int
@@ -59,6 +60,25 @@ func NewMCP(broker, desktop Caller) *MCP {
 
 func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	switch call.Name {
+	case "desktop_live":
+		input := make(map[string]any, len(call.Arguments))
+		for k, v := range call.Arguments {
+			if k != "owner" {
+				input[k] = v
+			}
+		}
+		raw, err := json.Marshal(input)
+		if err != nil {
+			return nil, err
+		}
+		var request desktop.RPCLiveRequest
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			return nil, errors.New("invalid live desktop arguments")
+		}
+		request.Owner = captureScope(ctx, call.SessionID)
+		return d.call(ctx, d.desktop, "desktop.live", request)
 	case "terminal":
 		return d.terminal(ctx, call.Arguments)
 	case "terminal_output":
@@ -445,6 +465,7 @@ const maxDesktopBatchActions = 64
 const maxDesktopBatchWaits = 10
 
 type desktopCapture struct {
+	Epoch    uint64 `json:"epoch,omitempty"`
 	Data     []byte `json:"data"`
 	MimeType string `json:"mime_type"`
 	Width    int    `json:"width"`
@@ -477,7 +498,7 @@ func (d *MCP) captureDesktopLocked(ctx context.Context, sessionID string) (mcp.T
 	}
 	d.captureM.Lock()
 	d.captures[captureScope(ctx, sessionID)] = captureState{
-		ID: captureID, Width: capture.Width, Height: capture.Height, Generation: d.desktopGeneration,
+		ID: captureID, Width: capture.Width, Height: capture.Height, Generation: d.desktopGeneration, Epoch: capture.Epoch,
 	}
 	d.captureM.Unlock()
 
@@ -530,7 +551,7 @@ func (d *MCP) desktopBatch(ctx context.Context, sessionID string, arguments map[
 	d.desktopGeneration++
 	delete(d.captures, scope)
 	d.captureM.Unlock()
-	if _, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopActions, desktop.RPCDesktopActionsParams{Actions: actions}); err != nil {
+	if _, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopActions, desktop.RPCDesktopActionsParams{Actions: actions, ExpectedEpoch: latestCapture.Epoch}); err != nil {
 		return nil, err
 	}
 	return d.captureDesktopLocked(ctx, sessionID)

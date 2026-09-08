@@ -9,7 +9,7 @@ import type { DeviceCall } from "./panels/types";
 import { OverviewPanel } from "./panels/OverviewPanel";
 import { TerminalPanel } from "./panels/TerminalPanel";
 import { FilesPanel } from "./panels/FilesPanel";
-import { ComputerUsePanel } from "./panels/ComputerUsePanel";
+import { LiveRemoteDesktopPanel } from "./panels/LiveRemoteDesktopPanel";
 import { PermissionsPanel } from "./panels/PermissionsPanel";
 import { ControlPanel } from "./panels/ControlPanel";
 import { AuditPanel } from "./panels/AuditPanel";
@@ -120,7 +120,7 @@ function DeviceWorkspace({ device, session, onBack, onLocked, onOffline, onKille
       throw error;
     }
   }, [device.device_id, onLocked, onOffline]);
-  const panel = tab === "overview" ? <OverviewPanel call={call} device={device} /> : tab === "terminal" ? <TerminalPanel call={call} active /> : tab === "files" ? <FilesPanel call={call} /> : tab === "computer" ? <ComputerUsePanel call={call} /> : tab === "permissions" ? <PermissionsPanel call={call} /> : tab === "control" ? <ControlPanel call={call} device={device} session={session} onSensitive={onSensitive} onKilled={onKilled} onRotated={onRotated} onRemoved={onRemoved} onRemoveFailure={(error) => { if (error instanceof DeviceLockedError) { onLocked(); return true; } if (error instanceof DeviceOfflineError) { onOffline(); return true; } return false; }} /> : <AuditPanel call={call} />;
+  const panel = tab === "overview" ? <OverviewPanel call={call} device={device} /> : tab === "terminal" ? <TerminalPanel call={call} active /> : tab === "files" ? <FilesPanel call={call} /> : tab === "computer" ? <LiveRemoteDesktopPanel call={call} platform={device.platform} /> : tab === "permissions" ? <PermissionsPanel call={call} /> : tab === "control" ? <ControlPanel call={call} device={device} session={session} onSensitive={onSensitive} onKilled={onKilled} onRotated={onRotated} onRemoved={onRemoved} onRemoveFailure={(error) => { if (error instanceof DeviceLockedError) { onLocked(); return true; } if (error instanceof DeviceOfflineError) { onOffline(); return true; } return false; }} /> : <AuditPanel call={call} />;
   return <><section className="workspace-mast"><button className="back-button" onClick={onBack}>← Fleet</button><div><p className="eyebrow">{device.platform} / {device.arch} / generation {device.generation}</p><h1>{device.name}</h1></div><span className="state-chip" data-state={device.uiState}>{device.uiState.replace("_", " ")}</span></section><WorkspaceTabs active={tab} onChange={setTab} /><section id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} tabIndex={0}>{panel}</section></>;
 }
 

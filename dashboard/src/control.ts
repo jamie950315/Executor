@@ -25,6 +25,7 @@ const allowedControlMethods = new Set([
   "filesystem_write",
   "desktop_observe",
   "desktop_control",
+  "desktop_live",
   "device_status",
   "device_permissions",
   "control.status",
@@ -34,6 +35,8 @@ const allowedControlMethods = new Set([
   "control.kill",
   "control.resume",
 ]);
+
+export function isAllowedControlMethod(method: string): boolean { return allowedControlMethods.has(method); }
 
 interface ControlRoute {
   deviceID: string;
@@ -175,7 +178,7 @@ async function handleCall(
   try {
     const body = await readBoundedJSON(request, maximumControlBodyBytes);
     const record = exactRecord(body, ["method", "arguments"]);
-    if (!validText(record.method, 256) || !allowedControlMethods.has(record.method)) {
+    if (!validText(record.method, 256) || !isAllowedControlMethod(record.method)) {
       throw new Error("invalid method");
     }
     method = record.method;

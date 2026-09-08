@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { disconnectDeletedDevice } from "../../src/control";
+import { disconnectDeletedDevice, isAllowedControlMethod } from "../../src/control";
+
+it("allows authorized live desktop signaling without widening arbitrary methods", () => {
+  expect(isAllowedControlMethod("desktop_live")).toBe(true);
+  expect(isAllowedControlMethod("desktop_live_arbitrary")).toBe(false);
+});
 
 describe("deleted device relay cleanup", () => {
   it("does not replace a completed registry deletion when relay cleanup fails", async () => {

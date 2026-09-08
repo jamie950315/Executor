@@ -96,6 +96,7 @@ var hostToolMethods = map[string]struct{}{
 	"terminal": {}, "terminal_output": {}, "terminal_sessions": {}, "filesystem_read": {},
 	"filesystem_write": {}, "desktop_observe": {}, "desktop_control": {}, "device_status": {},
 	"device_permissions": {},
+	"desktop_live":       {},
 }
 
 var lifecycleMethods = map[string]struct{}{

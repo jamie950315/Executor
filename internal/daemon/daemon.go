@@ -25,6 +25,7 @@ import (
 	"github.com/jamie950315/executor/internal/dispatch"
 	"github.com/jamie950315/executor/internal/filesystem"
 	"github.com/jamie950315/executor/internal/ipc"
+	"github.com/jamie950315/executor/internal/livedesktop"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/oauth"
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
@@ -68,13 +69,28 @@ func RunDesktop(ctx context.Context, configPath string) error {
 
 	manager := terminal.NewManager()
 	defer manager.KillAll()
+	controller := desktop.NewController()
+	authority := desktop.NewInputAuthority()
+	live := livedesktop.NewManager(livedesktop.Config{
+		Backend:   desktop.GuardLiveBackend(desktop.NewLiveBackend(), authority),
+		OnControl: authority.SetLiveControl,
+		Revoked: func() bool {
+			if ctx.Err() != nil || disabled(filepath.Join(cfg.StateDir, "disabled")) {
+				return true
+			}
+			current, err := secrets.Load(cfg.StateDir)
+			return err != nil || current.Generation != values.Generation
+		},
+	})
+	defer live.Close()
 
 	server := desktop.NewHelperRPCServer(
 		cfg.DesktopEndpoint,
 		[]byte(values.DesktopIPCKey),
 		manager,
 		filesystem.NewLocalService(),
-		desktop.NewController(),
+		controller,
+		desktop.HelperOptions{Live: live, Authority: authority},
 	)
 	return server.Serve(ctx)
 }

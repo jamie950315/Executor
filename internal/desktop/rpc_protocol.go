@@ -106,6 +106,7 @@ type RPCDesktopScreenshotParams struct {
 }
 
 type RPCDesktopCapture struct {
+	Epoch    uint64 `json:"epoch,omitempty"`
 	Data     []byte `json:"data"`
 	MimeType string `json:"mime_type"`
 	Width    int    `json:"width"`
@@ -125,7 +126,8 @@ type RPCDesktopAppParams struct {
 }
 
 type RPCDesktopActionsParams struct {
-	Actions []Action `json:"actions"`
+	Actions       []Action `json:"actions"`
+	ExpectedEpoch uint64   `json:"expected_epoch,omitempty"`
 }
 
 type RPCDesktopPermissionsParams struct {

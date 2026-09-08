@@ -63,7 +63,15 @@ type HelperPermissionDesktop interface {
 	Permissions(ctx context.Context, request bool) (permissionmodel.Report, error)
 }
 
-func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, files HelperFilesystem, desktop HelperDesktop) *ipc.RPCServer {
+func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, files HelperFilesystem, desktop HelperDesktop, options ...HelperOptions) *ipc.RPCServer {
+	option := HelperOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	if option.Authority == nil {
+		option.Authority = NewInputAuthority()
+	}
+	authority := option.Authority
 	desktopGate := make(chan struct{}, 1)
 	desktopGate <- struct{}{}
 	handler := func(ctx context.Context, method string, params []byte) (any, error) {
@@ -76,6 +84,28 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 			defer func() { desktopGate <- struct{}{} }()
 			if err := ctx.Err(); err != nil {
 				return nil, err
+			}
+		}
+		if method == "desktop.live" {
+			return handleLiveRPC(ctx, option.Live, params)
+		}
+		mutates := method == RPCMethodDesktopMouse || method == RPCMethodDesktopKeyboard || method == RPCMethodDesktopApp || method == RPCMethodDesktopActions
+		if mutates || method == RPCMethodDesktopCapture || method == RPCMethodDesktopScreenshot {
+			authority.mu.Lock()
+			defer authority.mu.Unlock()
+			var epoch uint64
+			if method == RPCMethodDesktopActions {
+				var request RPCDesktopActionsParams
+				if err := decodeStrictParams(method, params, &request); err != nil {
+					return nil, err
+				}
+				epoch = request.ExpectedEpoch
+			}
+			if err := authority.check(epoch, mutates); err != nil {
+				return nil, err
+			}
+			if mutates {
+				authority.epoch++
 			}
 		}
 		switch method {
@@ -263,7 +293,9 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 			if err := decodeStrictParams(method, params, &request); err != nil {
 				return nil, err
 			}
-			return captureDesktop(ctx, desktop)
+			capture, err := captureDesktop(ctx, desktop)
+			capture.Epoch = authority.epoch
+			return capture, err
 		case RPCMethodDesktopScreenshot:
 			var request RPCDesktopScreenshotParams
 			if err := decodeStrictParams(method, params, &request); err != nil {
