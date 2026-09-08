@@ -69,25 +69,35 @@ native input layouts, cursor bounds and epochs. `npm test`, `npm run check` and
 `npm run build` validate the browser control and Worker integration.
 
 `EXECUTOR_TEST_LIVE_CAPTURE=1 go test ./internal/desktop -run '^TestLiveCaptureOptIn$'`
-explicitly captures and discards three actual encoded samples, without recording a
+explicitly captures and discards 31 actual encoded samples and checks their pacing, without recording a
 video file. This is an opt-in live-host test, not a substitute for browser decoding
 and actual interaction checks. Deployment verification is recorded in AGENTS.md.
 
-### Installed verification, 2026-09-08
+### Installed verification, 2026-09-09
 
-Mac and Windows run source revision `b449af6`, with matching installed hashes,
-healthy services and preserved credentials. Both produced real encoded samples
-in opt-in native capture checks. The deployed Dashboard preserves all four
-device grants and relay connectivity; Pi5 explicitly displays the Linux live
-video limitation.
+Mac runs signed source revision `88d54d8`; Windows runs `44d3a09`, with matching
+installed hashes and preserved credentials. Both native capture tests produce
+31 samples in about two seconds. The output FPS filter prevents AVFoundation's
+input time base from creating excessive output frames; x264's native repeated
+headers/AUDs must not be duplicated with the macOS bitstream filters.
 
-The Codex in-app browser currently times out during browser ICE gathering,
-before dispatching the device start request. The same Mac receives a valid
-Cloudflare STUN UDP response, so a general host-network outage is not established.
-Browser-tool isolated evaluation is not proof of page-global API availability.
-Actual browser video decoding and live input are **not yet verified**. Compare
-with a separately authenticated Chrome/Edge session before attributing the
-failure to the host, changing firewall policy or adding a paid relay.
+Chrome gathered usable host/reflexive ICE candidates in 85ms while other probes
+remained pending beyond ten seconds. The eight-second collection budget now
+uses already-gathered candidates rather than discarding them; no-candidate
+timeout still fails. Actual ICE checks determine connectivity, not gathering
+completion. Browser-tool isolated evaluation is not proof of page-global APIs.
+
+Mac Chrome decoded 1108x720 video: 614 frames over 40.9 seconds with one dropped
+frame. The Codex in-app browser also displays freshly decoded Mac video.
+Explicit control enable, Escape release and Stop were verified; the encoder
+exits after Stop. Actual live pointer/typing on Mac has not yet been verified.
+
+Windows signaling exchanges valid LAN/reflexive candidates, but peer connectivity
+never advances beyond checking. Existing enabled inbound Block rules target the
+installed Executor for both UDP and TCP on Private/Public profiles. They were
+not modified. Windows browser decoding and live pointer/keyboard verification
+remain blocked pending an owner-approved firewall change. No paid relay was added.
+All temporary fixtures, capture sessions and file-transfer listeners were stopped.
 
 Startup failures distinguish browser initialization, network discovery, device
 start, response validation and answer acceptance; raw SDP is never displayed.
