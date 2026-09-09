@@ -44,7 +44,7 @@ replay, audio capture, clipboard sharing, or paid relay provisioning occurs.
 The existing authenticated Dashboard relay carries only signaling and periodic
 lease renewal. Video and input use the direct WebRTC peer connection. The default
 Cloudflare STUN endpoint discovers possible direct paths. An optional private
-A1-US TURN relay is now deployed; Automatic mode prefers direct connectivity,
+A1-US/A1-JP TURN relay pair is now deployed; Automatic mode prefers direct connectivity,
 while Private relay only is available for verification or constrained networks.
 See [Self-hosted desktop relay](SELF_HOSTED_TURN.md) for credential handling,
 deployment verification and remaining network limits.
@@ -142,7 +142,8 @@ CPU core and 137 MB RSS. The lower-load 15 FPS option remains available.
 The initial connectivity restriction described below was subsequently resolved
 for A1-US through an owner-approved dedicated OCI security group. Authenticated
 TURN is now deployed and browser-verified; see [current relay status](SELF_HOSTED_TURN.md).
-A1-JP remains unchanged. The following observations describe the initial probe,
+A1-JP was subsequently enabled with the same isolated configuration and verified
+through a JP-only browser session. The following observations describe the initial probe,
 not the current A1-US deployment.
 
 The owner approved checking A1-JP/A1-US for self-hosted relay use without adding

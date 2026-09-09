@@ -59,10 +59,11 @@ Disable its administrative CLI, TCP peer relaying, unnecessary STUN responses,
 and persistent traffic logs. Deny loopback, private, link-local/metadata, CGNAT
 and multicast peer addresses so a ticket cannot reach internal host services.
 
-The deployed A1-US service is isolated from its existing DERP/DNS/app services:
+The deployed A1-US and A1-JP services are isolated from their existing DERP/DNS/app services:
 
-- Dedicated OCI network security group `executor-turn-a1-us`, attached only to
-  the A1-US primary VNIC. Stateful ingress permits TCP/UDP 5349 and UDP
+- Dedicated OCI network security groups `executor-turn-a1-us` and
+  `executor-turn-a1-jp`, each attached only to its own instance's primary VNIC.
+  Stateful ingress permits TCP/UDP 5349 and UDP
   49160–49200. Existing TCP 443 and UDP 3478 are not replaced or moved.
 - Dedicated `executor-turn.service`, using a pinned coturn container with host
   networking, unprivileged UID, read-only filesystem, no-new-privileges, a small
@@ -86,6 +87,27 @@ the existing host's CPU and traffic allowance; rate limits are not a monetary
 spending cap and operators must retain their normal provider usage controls.
 
 ## Verification and recovery
+
+A1-JP (Osaka) uses the same pinned service version and limits as A1-US. The two
+owned relay nodes share the protected relay-cluster secret; it was transferred
+only through encrypted SSH streams and is not present in source or logs. Mac
+and Windows now list JP UDP/TCP and US UDP/TCP endpoints in their private
+configuration, with the existing secret preserved. No binary or Dashboard code
+change was required for the second region. Endpoint order does not guarantee a
+specific selected region; ICE selects a working path.
+The private configuration supports at most four TURN URLs: the current setup
+uses one UDP and one TCP URL for each region.
+
+JP verification includes external UDP/TCP synthetic video, allocation capacity,
+expired-ticket rejection, and a real browser session restricted to the JP relay.
+The browser confirmed the JP relay candidate, decoded 1280x720 video in 30 FPS
+mode without lost packets in the sample, and delivered Chinese text to an
+isolated Windows fixture. Both nodes' existing services remained active.
+
+When reloading Windows Desktop configuration, wait for the old managed Desktop
+process to exit before starting its Scheduled Task again; Stop is asynchronous.
+Verify the pipe/doctor status afterwards. Protected pre-JP client configuration
+backups are kept under each state directory's `deployment-backups/turn-before-jp`.
 
 Deployment is verified on native revision `102a7d1` (Mac/Windows) and Dashboard
 Worker `9efdc9ee-0f53-442f-a830-a02a5b2e9ef6` (UI `4d128a6`). Existing config,
