@@ -87,6 +87,17 @@ spending cap and operators must retain their normal provider usage controls.
 
 ## Verification and recovery
 
+Deployment is verified on native revision `102a7d1` (Mac/Windows) and Dashboard
+Worker `9efdc9ee-0f53-442f-a830-a02a5b2e9ef6` (UI `4d128a6`). Existing config,
+recovery, OAuth and IPC credentials are unchanged. The in-app browser verified
+Windows relay-only video, click, ASCII/Chinese input, drag and scroll. A separate
+TCP-only check reported `relay` candidates on both ends, local relay protocol
+`tcp`, 30 FPS, 2,034 decoded frames and no lost RTP packets in the sample.
+Mac relay-only video delivered 4,229 frames in 141.2 seconds; automatic mode
+selected host-to-host direct connectivity. Test sessions and diagnostic hooks
+were removed after verification. Background-tab presentation drops must not be
+confused with network packet loss.
+
 The UI defaults to Automatic (direct preferred), with an explicit Private relay
 only mode for checking a relay path. Successful negotiation alone is not proof
 of usable desktop video: verify decoded frames, input delivery, and Stop cleanup.
@@ -99,6 +110,7 @@ EXECUTOR_TEST_TURN_CONFIG=/var/lib/executor/live-turn.json \
   go test ./internal/livedesktop -run '^TestTURNExternal' -count=1 -v
 ```
 
+Run these tests with live sessions stopped: they reserve multiple allocations.
 They verify temporary credentials, expired-ticket rejection, candidate allocation
 capacity, and real RTP through forced UDP/TCP relay paths. Do not print the file
 or enable Pion/coturn verbose logs to diagnose failures.

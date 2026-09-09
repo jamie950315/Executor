@@ -61,6 +61,25 @@ func TestTURNRelayCarriesVideoWithTemporaryCredentials(t *testing.T) {
 	}
 }
 
+func TestDirectConnectionSurvivesUnreachableTURN(t *testing.T) {
+	blackhole, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blackhole.Close()
+	m := NewManager(Config{Backend: &fakeBackend{events: make(chan InputEvent, 32)}, ICE: []string{}, TURN: &TURNConfig{URLs: []string{"turn:" + blackhole.LocalAddr().String() + "?transport=udp"}, Secret: strings.Repeat("test-only-", 4)}})
+	defer m.Close()
+	session, _, _, _, video := connectPeer(t, m)
+	select {
+	case <-video:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usable direct path was lost because relay discovery failed")
+	}
+	if err := m.Stop("owner", session.SessionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTURNConnectivityIsFreshAndUnavailableAfterClose(t *testing.T) {
 	secret := strings.Repeat("test-only-", 4)
 	m := NewManager(Config{Backend: &fakeBackend{}, ICE: []string{}, TURN: &TURNConfig{URLs: []string{"turn:relay.example:5349"}, Secret: secret}})

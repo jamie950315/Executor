@@ -43,8 +43,11 @@ replay, audio capture, clipboard sharing, or paid relay provisioning occurs.
 
 The existing authenticated Dashboard relay carries only signaling and periodic
 lease renewal. Video and input use the direct WebRTC peer connection. The default
-Cloudflare STUN endpoint discovers possible direct paths; no TURN relay is
-configured. If NAT or firewall rules prevent a direct path, the UI reports failure.
+Cloudflare STUN endpoint discovers possible direct paths. An optional private
+A1-US TURN relay is now deployed; Automatic mode prefers direct connectivity,
+while Private relay only is available for verification or constrained networks.
+See [Self-hosted desktop relay](SELF_HOSTED_TURN.md) for credential handling,
+deployment verification and remaining network limits.
 Adding a relay or changing firewall policy requires a separate owner decision.
 Existing signaling requests and local network/video traffic still consume normal
 service or network usage; this is not a promise of zero usage charges.
@@ -78,7 +81,7 @@ and actual interaction checks. Deployment verification is recorded in AGENTS.md.
 
 ### Installed verification, 2026-09-09
 
-Mac runs signed source revision `88d54d8`; Windows runs `44d3a09`, with matching
+Mac and Windows now run source revision `102a7d1`, with matching
 installed hashes and preserved credentials. Both native capture tests produce
 31 samples in about two seconds. The output FPS filter prevents AVFoundation's
 input time base from creating excessive output frames; x264's native repeated
@@ -135,6 +138,12 @@ or arbitrary-network performance guarantees. Mac's encoder sampled 44.7% of one
 CPU core and 137 MB RSS. The lower-load 15 FPS option remains available.
 
 ### Existing A1 relay feasibility
+
+The initial connectivity restriction described below was subsequently resolved
+for A1-US through an owner-approved dedicated OCI security group. Authenticated
+TURN is now deployed and browser-verified; see [current relay status](SELF_HOSTED_TURN.md).
+A1-JP remains unchanged. The following observations describe the initial probe,
+not the current A1-US deployment.
 
 The owner approved checking A1-JP/A1-US for self-hosted relay use without adding
 paid services or disrupting existing workloads. Both ARM hosts have ample spare
