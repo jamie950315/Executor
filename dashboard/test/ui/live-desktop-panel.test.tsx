@@ -4,6 +4,13 @@ import { LiveRemoteDesktopPanel } from "../../src/ui/panels/LiveRemoteDesktopPan
 import type { DeviceCall } from "../../src/ui/panels/types";
 
 afterEach(()=>vi.unstubAllGlobals());
+it("explains that relay-only mode disables direct connections",async()=>{
+ const call:DeviceCall=async()=>({requestID:"status",result:{supported:true,available:true,active:false,iceServers:[],relayConfigured:true}});
+ render(<LiveRemoteDesktopPanel call={call}/>);
+ const mode=await screen.findByRole("combobox",{name:"Connection mode"});
+ fireEvent.change(mode,{target:{value:"relay"}});
+ expect(screen.getByText("Relay-only mode: direct connections are disabled. No microphone or clipboard sharing.")).toBeVisible();
+});
 it("provides fullscreen without enabling remote input",async()=>{
  const call:DeviceCall=async()=>({requestID:"status",result:{supported:true,available:true,active:false,iceServers:[]}});
  render(<LiveRemoteDesktopPanel call={call}/>);
