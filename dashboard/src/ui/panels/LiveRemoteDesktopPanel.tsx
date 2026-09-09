@@ -11,6 +11,7 @@ export function LiveRemoteDesktopPanel(props: PanelProps & { platform?: string }
 
 function LivePanel({ call, active = true }: PanelProps) {
  const [fps, setFPS] = useState<15 | 30>(30);
+ const [relayOnly,setRelayOnly]=useState(false);
  const callRef=useRef(call);callRef.current=call;const latestCall=useRef<DeviceCall>((...args)=>callRef.current(...args));
  const [status, setStatus] = useState<LiveStatus | null>(null); const [message, setMessage] = useState("Checking live desktop availability…");
  const [running, setRunning] = useState(false); const [ready, setReady] = useState(false); const [control, setControl] = useState(false); const [videoReady, setVideoReady] = useState(false); const [text, setText] = useState("");
@@ -37,13 +38,13 @@ function LivePanel({ call, active = true }: PanelProps) {
 
  const start = () => {
   if (!status?.available || !status.supported || connection.current || !active) return;
-  setRunning(true); setReady(false); setVideoReady(false); setMessage("Connecting directly to the device…");
+  setRunning(true); setReady(false); setVideoReady(false); setMessage(status.relayConfigured ? "Connecting to the device with private relay support…" : "Connecting directly to the device…");
   const session = new LiveDesktopConnection(latestCall.current, {
    stream: (stream) => { if (connection.current !== session || !mounted.current) return; videoWatch.current?.close();videoWatch.current=null;setVideoReady(false);if (video.current) { video.current.srcObject = stream; if (stream) {videoWatch.current=new LiveVideoWatch(video.current,(fresh)=>{if(mounted.current&&connection.current===session)setVideoReady(fresh);},()=>session.stop("Video stopped updating. Control has stopped to avoid acting on an old image."));void video.current.play().catch(() => { if (mounted.current && connection.current === session && video.current?.srcObject === stream) setMessage("Video is ready. Press Play video if your browser paused playback."); });} } },
    state: (enabled, connected) => { if (connection.current !== session || !mounted.current) return; setReady(connected); if (enabled && !wantedControl.current) { session.input?.release(); return; } if (!enabled) { if(controlling.current)wantedControl.current=false;keys.current.clear();clearPointer(); } controlling.current = enabled; setControl(enabled); if (connected) setMessage(enabled ? "Control enabled. Click the video to focus. Esc immediately returns to viewing only." : "Viewing only. No keyboard or pointer input is sent."); },
    stopped: (reason) => { if (connection.current !== session) return; connection.current = null; controlling.current = false; wantedControl.current = false; keys.current.clear(); clearPointer(); if (mounted.current) { setRunning(false); setControl(false); setReady(false); setVideoReady(false); setMessage(reason); } },
   });
-  connection.current = session; void session.start(status, fps);
+  connection.current = session; void session.start(status, fps, relayOnly);
  };
  const toggleControl = () => { if (controlling.current || wantedControl.current) { release(); return; } if (!ready || !videoReady || !videoWatch.current?.isFresh()) return; wantedControl.current = true; connection.current?.input?.send({ type: "control", enabled: true }); stage.current?.focus(); };
  const point = (event: { clientX: number; clientY: number }) => { const v = video.current; return v ? containedPoint(v.getBoundingClientRect(), v.videoWidth, v.videoHeight, event.clientX, event.clientY) : null; };
@@ -58,9 +59,10 @@ function LivePanel({ call, active = true }: PanelProps) {
 
  const fullscreen = async () => { try { if(document.fullscreenElement === stage.current) await document.exitFullscreen(); else if(stage.current?.requestFullscreen) await stage.current.requestFullscreen(); else throw new Error(); } catch { setMessage("Fullscreen is unavailable in this browser. The embedded view remains available."); } };
  return <section className="panel-shell live-desktop-panel" aria-labelledby="live-desktop-title">
-  <header className="panel-heading"><div><p className="eyebrow">Direct device connection · H264</p><h2 id="live-desktop-title">Live desktop</h2></div><div className="live-session-actions"><span className={`live-indicator ${running ? "is-live" : ""}`}>{running ? control ? "CONTROL ON" : "VIEW ONLY" : "DISCONNECTED"}</span>{running ? <button className="danger-button" onClick={() => connection.current?.stop()}>Stop session</button> : <button className="primary-button" disabled={!active || !status?.supported || !status.available} onClick={start}>Start live desktop</button>}</div></header>
+  <header className="panel-heading"><div><p className="eyebrow">Encrypted device connection · H264</p><h2 id="live-desktop-title">Live desktop</h2></div><div className="live-session-actions"><span className={`live-indicator ${running ? "is-live" : ""}`}>{running ? control ? "CONTROL ON" : "VIEW ONLY" : "DISCONNECTED"}</span>{running ? <button className="danger-button" onClick={() => connection.current?.stop()}>Stop session</button> : <button className="primary-button" disabled={!active || !status?.supported || !status.available} onClick={start}>Start live desktop</button>}</div></header>
   <p className="status-line" aria-live="polite">{message}</p>
   <label>Frame rate <select aria-label="Frame rate" value={fps} disabled={running} onChange={(event) => setFPS(event.target.value === "15" ? 15 : 30)}><option value="15">15 FPS · Lower load</option><option value="30">30 FPS · Smoother</option></select></label>
+  {status?.relayConfigured && <label>Connection <select aria-label="Connection mode" disabled={running} value={relayOnly?"relay":"auto"} onChange={(event)=>setRelayOnly(event.target.value==="relay")}><option value="auto">Automatic · Direct preferred</option><option value="relay">Private relay only</option></select></label>}
   <button onClick={() => void fullscreen()}>Fullscreen</button>
   <div className={`live-video-stage ${control ? "has-control" : ""}`} ref={stage} tabIndex={control ? 0 : -1} role="application" aria-label="Remote desktop video. Escape releases control." onPointerDown={pointerDown} onPointerUp={pointerUp} onPointerMove={(event) => { if (controlling.current) { const p = point(event); if (p) connection.current?.input?.move(p); } }} onPointerCancel={() => release()} onLostPointerCapture={() => { if (pointer.current) release(); }} onContextMenu={(event) => { if (controlling.current) event.preventDefault(); }} onKeyDown={(event) => key(event, true)} onKeyUp={(event) => key(event, false)} onBlur={() => { if (pointer.current) release(); else { for (const code of keys.current) connection.current?.input?.send({ type: "key", code, down: false }); keys.current.clear(); } }}>
    <video ref={video} autoPlay muted playsInline aria-label="Live primary display" onEmptied={() => setVideoReady(false)} />
@@ -69,6 +71,6 @@ function LivePanel({ call, active = true }: PanelProps) {
    <button className="live-fullscreen-exit" onPointerDown={event=>event.stopPropagation()} onKeyDown={event=>event.stopPropagation()} onClick={()=>void fullscreen()}>Exit fullscreen</button>
   </div>
   <div className="live-control-bar"><div><strong>{control ? "You are controlling this device" : "View first. Control when ready."}</strong><p>Leaving this window or pressing Esc releases every held key and button.</p></div><button className={control ? "danger-button" : "primary-button"} disabled={!ready || !videoReady} aria-pressed={control} onClick={toggleControl}>{control ? "Release control" : "Enable control"}</button>{running && <button onClick={() => void video.current?.play().catch(() => setMessage("Your browser could not play this video."))}>Play video</button>}</div>
-  <div className="live-text-entry"><label>Text / IME<input type="password" aria-label="Text for remote device" disabled={!control} value={text} autoComplete="off" onChange={(event) => setText(event.target.value)} onCompositionEnd={(event) => setText(event.currentTarget.value)} /></label><button disabled={!control || !text} onClick={() => sendText(text)}>Send text</button><p>No microphone, clipboard sharing, or relay service.</p></div>
+  <div className="live-text-entry"><label>Text / IME<input type="password" aria-label="Text for remote device" disabled={!control} value={text} autoComplete="off" onChange={(event) => setText(event.target.value)} onCompositionEnd={(event) => setText(event.currentTarget.value)} /></label><button disabled={!control || !text} onClick={() => sendText(text)}>Send text</button><p>{status?.relayConfigured ? "Private relay configured; direct connections are preferred. No microphone or clipboard sharing." : "No microphone, clipboard sharing, or relay service."}</p></div>
  </section>;
 }

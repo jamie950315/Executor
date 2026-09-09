@@ -17,5 +17,7 @@ executor-state/
 **/dashboard-deployment*.json
 *.token
 *.token.copy
+live-turn.json
+turnserver.conf
 **/playwright-report/
 **/test-results/

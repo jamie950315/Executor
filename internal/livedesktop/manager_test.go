@@ -3,6 +3,7 @@ package livedesktop
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -68,8 +69,12 @@ func (v *fakeVideo) Read(ctx context.Context) (Sample, error) {
 }
 
 func connectPeer(t *testing.T, m *Manager) (Session, *webrtc.PeerConnection, *webrtc.DataChannel, chan map[string]any, chan struct{}) {
+	return connectPeerWithConfig(t, m, webrtc.Configuration{})
+}
+
+func connectPeerWithConfig(t *testing.T, m *Manager, config webrtc.Configuration) (Session, *webrtc.PeerConnection, *webrtc.DataChannel, chan map[string]any, chan struct{}) {
 	t.Helper()
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	pc, err := webrtc.NewPeerConnection(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +110,11 @@ func connectPeer(t *testing.T, m *Manager) (Session, *webrtc.PeerConnection, *we
 	select {
 	case <-gathered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("client gather timed out")
+		local := pc.LocalDescription()
+		if local != nil {
+			t.Fatalf("client gather timed out (relay candidates: %d)", strings.Count(local.SDP, " typ relay"))
+		}
+		t.Fatal("client gather timed out without a local description")
 	}
 	signaling, cancelSignaling := context.WithCancel(context.Background())
 	s, err := m.Start(signaling, "owner", pc.LocalDescription().SDP, Options{})
@@ -116,8 +125,18 @@ func connectPeer(t *testing.T, m *Manager) (Session, *webrtc.PeerConnection, *we
 	if err = pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: s.Answer}); err != nil {
 		t.Fatal(err)
 	}
-	waitMessage(t, messages, "ready")
-	return s, pc, dc, messages, video
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case message := <-messages:
+			if message["type"] == "ready" {
+				return s, pc, dc, messages, video
+			}
+		case <-timer.C:
+			t.Fatalf("missing ready: peer=%s ice=%s", pc.ConnectionState(), pc.ICEConnectionState())
+		}
+	}
 }
 func waitMessage(t *testing.T, ch chan map[string]any, kind string) map[string]any {
 	t.Helper()
@@ -222,10 +241,9 @@ func TestLoopbackVideoInputAuthorizationAndCleanup(t *testing.T) {
 	// ICE disconnect detection is intentionally fail closed; explicit channel close
 	// can arrive sooner, while the bounded lease covers abrupt network loss.
 	if err := m.Stop("owner", s.SessionID); err != nil {
-		st, _ := m.Status(context.Background())
-		if st.Active {
-			t.Fatal(err)
-		}
+		// Peer-close may cancel the context before asynchronous cleanup clears
+		// current. Require cleanup to complete, not an instantaneous snapshot.
+		await(t, func() bool { st, _ := m.Status(context.Background()); return !st.Active })
 	}
 	await(t, func() bool { return b.closed.Load() == 1 && b.releases.Load() >= 2 })
 	st, _ := m.Status(context.Background())

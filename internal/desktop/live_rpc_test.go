@@ -35,6 +35,10 @@ func TestInputAuthorityEpochDoesNotRepeatAcrossHelperRestarts(t *testing.T) {
 
 type liveRPCFake struct{ owner, id string }
 
+func (f *liveRPCFake) Connectivity(context.Context) (livedesktop.Connectivity, error) {
+	return livedesktop.Connectivity{}, nil
+}
+
 func (f *liveRPCFake) Start(_ context.Context, owner, offer string, _ livedesktop.Options) (livedesktop.Session, error) {
 	f.owner = owner
 	return livedesktop.Session{SessionID: "s", Answer: offer}, nil

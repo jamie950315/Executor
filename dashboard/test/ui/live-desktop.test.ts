@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { LiveInput, LiveDesktopConnection, LiveVideoWatch, containedPoint, gatherICE, liveErrorMessage } from "../../src/ui/live-desktop";
+import { LiveInput, LiveDesktopConnection, LiveVideoWatch, containedPoint, gatherICE, liveErrorMessage, parseConnectivity } from "../../src/ui/live-desktop";
 import type { DeviceCall } from "../../src/ui/panels/types";
 
 describe("live desktop input", () => {
+ it("accepts only fresh relay credentials and rejects unsafe URLs",()=>{
+  const expiresAt=Math.floor(Date.now()/1000)+3600;
+  expect(parseConnectivity({expiresAt,iceServers:[{urls:["turn:relay.example:5349?transport=tcp"],username:"expires:random",credential:"temporary"}]})).toHaveLength(1);
+  expect(()=>parseConnectivity({expiresAt:1,iceServers:[]})).toThrow();
+  expect(()=>parseConnectivity({expiresAt,iceServers:[{urls:["https://bad.example"],username:"x",credential:"y"}]})).toThrow();
+ });
  it("distinguishes encoder failures from input and never exposes raw device data",()=>{
   expect(liveErrorMessage("video_start_failed")).toMatch(/video.*FFmpeg/i);
   expect(liveErrorMessage("input_release_failed")).toMatch(/released/i);
@@ -48,6 +54,16 @@ class FakePeer extends EventTarget {
 const liveStatus={supported:true,available:true,active:false,iceServers:[]};
 const liveSession={sessionId:"session1",answer:"answer",width:1280,height:720,leaseSeconds:15};
 describe("live desktop connection",()=>{
+ it("fetches fresh relay authorization and can require an actual relay path",async()=>{
+  const peer=new FakePeer();const construct=vi.fn(function(){return peer;});vi.stubGlobal("RTCPeerConnection",construct);
+  const servers=[{urls:["turn:relay.example:5349?transport=tcp"],username:"expires:random",credential:"temporary"}];
+  const call=vi.fn().mockResolvedValueOnce({result:{iceServers:servers,expiresAt:Math.floor(Date.now()/1000)+3600}}).mockResolvedValue({result:liveSession}) as unknown as DeviceCall;
+  const connection=new LiveDesktopConnection(call,{stream:vi.fn(),state:vi.fn(),stopped:vi.fn()});
+  await connection.start({...liveStatus,relayConfigured:true},30,true);
+  expect(call).toHaveBeenNthCalledWith(1,"desktop_live",{action:"ice"},expect.any(AbortSignal));
+  expect(construct).toHaveBeenCalledWith({iceServers:servers,iceTransportPolicy:"relay"});
+  connection.stop();vi.unstubAllGlobals();
+ });
  it("requests bounded 30 FPS video at the smoother setting",async()=>{
   const peer=new FakePeer();vi.stubGlobal("RTCPeerConnection",vi.fn(function(){return peer;}));
   const call=vi.fn(async()=>({result:liveSession})) as unknown as DeviceCall;

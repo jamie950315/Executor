@@ -78,6 +78,7 @@ type LiveDesktop interface {
 	Renew(string, string) error
 	Stop(string, string) error
 	Status(context.Context) (livedesktop.Status, error)
+	Connectivity(context.Context) (livedesktop.Connectivity, error)
 }
 type HelperOptions struct {
 	Live      LiveDesktop
@@ -105,6 +106,8 @@ func handleLiveRPC(ctx context.Context, live LiveDesktop, raw []byte) (any, erro
 		return nil, errors.New("live desktop owner is required")
 	}
 	switch r.Action {
+	case "ice":
+		return live.Connectivity(ctx)
 	case "status":
 		return live.Status(ctx)
 	case "start":

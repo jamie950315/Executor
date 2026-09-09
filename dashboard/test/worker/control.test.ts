@@ -199,7 +199,7 @@ describe("unlocked device control", () => {
     socket.close(1000, "test complete");
   });
 
-  it.each(["status", "start", "renew", "stop"])("requires this browser's unlock grant for live desktop %s", async (action) => {
+  it.each(["status", "ice", "start", "renew", "stop"])("requires this browser's unlock grant for live desktop %s", async (action) => {
     const socket = await enrolledAuthenticatedSocket();
     const unlocked = await unlock(socket);
     const body = { method: "desktop_live", arguments: { action } };

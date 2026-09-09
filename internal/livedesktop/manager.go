@@ -26,6 +26,7 @@ type Config struct {
 	// It is called without manager/session locks, under inputMu.
 	OnControl func(bool)
 	ICE       []string
+	TURN      *TURNConfig
 	Lease     time.Duration
 }
 type Manager struct {
@@ -66,11 +67,16 @@ func NewManager(c Config) *Manager {
 		c.ICE = []string{"stun:stun.cloudflare.com:3478"}
 	}
 	c.ICE = append([]string{}, c.ICE...)
+	if c.TURN != nil {
+		v := *c.TURN
+		v.URLs = append([]string(nil), v.URLs...)
+		c.TURN = &v
+	}
 	return &Manager{cfg: c}
 }
 func (m *Manager) revoked() bool { return m.cfg.Revoked != nil && m.cfg.Revoked() }
 func (m *Manager) Status(ctx context.Context) (Status, error) {
-	s := Status{Supported: m.cfg.Backend != nil, ICEServers: append([]string{}, m.cfg.ICE...)}
+	s := Status{Supported: m.cfg.Backend != nil, ICEServers: append([]string{}, m.cfg.ICE...), RelayConfigured: m.cfg.TURN != nil}
 	if s.Supported {
 		if probe, ok := m.cfg.Backend.(interface {
 			LiveStatus(context.Context) (bool, bool, string)
@@ -173,6 +179,13 @@ func (m *Manager) Start(ctx context.Context, owner, offer string, o Options) (re
 			return result, errors.New("only credential-free STUN is supported")
 		}
 		servers = append(servers, webrtc.ICEServer{URLs: []string{url}})
+	}
+	if m.cfg.TURN != nil {
+		credential, err := m.cfg.TURN.credentials(time.Now())
+		if err != nil {
+			return result, err
+		}
+		servers = append(servers, webrtc.ICEServer{URLs: credential.URLs, Username: credential.Username, Credential: credential.Credential})
 	}
 	pc, e := api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
 	if e != nil {

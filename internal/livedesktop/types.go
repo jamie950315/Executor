@@ -59,9 +59,10 @@ type Session struct {
 }
 
 type Status struct {
-	Supported  bool     `json:"supported"`
-	Available  bool     `json:"available"`
-	Active     bool     `json:"active"`
-	Reason     string   `json:"reason,omitempty"`
-	ICEServers []string `json:"iceServers"`
+	RelayConfigured bool     `json:"relayConfigured,omitempty"`
+	Supported       bool     `json:"supported"`
+	Available       bool     `json:"available"`
+	Active          bool     `json:"active"`
+	Reason          string   `json:"reason,omitempty"`
+	ICEServers      []string `json:"iceServers"`
 }

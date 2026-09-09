@@ -1,6 +1,6 @@
 import type { DeviceCall } from "./panels/types";
 
-export interface LiveStatus { supported: boolean; available: boolean; active: boolean; reason?: string; iceServers: string[] }
+export interface LiveStatus { supported: boolean; available: boolean; active: boolean; reason?: string; iceServers: string[]; relayConfigured?: boolean }
 interface LiveSession { sessionId: string; answer: string; width: number; height: number; leaseSeconds: number }
 export interface Point { x: number; y: number }
 type Input = { type: string; x?: number; y?: number; button?: number; code?: string; down?: boolean; text?: string; scrollX?: number; scrollY?: number; enabled?: boolean };
@@ -72,7 +72,21 @@ export function gatherICE(pc: RTCPeerConnection, signal: AbortSignal): Promise<b
 export function parseLiveStatus(value: unknown): LiveStatus {
  const s = value as Partial<LiveStatus> | null;
  if (!s || typeof s.supported !== "boolean" || typeof s.available !== "boolean" || !Array.isArray(s.iceServers) || s.iceServers.some((url) => typeof url !== "string" || !/^stuns?:[^@\s]+$/u.test(url))) throw new Error("Invalid live desktop status");
- return { supported: s.supported, available: s.available, active: s.active === true, iceServers: s.iceServers, reason: typeof s.reason === "string" ? s.reason : undefined };
+ if (s.relayConfigured !== undefined && typeof s.relayConfigured !== "boolean") throw new Error("Invalid relay status");
+ return { supported: s.supported, available: s.available, active: s.active === true, iceServers: s.iceServers, reason: typeof s.reason === "string" ? s.reason : undefined, relayConfigured: s.relayConfigured === true };
+}
+
+export function parseConnectivity(value: unknown): RTCIceServer[] {
+ const c=value as {iceServers?: unknown;expiresAt?: unknown}|null;
+ const now=Date.now()/1000;
+ if(!c || typeof c.expiresAt!=="number" || !Number.isSafeInteger(c.expiresAt) || c.expiresAt<now+30 || c.expiresAt>now+3700 || !Array.isArray(c.iceServers) || c.iceServers.length<1 || c.iceServers.length>8) throw new Error("Invalid relay authorization");
+ return c.iceServers.map((value:unknown)=>{
+  const s=value as {urls?:unknown;username?:unknown;credential?:unknown}|null;
+  if(!s||!Array.isArray(s.urls)||s.urls.length<1||s.urls.length>4||s.urls.some(u=>typeof u!=="string"||u.length>512||!/^(?:stun|stuns|turn|turns):[^@\s#]+$/u.test(u)))throw new Error("Invalid relay server");
+  const turn=s.urls.some(u=>/^turns?:/u.test(u as string));
+  if(turn&&(typeof s.username!=="string"||s.username.length<1||s.username.length>256||typeof s.credential!=="string"||s.credential.length<1||s.credential.length>512))throw new Error("Missing relay authorization");
+  return {urls:s.urls as string[],...(turn?{username:s.username as string,credential:s.credential as string}:{})};
+ });
 }
 
 export interface LiveCallbacks { stream: (stream: MediaStream | null) => void; state: (control: boolean, ready: boolean) => void; stopped: (message: string) => void }
@@ -80,18 +94,27 @@ export class LiveDesktopConnection {
  private pc: RTCPeerConnection | undefined; private dc: RTCDataChannel | undefined; input: LiveInput | undefined;
  private abort = new AbortController(); private closed = false; private session: LiveSession | undefined; private lease: ReturnType<typeof setTimeout> | undefined; private startup: ReturnType<typeof setTimeout> | undefined; private ping: ReturnType<typeof setInterval> | undefined;
  constructor(private call: DeviceCall, private callbacks: LiveCallbacks) {}
- async start(status: LiveStatus, fps: 15 | 30 = 15) {
+ async start(status: LiveStatus, fps: 15 | 30 = 15, relayOnly = false) {
   if (this.closed) return;
+  if (relayOnly && !status.relayConfigured) { this.stop("No private relay is configured for this device."); return; }
   if (typeof RTCPeerConnection !== "function") {
    this.stop("This browser does not provide WebRTC video connections. Open this Dashboard in a WebRTC-enabled browser such as Chrome or Edge; device permissions cannot fix this browser limitation.");
    return;
   }
   let failure = "The browser could not initialize a video connection. Check browser WebRTC support.";
   try {
-   const pc = new RTCPeerConnection({ iceServers: status.iceServers.map((urls) => ({ urls })) }); this.pc = pc;
+   let iceServers:RTCIceServer[]=status.iceServers.map((urls)=>({urls}));
+   if(status.relayConfigured){
+    failure="Relay authorization could not be obtained. Check the device relay configuration; no connection was retried.";
+    const response=await this.call("desktop_live",{action:"ice"},this.abort.signal);
+    if(this.closed)return;
+    iceServers=parseConnectivity(response.result);
+   }
+   failure="The browser could not initialize a video connection. Check browser WebRTC support.";
+   const pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: relayOnly ? "relay" : "all" }); this.pc = pc;
    pc.addTransceiver("video", { direction: "recvonly" });
    pc.ontrack = (event) => { if (!this.closed) this.callbacks.stream(event.streams[0] ?? new MediaStream([event.track])); };
-   pc.onconnectionstatechange = () => { if (["failed", "closed", "disconnected"].includes(pc.connectionState)) this.stop("Direct connection ended. Start again when the device is reachable."); };
+   pc.onconnectionstatechange = () => { if (["failed", "closed", "disconnected"].includes(pc.connectionState)) this.stop("Desktop connection ended. Start again when the device is reachable."); };
    const dc = pc.createDataChannel("executor-input", { ordered: true }); this.dc = dc;
    this.input = new LiveInput(dc, () => this.stop("Input connection is congested or unavailable. Control has stopped; nothing was retried."));
    dc.onclose = () => this.stop("Control connection ended. The session has stopped."); dc.onerror = () => this.stop("Control connection failed. The session has stopped.");
@@ -106,7 +129,7 @@ export class LiveDesktopConnection {
     } catch { this.stop("Invalid control response. The session has stopped."); }
    };
    await pc.setLocalDescription(await pc.createOffer());
-   failure = "Browser network discovery failed or timed out before contacting the device. Check this browser's network access; no relay is configured.";
+   failure = status.relayConfigured ? "Browser network discovery failed. Check direct and private relay reachability." : "Browser network discovery failed or timed out before contacting the device. Check this browser's network access; no relay is configured.";
    await gatherICE(pc, this.abort.signal); if (this.closed) return;
    const offer = pc.localDescription?.sdp; if (!offer) throw new Error();
    // Do not abort a dispatched start: its late result is needed to stop the exact remote lease.
@@ -117,7 +140,7 @@ export class LiveDesktopConnection {
    if (!s || typeof s.sessionId !== "string" || !s.sessionId || typeof s.answer !== "string" || typeof s.width !== "number" || s.width <= 0 || typeof s.height !== "number" || s.height <= 0 || typeof s.leaseSeconds !== "number" || s.leaseSeconds < 5) throw new Error();
    this.session = s as LiveSession;
    if (this.closed) { this.remoteStop(); return; }
-   this.renewLater(); this.startup = setTimeout(() => this.stop("A direct connection could not be established. This network may require a relay, which is not configured."), 15000);
+   this.renewLater(); this.startup = setTimeout(() => this.stop(status.relayConfigured ? "A connection could not be established using the available direct or private relay paths." : "A direct connection could not be established. This network may require a relay, which is not configured."), 15000);
    failure = "The browser rejected the device's video connection answer. Check browser H264/WebRTC support.";
    await pc.setRemoteDescription({ type: "answer", sdp: s.answer });
   } catch { if (!this.closed) this.stop(failure); }

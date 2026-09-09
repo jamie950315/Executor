@@ -71,7 +71,12 @@ func RunDesktop(ctx context.Context, configPath string) error {
 	defer manager.KillAll()
 	controller := desktop.NewController()
 	authority := desktop.NewInputAuthority()
+	turnConfig, err := livedesktop.LoadTURNConfig(filepath.Join(cfg.StateDir, "live-turn.json"))
+	if err != nil {
+		return err
+	}
 	live := livedesktop.NewManager(livedesktop.Config{
+		TURN:      turnConfig,
 		Backend:   desktop.GuardLiveBackend(desktop.NewLiveBackend(), authority),
 		OnControl: authority.SetLiveControl,
 		Revoked: func() bool {
