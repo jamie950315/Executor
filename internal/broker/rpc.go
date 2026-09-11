@@ -23,6 +23,7 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				return nil, err
 			}
 			session, err := executor.Start(ctx, terminal.SessionSpec{
+				TTY:     request.TTY,
 				Command: append([]string(nil), request.Command...),
 				Dir:     request.Dir,
 				Env:     request.Env,
@@ -56,13 +57,28 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 			if request.SessionID == "" {
 				return nil, errors.New("terminal.read requires session_id")
 			}
-			return terminal.ReadRPCPage(executor, request.SessionID, request.Cursor, request.Limit)
+			return terminal.ReadRPCStream(executor, request.SessionID, request.Cursor, request.Limit, request.Stream)
 		case desktop.RPCMethodTerminalList:
 			var request struct{}
 			if err := decodeAdminParams(method, params, &request); err != nil {
 				return nil, err
 			}
 			return executor.List(), nil
+		case desktop.RPCMethodTerminalCapabilities:
+			var request struct{}
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			return terminal.BackendCapabilities(), nil
+		case desktop.RPCMethodTerminalCloseStdin:
+			var request desktop.RPCSessionParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.SessionID == "" {
+				return nil, errors.New("terminal.close-stdin requires session_id")
+			}
+			return nil, terminal.CloseStdinRPC(executor, request.SessionID)
 		case desktop.RPCMethodTerminalClose:
 			var request desktop.RPCSessionParams
 			if err := decodeAdminParams(method, params, &request); err != nil {
@@ -256,6 +272,7 @@ func NewDesktopRPCClient(endpoint string, key []byte) *DesktopRPCClient {
 func (c *RemoteTerminalRPCClient) Start(ctx context.Context, spec terminal.SessionSpec) (terminal.Session, error) {
 	var session terminal.Session
 	err := c.client.Call(ctx, desktop.RPCMethodTerminalStart, desktop.RPCTerminalStartParams{
+		TTY:     spec.TTY,
 		Command: append([]string(nil), spec.Command...),
 		Dir:     spec.Dir,
 		Env:     spec.Env,
@@ -296,6 +313,23 @@ func (c *RemoteTerminalRPCClient) List() []terminal.SessionInfo {
 		return nil
 	}
 	return list
+}
+
+func (c *RemoteTerminalRPCClient) ReadStream(sessionID string, cursor int64, limit int, stream string) (terminal.OutputChunk, error) {
+	if cursor < 0 || (stream != "combined" && stream != "stdout" && stream != "stderr") {
+		return terminal.OutputChunk{}, errors.New("invalid terminal stream or cursor")
+	}
+	limit, err := terminal.OutputLimit(limit)
+	if err != nil {
+		return terminal.OutputChunk{}, err
+	}
+	var chunk terminal.OutputChunk
+	err = c.client.Call(context.Background(), desktop.RPCMethodTerminalRead, desktop.RPCTerminalReadParams{SessionID: sessionID, Cursor: cursor, Limit: limit, Stream: stream}, &chunk)
+	return chunk, err
+}
+
+func (c *RemoteTerminalRPCClient) CloseStdin(sessionID string) error {
+	return c.client.Call(context.Background(), desktop.RPCMethodTerminalCloseStdin, desktop.RPCSessionParams{SessionID: sessionID}, nil)
 }
 
 func (c *RemoteTerminalRPCClient) Close(sessionID string) error {

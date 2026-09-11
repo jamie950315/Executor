@@ -18,6 +18,8 @@ func terminalOutputResultSchema() map[string]any {
 		"returnedBytes":  map[string]any{"type": "integer", "minimum": 0},
 		"hasMore":        map[string]any{"type": "boolean", "description": "Additional bytes were buffered at the time of this read."},
 		"mode":           enumProperty("string", "interactive", "command"),
+		"tty":            map[string]any{"type": "boolean"},
+		"stream":         enumProperty("string", "combined", "stdout", "stderr"),
 		"sessionRunning": map[string]any{"type": "boolean", "description": "True until the session process has exited and final output has been captured."},
 		"commandRunning": map[string]any{"type": []string{"boolean", "null"}, "description": "Actual command-mode process state; null for an interactive shell."},
 		"exitCode":       map[string]any{"type": []string{"integer", "null"}, "description": "Observed command-mode process exit code; null while running, for interactive shells, or when unavailable."},

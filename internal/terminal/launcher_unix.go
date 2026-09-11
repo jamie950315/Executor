@@ -3,78 +3,90 @@
 package terminal
 
 import (
-	"io"
+	"errors"
 	"os"
 	"os/exec"
-	"runtime"
-	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+
+	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
-type scriptLauncher struct{}
+type nativeLauncher struct{}
 
-func newPTYLauncher() ptyLauncher {
-	return scriptLauncher{}
-}
+func newPTYLauncher() ptyLauncher { return nativeLauncher{} }
 
-func (scriptLauncher) Start(spec SessionSpec) (terminalProcess, error) {
-	cmd := buildPTYCommand(spec.Command)
-	cmd.Dir = spec.Dir
-	cmd.Env = append(os.Environ(), flattenEnv(spec.Env)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	stdin, err := cmd.StdinPipe()
+func (nativeLauncher) Start(spec SessionSpec) (terminalProcess, error) {
+	if !usesTTY(spec) {
+		return startPipeProcess(spec)
+	}
+	cmd, err := newUnixCommand(spec)
 	if err != nil {
 		return nil, err
 	}
-	// Own the output pipe: exec.Cmd.Wait closes StdoutPipe before a
-	// concurrent reader is guaranteed to have drained the final bytes.
-	stdout, outputWriter, err := os.Pipe()
+	columns, rows := spec.Columns, spec.Rows
+	if columns == 0 {
+		columns = defaultTerminalColumns
+	}
+	if rows == 0 {
+		rows = defaultTerminalRows
+	}
+	master, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(columns), Rows: uint16(rows)})
 	if err != nil {
-		_ = stdin.Close()
 		return nil, err
 	}
-	cmd.Stdout = outputWriter
-	cmd.Stderr = cmd.Stdout
-	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = outputWriter.Close()
-		return nil, err
-	}
-	_ = outputWriter.Close()
-	return &execTerminalProcess{cmd: cmd, stdin: stdin, stdout: stdout}, nil
+	return &nativePTYProcess{cmd: cmd, master: master}, nil
 }
 
-type execTerminalProcess struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
+type nativePTYProcess struct {
+	cmd     *exec.Cmd
+	master  *os.File
+	control sync.Mutex
+	closed  bool
+	exited  atomic.Bool
 }
 
-func (p *execTerminalProcess) PID() int { return p.cmd.Process.Pid }
-func (p *execTerminalProcess) Read(data []byte) (int, error) {
-	n, err := p.stdout.Read(data)
+func (p *nativePTYProcess) PID() int { return p.cmd.Process.Pid }
+func (p *nativePTYProcess) Read(data []byte) (int, error) {
+	n, err := p.master.Read(data)
 	if err != nil {
-		_ = p.stdout.Close()
+		p.control.Lock()
+		if !p.closed {
+			p.closed = true
+			_ = p.master.Close()
+		}
+		p.control.Unlock()
 	}
 	return n, err
 }
-func (p *execTerminalProcess) Write(data []byte) (int, error) { return p.stdin.Write(data) }
-func (p *execTerminalProcess) Wait() error                    { return p.cmd.Wait() }
-func (p *execTerminalProcess) CloseInput() error              { return p.stdin.Close() }
-func (p *execTerminalProcess) Resize(int, int) error          { return ErrResizeUnsupported }
-
-func (p *execTerminalProcess) Kill() error {
-	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+func (p *nativePTYProcess) Write(data []byte) (int, error) { return p.master.Write(data) }
+func (p *nativePTYProcess) Wait() error {
+	err := p.cmd.Wait()
+	p.exited.Store(true)
+	return err
+}
+func (p *nativePTYProcess) CloseInput() error {
+	// Keep the master readable until the slave closes and final output drains.
+	if p.exited.Load() {
 		return nil
 	}
-	return killProcessTree(p.cmd.Process.Pid)
+	_, err := p.master.Write([]byte{4})
+	return err
 }
-
-func (p *execTerminalProcess) Signal(signal Signal) error {
-	if p == nil || p.cmd == nil || p.cmd.Process == nil {
-		return nil
+func (p *nativePTYProcess) Resize(columns, rows int) error {
+	p.control.Lock()
+	defer p.control.Unlock()
+	if p.closed || p.exited.Load() {
+		return os.ErrProcessDone
+	}
+	return pty.Setsize(p.master, &pty.Winsize{Cols: uint16(columns), Rows: uint16(rows)})
+}
+func (p *nativePTYProcess) Kill() error { return killProcessTree(p.PID()) }
+func (p *nativePTYProcess) Signal(signal Signal) error {
+	if signal == SignalKill {
+		return p.Kill()
 	}
 	var sig syscall.Signal
 	switch signal {
@@ -82,30 +94,21 @@ func (p *execTerminalProcess) Signal(signal Signal) error {
 		sig = syscall.SIGINT
 	case SignalTerminate:
 		sig = syscall.SIGTERM
-	case SignalKill:
-		sig = syscall.SIGKILL
 	default:
-		return nil
+		return errors.New("unsupported terminal signal")
 	}
-	return syscall.Kill(-p.cmd.Process.Pid, sig)
-}
-
-func buildPTYCommand(command []string) *exec.Cmd {
-	if runtime.GOOS == "darwin" {
-		args := append([]string{"-q", "/dev/null"}, command...)
-		return exec.Command("script", args...)
+	p.control.Lock()
+	defer p.control.Unlock()
+	if p.closed || p.exited.Load() {
+		return os.ErrProcessDone
 	}
-	return exec.Command("script", "-qfec", quoteCommand(command), "/dev/null")
-}
-
-func quoteCommand(command []string) string {
-	parts := make([]string, 0, len(command))
-	for _, arg := range command {
-		if arg == "" {
-			parts = append(parts, "''")
-			continue
-		}
-		parts = append(parts, "'"+strings.ReplaceAll(arg, "'", `'"'"'`)+"'")
+	// Address the foreground job on this PTY, preserving its shell and handler.
+	group, err := unix.IoctlGetInt(int(p.master.Fd()), unix.TIOCGPGRP)
+	if err != nil {
+		return err
 	}
-	return strings.Join(parts, " ")
+	if group <= 1 {
+		return errors.New("foreground terminal process group is unavailable")
+	}
+	return syscall.Kill(-group, sig)
 }

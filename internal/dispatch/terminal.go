@@ -23,6 +23,9 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 	if _, hasArgv := arguments["argv"]; hasArgv && action != "create" {
 		return nil, errors.New("argv is supported only for terminal create")
 	}
+	if _, exists := arguments["tty"]; exists && action != "create" {
+		return nil, errors.New("tty is supported only for terminal create")
+	}
 	if action == "create" {
 		params, err := terminalCreateParams(arguments)
 		if err != nil {
@@ -30,7 +33,7 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 		}
 		return d.call(ctx, caller, desktop.RPCMethodTerminalStart, params)
 	}
-	if action != "write" && action != "signal" && action != "resize" && action != "close" {
+	if action != "write" && action != "signal" && action != "resize" && action != "close" && action != "close_stdin" {
 		return nil, fmt.Errorf("unsupported terminal action %q", action)
 	}
 	sessionID, err := requiredString(arguments, "sessionId")
@@ -38,6 +41,8 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 		return nil, err
 	}
 	switch action {
+	case "close_stdin":
+		return d.call(ctx, caller, desktop.RPCMethodTerminalCloseStdin, desktop.RPCSessionParams{SessionID: sessionID})
 	case "write":
 		input, ok := arguments["input"].(string)
 		if !ok {
@@ -81,6 +86,13 @@ func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, erro
 
 func terminalCreateParams(arguments map[string]any) (desktop.RPCTerminalStartParams, error) {
 	var params desktop.RPCTerminalStartParams
+	if raw, exists := arguments["tty"]; exists {
+		value, ok := raw.(bool)
+		if !ok {
+			return params, errors.New("terminal tty must be a boolean")
+		}
+		params.TTY = &value
+	}
 	if raw, exists := arguments["argv"]; exists {
 		if _, hasCommand := arguments["command"]; hasCommand {
 			return params, errors.New("terminal create accepts either argv or command")
@@ -148,7 +160,7 @@ func terminalCreateParams(arguments map[string]any) (desktop.RPCTerminalStartPar
 	}
 	params.Columns, params.Rows = int(columns), int(rows)
 	return params, terminal.ValidateSessionSpec(terminal.SessionSpec{
-		Command: params.Command, Dir: params.Dir, Env: params.Env, Columns: params.Columns, Rows: params.Rows,
+		Command: params.Command, Dir: params.Dir, Env: params.Env, Columns: params.Columns, Rows: params.Rows, TTY: params.TTY,
 	})
 }
 
@@ -169,8 +181,16 @@ func (d *MCP) terminalOutput(ctx context.Context, arguments map[string]any) (any
 	if err != nil {
 		return nil, err
 	}
+	stream := ""
+	if raw, exists := arguments["stream"]; exists {
+		var ok bool
+		stream, ok = raw.(string)
+		if !ok || (stream != "combined" && stream != "stdout" && stream != "stderr") {
+			return nil, errors.New("stream must be combined, stdout or stderr")
+		}
+	}
 	return d.call(ctx, caller, desktop.RPCMethodTerminalRead, desktop.RPCTerminalReadParams{
-		SessionID: sessionID, Cursor: cursor, Limit: int(limit),
+		SessionID: sessionID, Cursor: cursor, Limit: int(limit), Stream: stream,
 	})
 }
 
@@ -179,12 +199,15 @@ func (d *MCP) terminalSessions(ctx context.Context, arguments map[string]any) (a
 	if err != nil {
 		return nil, err
 	}
-	if action != "list" && action != "inspect" {
+	if action != "list" && action != "inspect" && action != "capabilities" {
 		return nil, fmt.Errorf("unsupported terminal sessions action %q", action)
 	}
 	caller, err := d.terminalCaller(arguments)
 	if err != nil {
 		return nil, err
+	}
+	if action == "capabilities" {
+		return d.call(ctx, caller, desktop.RPCMethodTerminalCapabilities, struct{}{})
 	}
 	var sessionID string
 	if action == "inspect" {

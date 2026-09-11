@@ -11,15 +11,17 @@ import (
 )
 
 const (
-	RPCMethodTerminalStart   = "terminal.start"
-	RPCMethodTerminalWrite   = "terminal.write"
-	RPCMethodTerminalRead    = "terminal.read"
-	RPCMethodTerminalList    = "terminal.list"
-	RPCMethodTerminalClose   = "terminal.close"
-	RPCMethodTerminalKill    = "terminal.kill"
-	RPCMethodTerminalKillAll = "terminal.kill-all"
-	RPCMethodTerminalSignal  = "terminal.signal"
-	RPCMethodTerminalResize  = "terminal.resize"
+	RPCMethodTerminalStart        = "terminal.start"
+	RPCMethodTerminalWrite        = "terminal.write"
+	RPCMethodTerminalRead         = "terminal.read"
+	RPCMethodTerminalList         = "terminal.list"
+	RPCMethodTerminalClose        = "terminal.close"
+	RPCMethodTerminalKill         = "terminal.kill"
+	RPCMethodTerminalKillAll      = "terminal.kill-all"
+	RPCMethodTerminalSignal       = "terminal.signal"
+	RPCMethodTerminalResize       = "terminal.resize"
+	RPCMethodTerminalCloseStdin   = "terminal.close-stdin"
+	RPCMethodTerminalCapabilities = "terminal.capabilities"
 
 	RPCMethodFilesystemRead      = "filesystem.read"
 	RPCMethodFilesystemReadRange = "filesystem.read-range"
@@ -45,6 +47,7 @@ const (
 )
 
 type RPCTerminalStartParams struct {
+	TTY          *bool             `json:"tty,omitempty"`
 	Command      []string          `json:"command,omitempty"`
 	Dir          string            `json:"dir,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`
@@ -59,6 +62,7 @@ type RPCTerminalWriteParams struct {
 }
 
 type RPCTerminalReadParams struct {
+	Stream    string `json:"stream,omitempty"`
 	Limit     int    `json:"limit,omitempty"`
 	SessionID string `json:"session_id"`
 	Cursor    int64  `json:"cursor"`
@@ -214,6 +218,7 @@ func validateAppAction(action AppAction) error {
 
 func terminalStartSpec(params RPCTerminalStartParams) terminal.SessionSpec {
 	return terminal.SessionSpec{
+		TTY:     params.TTY,
 		Command: append([]string(nil), params.Command...),
 		Dir:     params.Dir,
 		Env:     params.Env,

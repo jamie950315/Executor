@@ -23,6 +23,7 @@ type SessionSpec struct {
 	Env     map[string]string
 	Columns int
 	Rows    int
+	TTY     *bool `json:"tty,omitempty"`
 }
 
 type Session struct {
@@ -31,6 +32,7 @@ type Session struct {
 	Command []string
 	Dir     string
 	Mode    SessionMode `json:"mode"`
+	TTY     bool        `json:"tty"`
 }
 
 type SessionInfo struct {
@@ -62,6 +64,8 @@ type OutputChunk struct {
 	SessionRunning bool        `json:"sessionRunning"`
 	CommandRunning *bool       `json:"commandRunning"`
 	ExitCode       *int        `json:"exitCode"`
+	TTY            bool        `json:"tty"`
+	Stream         string      `json:"stream"`
 }
 
 type sessionState struct {
@@ -69,8 +73,11 @@ type sessionState struct {
 	process       terminalProcess
 	inputMu       sync.Mutex
 	stdinClose    sync.Once
+	stdinErr      error
 	mu            sync.RWMutex
 	output        *outputBuffer
+	stdout        *outputBuffer
+	stderr        *outputBuffer
 	running       bool
 	waitErr       error
 	done          chan struct{}
@@ -98,6 +105,9 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 	if err := ValidateSessionSpec(spec); err != nil {
 		return Session{}, err
 	}
+	if err := validateWorkingDirectory(spec.Dir); err != nil {
+		return Session{}, err
+	}
 	mode := ModeCommand
 	if len(spec.Command) == 0 {
 		mode = ModeInteractive
@@ -121,12 +131,17 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 			Command: append([]string(nil), spec.Command...),
 			Dir:     spec.Dir,
 			Mode:    mode,
+			TTY:     usesTTY(spec),
 		},
 		process:     process,
 		output:      newOutputBuffer(defaultOutputBufferSize),
 		running:     true,
 		done:        make(chan struct{}),
 		captureDone: make(chan struct{}),
+	}
+	if !state.meta.TTY {
+		state.stdout = newOutputBuffer(defaultOutputBufferSize / 2)
+		state.stderr = newOutputBuffer(defaultOutputBufferSize / 2)
 	}
 
 	m.mu.Lock()
@@ -178,6 +193,29 @@ func (m *Manager) ReadLimited(sessionID string, cursor int64, limit int) (Output
 }
 
 func (m *Manager) read(sessionID string, cursor int64, limit int) (OutputChunk, error) {
+	return m.readStream(sessionID, cursor, limit, "combined")
+}
+
+// ReadStream uses an independent raw-byte cursor for each retained stream.
+// PTY output is inherently merged; separate streams require tty=false.
+func (m *Manager) ReadStream(sessionID string, cursor int64, limit int, stream string) (OutputChunk, error) {
+	if cursor < 0 {
+		return OutputChunk{}, errors.New("terminal cursor must be non-negative bytes")
+	}
+	limit, err := OutputLimit(limit)
+	if err != nil {
+		return OutputChunk{}, err
+	}
+	return m.readStream(sessionID, cursor, limit, stream)
+}
+
+func (m *Manager) readStream(sessionID string, cursor int64, limit int, stream string) (OutputChunk, error) {
+	if stream == "" {
+		stream = "combined"
+	}
+	if stream != "combined" && stream != "stdout" && stream != "stderr" {
+		return OutputChunk{}, errors.New("stream must be combined, stdout or stderr")
+	}
 	state, err := m.session(sessionID)
 	if err != nil {
 		return OutputChunk{}, err
@@ -185,10 +223,21 @@ func (m *Manager) read(sessionID string, cursor int64, limit int) (OutputChunk, 
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	chunk := state.output.read(cursor, limit)
+	buffer := state.output
+	if stream != "combined" {
+		if state.meta.TTY || state.stdout == nil || state.stderr == nil {
+			return OutputChunk{}, errors.New("STREAM_UNAVAILABLE: separate stdout/stderr require tty=false")
+		}
+		buffer = state.stdout
+		if stream == "stderr" {
+			buffer = state.stderr
+		}
+	}
+	chunk := buffer.read(cursor, limit)
 	chunk.Running = state.running
 	chunk.SessionRunning = state.running
 	chunk.Mode, chunk.CommandRunning, chunk.ExitCode = state.lifecycle()
+	chunk.TTY, chunk.Stream = state.meta.TTY, stream
 	return chunk, nil
 }
 
@@ -246,6 +295,14 @@ func (m *Manager) Kill(sessionID string) error {
 	if err != nil {
 		return err
 	}
+	state.mu.RLock()
+	running := state.running
+	state.mu.RUnlock()
+	// Completed sessions are retained for reading; their PIDs may be reused.
+	if !running {
+		m.deleteSession(sessionID)
+		return nil
+	}
 	if err := state.process.Kill(); err != nil {
 		return err
 	}
@@ -271,9 +328,6 @@ func (m *Manager) Signal(sessionID string, signal Signal) error {
 	if signal != SignalInterrupt && signal != SignalTerminate && signal != SignalKill {
 		return fmt.Errorf("unsupported terminal signal %q", signal)
 	}
-	if signal == SignalInterrupt {
-		return m.Write(sessionID, []byte{3})
-	}
 	state, err := m.session(sessionID)
 	if err != nil {
 		return err
@@ -281,11 +335,27 @@ func (m *Manager) Signal(sessionID string, signal Signal) error {
 	state.mu.RLock()
 	running := state.running
 	process := state.process
+	tty := state.meta.TTY
 	state.mu.RUnlock()
 	if !running {
 		return errors.New("session is not running")
 	}
+	if signal == SignalInterrupt && tty {
+		return m.Write(sessionID, []byte{3})
+	}
 	return process.Signal(signal)
+}
+
+// CloseStdin sends EOF to a pipe-mode process and retains the session/output.
+func (m *Manager) CloseStdin(sessionID string) error {
+	state, err := m.session(sessionID)
+	if err != nil {
+		return err
+	}
+	if state.meta.TTY {
+		return errors.New("STDIN_EOF_UNAVAILABLE: close_stdin requires tty=false")
+	}
+	return state.closeInput()
 }
 
 func (m *Manager) Resize(sessionID string, columns, rows int) error {
@@ -339,12 +409,26 @@ func (m *Manager) awaitExit(state *sessionState) {
 
 func (s *sessionState) capture(output terminalProcess) {
 	defer close(s.captureDone)
+	if separate, ok := output.(interface{ StderrReader() io.Reader }); ok && s.stderr != nil {
+		done := make(chan struct{})
+		go func() { defer close(done); s.captureReader(separate.StderrReader(), s.stderr) }()
+		s.captureReader(output, s.stdout)
+		<-done
+		return
+	}
+	s.captureReader(output, nil)
+}
+
+func (s *sessionState) captureReader(output io.Reader, separate *outputBuffer) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := output.Read(buf)
 		if n > 0 {
 			s.mu.Lock()
 			s.output.Append(buf[:n])
+			if separate != nil {
+				separate.Append(buf[:n])
+			}
 			s.mu.Unlock()
 		}
 		if err != nil {
@@ -353,12 +437,13 @@ func (s *sessionState) capture(output terminalProcess) {
 	}
 }
 
-func (s *sessionState) closeInput() {
+func (s *sessionState) closeInput() error {
 	s.stdinClose.Do(func() {
 		if s.process != nil {
-			_ = s.process.CloseInput()
+			s.stdinErr = s.process.CloseInput()
 		}
 	})
+	return s.stdinErr
 }
 
 func waitForDone(done <-chan struct{}, timeout time.Duration) bool {

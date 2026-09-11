@@ -152,6 +152,21 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return terminal.List(), nil
+		case RPCMethodTerminalCapabilities:
+			var request struct{}
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			return terminalCapabilityReport(), nil
+		case RPCMethodTerminalCloseStdin:
+			var request RPCSessionParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateSessionParams(method, request.SessionID); err != nil {
+				return nil, err
+			}
+			return nil, closeTerminalStdin(terminal, request.SessionID)
 		case RPCMethodTerminalClose:
 			var request RPCSessionParams
 			if err := decodeStrictParams(method, params, &request); err != nil {

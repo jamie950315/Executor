@@ -27,6 +27,9 @@ func newPTYLauncher() ptyLauncher {
 }
 
 func (windowsLauncher) Start(spec SessionSpec) (terminalProcess, error) {
+	if !usesTTY(spec) {
+		return nil, errors.New("TTY_MODE_UNSUPPORTED: tty=false currently requires macOS or Linux; Windows retains ConPTY sessions")
+	}
 	if !conpty.IsConPtyAvailable() {
 		return nil, errors.New("ConPTY requires Windows 10 version 1809 or Windows Server 2019 or newer")
 	}

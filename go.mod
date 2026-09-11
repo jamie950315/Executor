@@ -10,6 +10,7 @@ require (
 
 require (
 	github.com/coder/websocket v1.8.14
+	github.com/creack/pty v1.1.24
 	github.com/pion/logging v0.2.4
 	github.com/pion/stun/v3 v3.0.0
 	github.com/pion/turn/v4 v4.1.1

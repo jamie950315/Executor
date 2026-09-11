@@ -41,6 +41,8 @@ recursive operations. Invalid privilege or recursive arguments fail before IPC.
 
 ## Terminal input, output, and completion
 
+Follow-up: macOS/Linux now start the executable on a native PTY, so initial dimensions and resize are applied directly and SIGTERM reaches the foreground job without terminating a `script` wrapper. `tty` defaults to true for compatibility. For batch jobs, use `terminal.create` with `argv` and `tty:false`; stdout/stderr are pipes and can be read independently with `terminal_output.stream`. Each stream has its own cursor; combined output preserves observed arrival order, not a total order across streams. Separate retained streams each have a 4 MiB buffer; combined output retains 8 MiB. Use `close_stdin` to deliver EOF without deleting the session. Query `terminal_sessions action=capabilities` for support. Windows retains ConPTY and rejects pipe mode explicitly. Invalid cwd is checked under the selected helper identity and reports `CWD_NOT_FOUND`, `CWD_NOT_DIRECTORY`, or `CWD_ACCESS_DENIED`.
+
 `terminal` / `create` retains the interactive `command` string behavior.
 An optional mutually exclusive `argv` array starts the exact executable and
 arguments in the existing session mechanism. Shell syntax requires an explicit

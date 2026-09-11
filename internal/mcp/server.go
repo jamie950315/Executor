@@ -100,7 +100,7 @@ func BuiltinTools() []Tool {
 	return []Tool{
 		{
 			Name:        "terminal",
-			Description: "Run commands in a persistent terminal session. command starts an interactive shell; argv starts the exact process arguments with observable process completion. A write reply means input was accepted; command completion remains unknown inside an interactive shell. This tool can modify the host.",
+			Description: "Run commands in a persistent terminal session. command starts an interactive shell; argv starts exact process arguments with observable completion. TTY defaults to true; use argv with tty=false for batch jobs without terminal/pager prompts, separate stdout/stderr, and close_stdin to send EOF. A write reply means input was accepted; completion remains unknown inside an interactive shell. This tool can modify the host.",
 			InputSchema: terminalToolSchema(),
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
@@ -595,7 +595,8 @@ func (s *Server) negotiateProtocolVersion(params map[string]any) (string, error)
 func terminalToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action":    enumProperty("string", "create", "write", "signal", "resize", "close"),
+			"action":    enumProperty("string", "create", "write", "signal", "resize", "close", "close_stdin"),
+			"tty":       map[string]any{"type": "boolean", "default": true, "description": "For create: true uses a native PTY (merged output, live resizing); false requires argv and uses pipes on macOS/Linux. close_stdin sends EOF only in pipe mode. Windows retains ConPTY and forceful terminate; query terminal_sessions capabilities for platform support."},
 			"privilege": enumProperty("string", "owner", "admin"),
 			"sessionId": map[string]any{
 				"type": "string",
@@ -634,6 +635,7 @@ func terminalOutputToolSchema() map[string]any {
 			"sessionId": map[string]any{"type": "string"},
 			"cursor":    map[string]any{"type": "integer", "minimum": 0, "description": "Absolute byte cursor, normally the previous NextCursor."},
 			"limit":     bytePageLimitSchema(),
+			"stream":    map[string]any{"type": "string", "enum": []string{"combined", "stdout", "stderr"}, "default": "combined", "description": "Each stream has its own cursor. stdout/stderr require tty=false. combined preserves arrival order, with no cross-stream ordering guarantee."},
 			"privilege": enumProperty("string", "owner", "admin"),
 		},
 		"sessionId",
@@ -643,7 +645,7 @@ func terminalOutputToolSchema() map[string]any {
 func terminalSessionsToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
-			"action":    enumProperty("string", "list", "inspect"),
+			"action":    enumProperty("string", "list", "inspect", "capabilities"),
 			"privilege": enumProperty("string", "owner", "admin"),
 			"sessionId": map[string]any{
 				"type": "string",
