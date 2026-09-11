@@ -21,15 +21,16 @@ const (
 	RPCMethodTerminalSignal  = "terminal.signal"
 	RPCMethodTerminalResize  = "terminal.resize"
 
-	RPCMethodFilesystemRead   = "filesystem.read"
-	RPCMethodFilesystemList   = "filesystem.list"
-	RPCMethodFilesystemGlob   = "filesystem.glob"
-	RPCMethodFilesystemStat   = "filesystem.stat"
-	RPCMethodFilesystemWrite  = "filesystem.write"
-	RPCMethodFilesystemAppend = "filesystem.append"
-	RPCMethodFilesystemMkdir  = "filesystem.mkdir"
-	RPCMethodFilesystemMove   = "filesystem.move"
-	RPCMethodFilesystemDelete = "filesystem.delete"
+	RPCMethodFilesystemRead      = "filesystem.read"
+	RPCMethodFilesystemReadRange = "filesystem.read-range"
+	RPCMethodFilesystemList      = "filesystem.list"
+	RPCMethodFilesystemGlob      = "filesystem.glob"
+	RPCMethodFilesystemStat      = "filesystem.stat"
+	RPCMethodFilesystemWrite     = "filesystem.write"
+	RPCMethodFilesystemAppend    = "filesystem.append"
+	RPCMethodFilesystemMkdir     = "filesystem.mkdir"
+	RPCMethodFilesystemMove      = "filesystem.move"
+	RPCMethodFilesystemDelete    = "filesystem.delete"
 
 	RPCMethodDeviceStatus         = "device.status"
 	RPCMethodDesktopCapture       = "desktop.capture"
@@ -58,6 +59,7 @@ type RPCTerminalWriteParams struct {
 }
 
 type RPCTerminalReadParams struct {
+	Limit     int    `json:"limit,omitempty"`
 	SessionID string `json:"session_id"`
 	Cursor    int64  `json:"cursor"`
 }
@@ -79,6 +81,12 @@ type RPCTerminalResizeParams struct {
 
 type RPCFilesystemPathParams struct {
 	Path string `json:"path"`
+}
+
+type RPCFilesystemReadRangeParams struct {
+	Path        string `json:"path"`
+	OffsetBytes int64  `json:"offset_bytes"`
+	LimitBytes  int    `json:"limit_bytes"`
 }
 
 type RPCFilesystemGlobParams struct {

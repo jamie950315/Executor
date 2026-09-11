@@ -99,8 +99,14 @@ func (p *conPTYProcess) Write(data []byte) (int, error) {
 }
 func (p *conPTYProcess) Resize(columns, rows int) error { return p.instance.Resize(columns, rows) }
 func (p *conPTYProcess) Wait() error {
-	_, err := p.instance.Wait(context.Background())
-	return err
+	code, err := p.instance.Wait(context.Background())
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return processExitError{code: int(code)}
+	}
+	return nil
 }
 func (p *conPTYProcess) CloseInput() error { return p.Kill() }
 func (p *conPTYProcess) Kill() error {

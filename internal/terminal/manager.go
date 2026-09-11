@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sync"
 	"time"
@@ -29,11 +30,15 @@ type Session struct {
 	PID     int
 	Command []string
 	Dir     string
+	Mode    SessionMode `json:"mode"`
 }
 
 type SessionInfo struct {
-	Session Session
-	Running bool
+	Session        Session
+	Running        bool
+	SessionRunning bool  `json:"sessionRunning"`
+	CommandRunning *bool `json:"commandRunning"`
+	ExitCode       *int  `json:"exitCode"`
 }
 
 type Signal string
@@ -45,11 +50,18 @@ const (
 )
 
 type OutputChunk struct {
-	Data        []byte
-	StartCursor int64
-	NextCursor  int64
-	Running     bool
-	Truncated   bool
+	Data           []byte
+	StartCursor    int64
+	NextCursor     int64
+	Running        bool
+	Truncated      bool
+	Encoding       string      `json:"encoding"`
+	ReturnedBytes  int         `json:"returnedBytes"`
+	HasMore        bool        `json:"hasMore"`
+	Mode           SessionMode `json:"mode"`
+	SessionRunning bool        `json:"sessionRunning"`
+	CommandRunning *bool       `json:"commandRunning"`
+	ExitCode       *int        `json:"exitCode"`
 }
 
 type sessionState struct {
@@ -83,11 +95,13 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 	if err := ctx.Err(); err != nil {
 		return Session{}, err
 	}
-	if len(spec.Command) == 0 {
-		spec.Command = []string{defaultShell()}
+	if err := ValidateSessionSpec(spec); err != nil {
+		return Session{}, err
 	}
-	if spec.Columns < 0 || spec.Rows < 0 || spec.Columns > MaxDimension || spec.Rows > MaxDimension {
-		return Session{}, fmt.Errorf("terminal dimensions must be between 1 and %d when provided", MaxDimension)
+	mode := ModeCommand
+	if len(spec.Command) == 0 {
+		mode = ModeInteractive
+		spec.Command = []string{defaultShell()}
 	}
 
 	process, err := m.launcher.Start(spec)
@@ -106,6 +120,7 @@ func (m *Manager) Start(ctx context.Context, spec SessionSpec) (Session, error) 
 			PID:     process.PID(),
 			Command: append([]string(nil), spec.Command...),
 			Dir:     spec.Dir,
+			Mode:    mode,
 		},
 		process:     process,
 		output:      newOutputBuffer(defaultOutputBufferSize),
@@ -138,11 +153,31 @@ func (m *Manager) Write(sessionID string, input []byte) error {
 	}
 	state.inputMu.Lock()
 	defer state.inputMu.Unlock()
-	_, err = process.Write(input)
+	written, err := process.Write(input)
+	if err == nil && written != len(input) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
 func (m *Manager) Read(sessionID string, cursor int64) (OutputChunk, error) {
+	return m.read(sessionID, cursor, 0)
+}
+
+// ReadLimited returns at most limit raw bytes. A zero limit selects the default;
+// Read retains the complete-tail behavior of existing in-process callers.
+func (m *Manager) ReadLimited(sessionID string, cursor int64, limit int) (OutputChunk, error) {
+	if cursor < 0 {
+		return OutputChunk{}, errors.New("terminal cursor must be a non-negative byte offset")
+	}
+	limit, err := OutputLimit(limit)
+	if err != nil {
+		return OutputChunk{}, err
+	}
+	return m.read(sessionID, cursor, limit)
+}
+
+func (m *Manager) read(sessionID string, cursor int64, limit int) (OutputChunk, error) {
 	state, err := m.session(sessionID)
 	if err != nil {
 		return OutputChunk{}, err
@@ -150,8 +185,10 @@ func (m *Manager) Read(sessionID string, cursor int64) (OutputChunk, error) {
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()
-	chunk := state.output.Read(cursor)
+	chunk := state.output.read(cursor, limit)
 	chunk.Running = state.running
+	chunk.SessionRunning = state.running
+	chunk.Mode, chunk.CommandRunning, chunk.ExitCode = state.lifecycle()
 	return chunk, nil
 }
 
@@ -162,9 +199,13 @@ func (m *Manager) List() []SessionInfo {
 	sessions := make([]SessionInfo, 0, len(m.sessions))
 	for _, state := range m.sessions {
 		state.mu.RLock()
+		_, commandRunning, exitCode := state.lifecycle()
 		sessions = append(sessions, SessionInfo{
-			Session: state.meta,
-			Running: state.running,
+			Session:        state.meta,
+			Running:        state.running,
+			SessionRunning: state.running,
+			CommandRunning: commandRunning,
+			ExitCode:       exitCode,
 		})
 		state.mu.RUnlock()
 	}

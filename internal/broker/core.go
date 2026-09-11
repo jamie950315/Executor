@@ -124,6 +124,10 @@ func (c *Core) ReadFile(path string) ([]byte, error) {
 	return c.files.ReadFile(path)
 }
 
+func (c *Core) ReadFileRange(path string, offset int64, limit int) (filesystem.ReadRangeResult, error) {
+	return filesystem.ReadRange(c.files, path, offset, limit)
+}
+
 func (c *Core) List(path string) ([]filesystem.Entry, error) {
 	return c.files.List(path)
 }

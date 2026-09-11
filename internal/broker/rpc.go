@@ -56,7 +56,7 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 			if request.SessionID == "" {
 				return nil, errors.New("terminal.read requires session_id")
 			}
-			return executor.Read(request.SessionID, request.Cursor)
+			return terminal.ReadRPCPage(executor, request.SessionID, request.Cursor, request.Limit)
 		case desktop.RPCMethodTerminalList:
 			var request struct{}
 			if err := decodeAdminParams(method, params, &request); err != nil {
@@ -117,6 +117,27 @@ func NewAdminRPCServer(endpoint string, key []byte, executor TerminalExecutor, f
 				return nil, errors.New("filesystem.read requires path")
 			}
 			return files.ReadFile(request.Path)
+		case desktop.RPCMethodFilesystemDeleteOptions, desktop.RPCMethodFilesystemMkdirOptions:
+			var request desktop.RPCFilesystemOptionsParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.Path == "" {
+				return nil, errors.New("filesystem mutation requires path")
+			}
+			if method == desktop.RPCMethodFilesystemDeleteOptions {
+				return nil, filesystem.DeleteWithOptions(files, request.Path, request.Recursive)
+			}
+			return nil, filesystem.MkdirWithOptions(files, request.Path, request.Perm, request.Recursive)
+		case desktop.RPCMethodFilesystemReadRange:
+			var request desktop.RPCFilesystemReadRangeParams
+			if err := decodeAdminParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if request.Path == "" {
+				return nil, errors.New("filesystem.read-range requires path")
+			}
+			return filesystem.ReadRange(files, request.Path, request.OffsetBytes, request.LimitBytes)
 		case desktop.RPCMethodFilesystemList:
 			var request desktop.RPCFilesystemPathParams
 			if err := decodeAdminParams(method, params, &request); err != nil {
@@ -254,6 +275,21 @@ func (c *RemoteTerminalRPCClient) Read(sessionID string, cursor int64) (terminal
 	return chunk, err
 }
 
+func (c *RemoteTerminalRPCClient) ReadLimited(sessionID string, cursor int64, limit int) (terminal.OutputChunk, error) {
+	if cursor < 0 {
+		return terminal.OutputChunk{}, errors.New("terminal cursor must be non-negative bytes")
+	}
+	limit, err := terminal.OutputLimit(limit)
+	if err != nil {
+		return terminal.OutputChunk{}, err
+	}
+	var chunk terminal.OutputChunk
+	err = c.client.Call(context.Background(), desktop.RPCMethodTerminalRead, desktop.RPCTerminalReadParams{
+		SessionID: sessionID, Cursor: cursor, Limit: limit,
+	}, &chunk)
+	return chunk, err
+}
+
 func (c *RemoteTerminalRPCClient) List() []terminal.SessionInfo {
 	var list []terminal.SessionInfo
 	if err := c.client.Call(context.Background(), desktop.RPCMethodTerminalList, struct{}{}, &list); err != nil {
@@ -293,6 +329,17 @@ func (c *RemoteFilesystemRPCClient) ReadFile(path string) ([]byte, error) {
 	var data []byte
 	err := c.client.Call(context.Background(), desktop.RPCMethodFilesystemRead, desktop.RPCFilesystemPathParams{Path: path}, &data)
 	return data, err
+}
+
+func (c *RemoteFilesystemRPCClient) ReadFileRange(path string, offset int64, limit int) (filesystem.ReadRangeResult, error) {
+	if err := filesystem.ValidateReadRange(offset, limit); err != nil {
+		return filesystem.ReadRangeResult{}, err
+	}
+	var result filesystem.ReadRangeResult
+	err := c.client.Call(context.Background(), desktop.RPCMethodFilesystemReadRange, desktop.RPCFilesystemReadRangeParams{
+		Path: path, OffsetBytes: offset, LimitBytes: limit,
+	}, &result)
+	return result, err
 }
 
 func (c *RemoteFilesystemRPCClient) List(path string) ([]filesystem.Entry, error) {

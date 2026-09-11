@@ -145,7 +145,7 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 			if err := validateSessionParams(method, request.SessionID); err != nil {
 				return nil, err
 			}
-			return terminal.Read(request.SessionID, request.Cursor)
+			return readTerminalPage(terminal, request)
 		case RPCMethodTerminalList:
 			var request struct{}
 			if err := decodeStrictParams(method, params, &request); err != nil {
@@ -206,6 +206,27 @@ func NewHelperRPCServer(endpoint string, key []byte, terminal HelperTerminal, fi
 				return nil, err
 			}
 			return files.ReadFile(request.Path)
+		case RPCMethodFilesystemDeleteOptions, RPCMethodFilesystemMkdirOptions:
+			var request RPCFilesystemOptionsParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateFilesystemPath(method, request.Path); err != nil {
+				return nil, err
+			}
+			if method == RPCMethodFilesystemDeleteOptions {
+				return nil, filesystem.DeleteWithOptions(files, request.Path, request.Recursive)
+			}
+			return nil, filesystem.MkdirWithOptions(files, request.Path, request.Perm, request.Recursive)
+		case RPCMethodFilesystemReadRange:
+			var request RPCFilesystemReadRangeParams
+			if err := decodeStrictParams(method, params, &request); err != nil {
+				return nil, err
+			}
+			if err := validateFilesystemPath(method, request.Path); err != nil {
+				return nil, err
+			}
+			return filesystem.ReadRange(files, request.Path, request.OffsetBytes, request.LimitBytes)
 		case RPCMethodFilesystemList:
 			var request RPCFilesystemPathParams
 			if err := decodeStrictParams(method, params, &request); err != nil {

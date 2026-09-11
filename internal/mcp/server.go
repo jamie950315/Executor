@@ -25,7 +25,7 @@ const (
 )
 
 type ToolAnnotations struct {
-	ReadOnlyHint    bool `json:"readOnlyHint,omitempty"`
+	ReadOnlyHint    bool `json:"readOnlyHint"`
 	DestructiveHint bool `json:"destructiveHint,omitempty"`
 }
 
@@ -100,40 +100,43 @@ func BuiltinTools() []Tool {
 	return []Tool{
 		{
 			Name:        "terminal",
-			Description: "Run commands in a persistent terminal session.",
+			Description: "Run commands in a persistent terminal session. command starts an interactive shell; argv starts the exact process arguments with observable process completion. A write reply means input was accepted; command completion remains unknown inside an interactive shell. This tool can modify the host.",
 			InputSchema: terminalToolSchema(),
 			Annotations: ToolAnnotations{DestructiveHint: true},
 		},
 		{
-			Name:        "terminal_output",
-			Description: "Read buffered output from an existing terminal session.",
-			InputSchema: terminalOutputToolSchema(),
-			Annotations: ToolAnnotations{ReadOnlyHint: true},
+			Name:         "terminal_output",
+			Description:  "Read buffered terminal bytes with cursor/limit pagination. Data is base64; use NextCursor for the next read and hasMore for buffered pages. Running/sessionRunning describes the session lifetime. Interactive commandRunning/exitCode are null; argv sessions report the actual process outcome after final output capture.",
+			InputSchema:  terminalOutputToolSchema(),
+			OutputSchema: terminalOutputResultSchema(),
+			Annotations:  ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:        "terminal_sessions",
-			Description: "Inspect running terminal sessions.",
+			Description: "Inspect terminal sessions. Running/sessionRunning describes session lifetime; interactive-shell commandRunning/exitCode remain null. Completed argv sessions retain their observable process outcome until closed.",
 			InputSchema: terminalSessionsToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
-			Name:        "filesystem_read",
-			Description: "Read files from the host filesystem.",
-			InputSchema: filesystemReadToolSchema(),
-			Annotations: ToolAnnotations{ReadOnlyHint: true},
+			Name:         "filesystem_read",
+			Description:  "Read host files, directories, or metadata. read_file uses byte offsets and bounded pages (65536 bytes by default, at most 1048576). Continue with nextOffsetBytes while truncated=true. UTF-8 pages require whole character boundaries; base64 preserves arbitrary byte ranges. Each read observes the current file.",
+			InputSchema:  filesystemReadToolSchema(),
+			OutputSchema: filesystemReadResultSchema(),
+			Annotations:  ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
-			Name:        "filesystem_write",
-			Description: "Create, overwrite, move, or delete filesystem content.",
-			InputSchema: filesystemWriteToolSchema(),
-			Annotations: ToolAnnotations{DestructiveHint: true},
+			Name:         "filesystem_write",
+			Description:  "Create, overwrite, move, or delete filesystem content.",
+			InputSchema:  filesystemWriteToolSchema(),
+			OutputSchema: filesystemWriteResultSchema(),
+			Annotations:  ToolAnnotations{DestructiveHint: true},
 		},
 		{
 			Name:         "desktop_observe",
-			Description:  "Observe desktop state. For Computer Use, call action=screenshot without a path to receive the current screen image and captureId before acting.",
+			Description:  "Observe desktop state. For Computer Use, call action=screenshot without a path to receive the current screen image and captureId before acting. Screenshot export with path and includeImage=false can create or overwrite a host file; this mixed tool has write side effects.",
 			InputSchema:  desktopObserveToolSchema(),
 			OutputSchema: desktopCaptureOutputSchema(),
-			Annotations:  ToolAnnotations{ReadOnlyHint: true},
+			Annotations:  ToolAnnotations{DestructiveHint: true},
 		},
 		{
 			Name:         "desktop_control",
@@ -144,13 +147,13 @@ func BuiltinTools() []Tool {
 		},
 		{
 			Name:        "device_status",
-			Description: "Inspect machine and desktop availability.",
+			Description: "Inspect machine and desktop availability. summary and terminals probe helpers independently with a two-second bound; partial and per-component states preserve healthy results alongside unavailable, timed-out, or failed probes. A successful diagnostic describes the probes, not universal host permission.",
 			InputSchema: deviceStatusToolSchema(),
 			Annotations: ToolAnnotations{ReadOnlyHint: true},
 		},
 		{
 			Name:         "device_permissions",
-			Description:  "Inspect or request all host permissions used by Executor. A request may still require owner approval in operating-system prompts or settings.",
+			Description:  "Inspect or request desktop permission prerequisites. ready applies to the desktop checks; filesystem and terminal access are evaluated by their respective operations and reported here as not_checked. The capability breakdown describes permission prerequisites, with runtime success determined by the actual action. Requests may require owner approval in operating-system prompts or settings.",
 			InputSchema:  devicePermissionsToolSchema(),
 			OutputSchema: devicePermissionsOutputSchema(),
 			Annotations:  ToolAnnotations{DestructiveHint: true},
@@ -598,7 +601,11 @@ func terminalToolSchema() map[string]any {
 				"type": "string",
 			},
 			"command": map[string]any{
-				"type": "string",
+				"type": "string", "description": "Initial input for a persistent interactive shell. Mutually exclusive with argv.",
+			},
+			"argv": map[string]any{
+				"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1,
+				"description": "For create: executable and exact arguments. Starts a command-mode session with actual process completion and exitCode when available. Mutually exclusive with command; invoke a shell explicitly for shell syntax.",
 			},
 			"input": map[string]any{
 				"type": "string",
@@ -625,8 +632,8 @@ func terminalOutputToolSchema() map[string]any {
 	return schemaObject(
 		map[string]any{
 			"sessionId": map[string]any{"type": "string"},
-			"cursor":    map[string]any{"type": "integer", "minimum": 0},
-			"limit":     map[string]any{"type": "integer", "minimum": 1},
+			"cursor":    map[string]any{"type": "integer", "minimum": 0, "description": "Absolute byte cursor, normally the previous NextCursor."},
+			"limit":     bytePageLimitSchema(),
 			"privilege": enumProperty("string", "owner", "admin"),
 		},
 		"sessionId",
@@ -653,8 +660,8 @@ func filesystemReadToolSchema() map[string]any {
 			"privilege": enumProperty("string", "owner", "admin"),
 			"path":      map[string]any{"type": "string"},
 			"encoding":  enumProperty("string", "utf8", "base64"),
-			"offset":    map[string]any{"type": "integer", "minimum": 0},
-			"limit":     map[string]any{"type": "integer", "minimum": 1},
+			"offset":    map[string]any{"type": "integer", "minimum": 0, "maximum": int64(1<<53 - 1), "default": 0, "description": "Zero-based byte offset for read_file, normally the previous nextOffsetBytes."},
+			"limit":     bytePageLimitSchema(),
 		},
 		"action",
 		"path",
@@ -670,7 +677,7 @@ func filesystemWriteToolSchema() map[string]any {
 			"destination": map[string]any{"type": "string"},
 			"content":     map[string]any{"type": "string"},
 			"encoding":    enumProperty("string", "utf8", "base64"),
-			"recursive":   map[string]any{"type": "boolean"},
+			"recursive":   map[string]any{"type": "boolean", "default": true, "description": "For delete and mkdir: false affects only the named item; true includes directory contents or creates missing parents. Omitted retains the legacy true default."},
 		},
 		"action",
 		"path",
@@ -769,12 +776,19 @@ func devicePermissionsOutputSchema() map[string]any {
 		"settings_url": map[string]any{"type": "string"},
 	}, "id", "label", "state", "required")
 	return schemaObject(map[string]any{
-		"platform":         map[string]any{"type": "string"},
-		"requested":        map[string]any{"type": "boolean"},
-		"ready":            map[string]any{"type": "boolean"},
+		"platform":  map[string]any{"type": "string"},
+		"requested": map[string]any{"type": "boolean"},
+		"ready":     map[string]any{"type": "boolean", "description": "Aggregate readiness of the desktop permission checks only."},
+		"scope":     enumProperty("string", "desktop"),
+		"capabilities": schemaObject(map[string]any{
+			"filesystem":     enumProperty("string", "not_checked"),
+			"terminal":       enumProperty("string", "not_checked"),
+			"desktopCapture": enumProperty("string", "permissions_ready", "permissions_required", "restart_required", "not_checked"),
+			"desktopInput":   enumProperty("string", "permissions_ready", "permissions_required", "restart_required", "not_checked"),
+		}, "filesystem", "terminal", "desktopCapture", "desktopInput"),
 		"restart_required": map[string]any{"type": "boolean"},
 		"permissions":      map[string]any{"type": "array", "items": item},
-	}, "platform", "requested", "ready", "permissions")
+	}, "platform", "requested", "ready", "permissions", "scope", "capabilities")
 }
 
 func schemaObject(properties map[string]any, required ...string) map[string]any {

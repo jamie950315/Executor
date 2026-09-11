@@ -19,11 +19,11 @@ import (
 	"github.com/jamie950315/executor/internal/mcp"
 )
 
-func TestMCPFilesystemEncodingSupportsStrictBase64WithoutChangingLegacyText(t *testing.T) {
+func TestMCPFilesystemEncodingSupportsStrictBase64AndValidDefaultText(t *testing.T) {
 	t.Parallel()
 
 	bytesValue := []byte{0x00, 0xff, 0x41, 0x42}
-	caller := &recordingCaller{responses: map[string]any{"filesystem.read": bytesValue}}
+	caller := &recordingCaller{responses: map[string]any{"filesystem.read-range": fileRangeResponse([]byte("hello 中文"), 0, false)}}
 	dispatcher := NewMCP(nil, caller)
 
 	legacy, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
@@ -32,10 +32,11 @@ func TestMCPFilesystemEncodingSupportsStrictBase64WithoutChangingLegacyText(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := legacy.(map[string]any)["content"]; got != string(bytesValue) {
+	if got := legacy.(map[string]any)["content"]; got != "hello 中文" {
 		t.Fatalf("legacy content = %#v", got)
 	}
 
+	caller.responses["filesystem.read-range"] = fileRangeResponse(bytesValue, 0, false)
 	encoded, err := dispatcher.Dispatch(context.Background(), mcp.ToolCall{
 		Name: "filesystem_read", Arguments: map[string]any{
 			"action": "read_file", "path": "/tmp/blob", "encoding": "base64",
@@ -44,7 +45,10 @@ func TestMCPFilesystemEncodingSupportsStrictBase64WithoutChangingLegacyText(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"content": base64.StdEncoding.EncodeToString(bytesValue), "encoding": "base64", "size": len(bytesValue)}
+	want := map[string]any{
+		"content": base64.StdEncoding.EncodeToString(bytesValue), "encoding": "base64", "size": len(bytesValue),
+		"offsetBytes": int64(0), "returnedBytes": len(bytesValue), "nextOffsetBytes": int64(len(bytesValue)), "truncated": false, "eof": true,
+	}
 	if !reflect.DeepEqual(encoded, want) {
 		t.Fatalf("base64 result = %#v, want %#v", encoded, want)
 	}
@@ -85,7 +89,7 @@ func TestMCPFilesystemEncodingWritesDecodedBytesAndReturnsMetadata(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(result, map[string]any{"encoding": "base64", "size": 4}) {
+	if !reflect.DeepEqual(result, map[string]any{"ok": true, "action": "write_file", "encoding": "base64", "size": 4, "writtenBytes": 4}) {
 		t.Fatalf("write metadata = %#v", result)
 	}
 	if len(caller.calls) != 1 {
@@ -97,11 +101,11 @@ func TestMCPFilesystemEncodingWritesDecodedBytesAndReturnsMetadata(t *testing.T)
 	}
 }
 
-func TestMCPFilesystemEncodingPreservesLegacyWriteResult(t *testing.T) {
+func TestMCPFilesystemEncodingDefaultsToUTF8WithStableWriteMetadata(t *testing.T) {
 	t.Parallel()
 
-	want := map[string]any{"legacy": true}
-	caller := &recordingCaller{responses: map[string]any{"filesystem.write": want}}
+	want := map[string]any{"ok": true, "action": "write_file", "encoding": "utf8", "size": 5, "writtenBytes": 5}
+	caller := &recordingCaller{responses: map[string]any{"filesystem.write": nil}}
 	result, err := NewMCP(nil, caller).Dispatch(context.Background(), mcp.ToolCall{
 		Name: "filesystem_write", Arguments: map[string]any{
 			"action": "write_file", "path": "/tmp/text", "content": "hello",
@@ -111,7 +115,7 @@ func TestMCPFilesystemEncodingPreservesLegacyWriteResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(result, want) {
-		t.Fatalf("legacy write result = %#v, want %#v", result, want)
+		t.Fatalf("default write result = %#v, want %#v", result, want)
 	}
 }
 
@@ -146,10 +150,10 @@ func TestMCPRoutesOwnerAndAdminTerminalToSeparateHelpers(t *testing.T) {
 func TestMCPRoutesFilesystemAndDesktopActions(t *testing.T) {
 	t.Parallel()
 
-	broker := &recordingCaller{responses: map[string]any{"filesystem.read": []byte("root")}}
+	broker := &recordingCaller{responses: map[string]any{"filesystem.read-range": fileRangeResponse([]byte("root"), 0, false)}}
 	desktop := &recordingCaller{responses: map[string]any{
-		"filesystem.read": []byte("owner"),
-		"desktop.windows": []map[string]any{{"app": "Finder", "title": "Desktop"}},
+		"filesystem.read-range": fileRangeResponse([]byte("owner"), 0, false),
+		"desktop.windows":       []map[string]any{{"app": "Finder", "title": "Desktop"}},
 	}}
 	dispatcher := NewMCP(broker, desktop)
 
@@ -158,7 +162,7 @@ func TestMCPRoutesFilesystemAndDesktopActions(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("admin read: %v", err)
 	}
-	if got := broker.calls[0].method; got != "filesystem.read" {
+	if got := broker.calls[0].method; got != "filesystem.read-range" {
 		t.Fatalf("admin method = %q", got)
 	}
 
