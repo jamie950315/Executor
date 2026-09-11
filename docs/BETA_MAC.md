@@ -1,6 +1,6 @@
 # Temporary Mac Beta MCP
 
-Deployed from `pro-fix` source `7c2d522` on 2026-09-11. This deployment is for direct ChatGPT MCP testing. The production installation remains in place.
+Updated to `pro-fix` source `8dadd7e` on 2026-09-12, installed under `bundle-8dadd7e`. Beta retains nine tools and its existing credentials. Public owner/admin tests confirm native resize, SIGTERM handler completion with exit 42, pipe-mode separate streams/EOF and accurate cwd errors. The independent Fetch Proxy deployment uses another hostname, port, service labels and state. Production remains in place.
 
 ## Connection
 
