@@ -158,6 +158,7 @@ func BuiltinTools() []Tool {
 			OutputSchema: devicePermissionsOutputSchema(),
 			Annotations:  ToolAnnotations{DestructiveHint: true},
 		},
+		fetchTool(),
 	}
 }
 
@@ -417,11 +418,19 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 			arguments = parsedArguments
 		}
 
-		result, err := s.dispatcher(ctx, ToolCall{
+		call := ToolCall{
 			SessionID: sessionID,
 			Name:      name,
 			Arguments: arguments,
-		})
+		}
+		var result any
+		var err error
+		if name == "fetch" {
+			call, err = s.resolveFetchCall(call)
+		}
+		if err == nil {
+			result, err = s.dispatcher(ctx, call)
+		}
 		if err != nil {
 			// Execution failures belong in MCP tool results, not transport errors:
 			// clients otherwise replace the actionable message with "Internal error".

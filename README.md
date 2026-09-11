@@ -30,6 +30,10 @@ Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Reg
 
 Before linking ChatGPT, run `executor doctor --full`. The full check sends an invalid, non-registering request through the public hostname to confirm that Cloudflare allows ChatGPT's DCR request to reach Executor. Cloudflare Bot Fight Mode can challenge API traffic and cannot be bypassed with a WAF custom rule; disable Bot Fight Mode for the zone or use Super Bot Fight Mode with an OAuth-path skip rule. See [Troubleshooting](docs/TROUBLESHOOTING.md) for the verified failure signatures and recovery steps.
 
+## Fetch request proxy
+
+The `fetch-proxy` branch adds an explicitly mutating MCP `fetch` tool that accepts an existing Executor tool call as a JSON string or an `executor://call?request=...` string. It uses the same OAuth, sessions, owner/admin routing, audit, and result handling as the original tools. See [Fetch request proxy](docs/FETCH_PROXY.md) for examples, limits, and verification.
+
 ## Deployment prerequisites
 
 - Go 1.24 or newer for source builds

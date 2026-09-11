@@ -63,6 +63,7 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 	t.Parallel()
 
 	want := map[string]ToolAnnotations{
+		"fetch":              {DestructiveHint: true},
 		"terminal":           {DestructiveHint: true},
 		"terminal_output":    {ReadOnlyHint: true},
 		"terminal_sessions":  {ReadOnlyHint: true},
