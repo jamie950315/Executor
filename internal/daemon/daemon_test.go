@@ -530,7 +530,7 @@ func TestRunAgentAcceptsExplicitlyEnabledURLSecretAndDispatchesToDesktop(t *test
 		t.Fatal("URL-secret initialize response missing session ID")
 	}
 
-	response = postMCP(t, baseURL+"/"+values.URLSecret+"/mcp", initialize.Result.SessionID, toolCallRequest("2", "terminal_sessions", map[string]any{"action": "list", "privilege": "owner"}))
+	response = postMCP(t, baseURL+"/"+values.URLSecret+"/mcp", initialize.Result.SessionID, toolCallRequest("2", "read", map[string]any{"action": "call", "request": `{"name":"terminal_sessions","arguments":{"action":"list","privilege":"owner"}}`}))
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("URL-secret desktop dispatch status = %d, want %d", response.StatusCode, http.StatusOK)
@@ -672,7 +672,7 @@ func TestRunStdioDispatchesWithoutOAuth(t *testing.T) {
 
 	var input bytes.Buffer
 	writeMCPFrame(t, &input, initializeRequest("1"))
-	writeMCPFrame(t, &input, toolCallRequest("2", "terminal_sessions", map[string]any{"action": "list", "privilege": "owner"}))
+	writeMCPFrame(t, &input, toolCallRequest("2", "read", map[string]any{"action": "call", "request": `{"name":"terminal_sessions","arguments":{"action":"list","privilege":"owner"}}`}))
 	var output bytes.Buffer
 	if err := RunStdio(context.Background(), configPath, &input, &output); err != nil {
 		t.Fatalf("RunStdio() error = %v", err)

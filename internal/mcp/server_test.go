@@ -59,11 +59,10 @@ func (value *statefulObjectJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return []byte(`{"unexpected":true}`), nil
 }
 
-func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
+func TestBuiltinOperationsExposeExpectedAnnotations(t *testing.T) {
 	t.Parallel()
 
 	want := map[string]ToolAnnotations{
-		"fetch":              {DestructiveHint: true},
 		"terminal":           {DestructiveHint: true},
 		"terminal_output":    {ReadOnlyHint: true},
 		"terminal_sessions":  {ReadOnlyHint: true},
@@ -75,15 +74,15 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 		"device_permissions": {DestructiveHint: true},
 	}
 
-	tools := BuiltinTools()
+	tools := builtinOperations()
 	if len(tools) != len(want) {
-		t.Fatalf("BuiltinTools() returned %d tools, want %d", len(tools), len(want))
+		t.Fatalf("builtinOperations() returned %d operations, want %d", len(tools), len(want))
 	}
 
 	for _, tool := range tools {
 		annotations, ok := want[tool.Name]
 		if !ok {
-			t.Fatalf("BuiltinTools() returned unexpected tool %q", tool.Name)
+			t.Fatalf("builtinOperations() returned unexpected operation %q", tool.Name)
 		}
 		if tool.Annotations != annotations {
 			t.Fatalf("tool %q annotations = %#v, want %#v", tool.Name, tool.Annotations, annotations)
@@ -95,7 +94,7 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 func TestDevicePermissionsToolSchemaExposesStatusAndRequestAll(t *testing.T) {
 	t.Parallel()
 
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		if tool.Name != "device_permissions" {
 			continue
 		}
@@ -121,7 +120,7 @@ func TestDevicePermissionsToolSchemaExposesStatusAndRequestAll(t *testing.T) {
 func TestFilesystemToolSchemasExposeOptionalStrictEncoding(t *testing.T) {
 	t.Parallel()
 
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		if tool.Name != "filesystem_read" && tool.Name != "filesystem_write" {
 			continue
 		}
@@ -136,7 +135,7 @@ func TestFilesystemToolSchemasExposeOptionalStrictEncoding(t *testing.T) {
 func TestPrivilegedToolsExposeOwnerAndAdminSelection(t *testing.T) {
 	t.Parallel()
 
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		switch tool.Name {
 		case "terminal", "terminal_output", "terminal_sessions", "filesystem_read", "filesystem_write":
 			properties := tool.InputSchema["properties"].(map[string]any)
@@ -153,7 +152,7 @@ func TestPrivilegedToolsExposeOwnerAndAdminSelection(t *testing.T) {
 
 func TestDesktopToolSchemasMatchExecutableArguments(t *testing.T) {
 	t.Parallel()
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		properties := tool.InputSchema["properties"].(map[string]any)
 		switch tool.Name {
 		case "desktop_observe":
@@ -177,7 +176,7 @@ func TestDesktopToolSchemasMatchExecutableArguments(t *testing.T) {
 func TestDesktopToolSchemasExposeComputerUseLoop(t *testing.T) {
 	t.Parallel()
 
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		if tool.Name == "desktop_observe" || tool.Name == "desktop_control" {
 			properties, ok := tool.OutputSchema["properties"].(map[string]any)
 			if !ok {
@@ -229,7 +228,7 @@ func TestDesktopToolSchemasExposeComputerUseLoop(t *testing.T) {
 func TestTerminalToolSchemaExposesResizeDimensions(t *testing.T) {
 	t.Parallel()
 	var terminal Tool
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		if tool.Name == "terminal" {
 			terminal = tool
 			break
@@ -396,9 +395,9 @@ func TestStreamableHTTPInitializePingToolsAndNotifications(t *testing.T) {
 		ID:      "4",
 		Method:  "tools/call",
 		Params: map[string]any{
-			"name": "filesystem_read",
+			"name": "read",
 			"arguments": map[string]any{
-				"path": "/tmp/demo.txt",
+				"action": "call", "request": `{"name":"filesystem_read","arguments":{"action":"read_file","path":"/tmp/demo.txt"}}`,
 			},
 		},
 	}
@@ -447,8 +446,8 @@ func TestToolCallWrapsArrayResultInObjectStructuredContent(t *testing.T) {
 		ID:      "2",
 		Method:  "tools/call",
 		Params: map[string]any{
-			"name":      "desktop_observe",
-			"arguments": map[string]any{"action": "windows"},
+			"name":      "read",
+			"arguments": map[string]any{"action": "call", "request": `{"name":"desktop_observe","arguments":{"action":"windows"}}`},
 		},
 	})
 
@@ -520,8 +519,8 @@ func TestToolCallReturnsExplicitMultimodalResult(t *testing.T) {
 		ID:      "2",
 		Method:  "tools/call",
 		Params: map[string]any{
-			"name":      "desktop_observe",
-			"arguments": map[string]any{"action": "screenshot"},
+			"name":      "read",
+			"arguments": map[string]any{"action": "call", "request": `{"name":"desktop_observe","arguments":{"action":"screenshot"}}`},
 		},
 	})
 	if response.Code != http.StatusOK {
@@ -783,7 +782,7 @@ func TestToolCallRejectsNonObjectArgumentsBeforeDispatch(t *testing.T) {
 		ID:      "2",
 		Method:  "tools/call",
 		Params: map[string]any{
-			"name":      "device_status",
+			"name":      "read",
 			"arguments": "not-an-object",
 		},
 	})
@@ -805,7 +804,7 @@ func TestToolCallRejectsInvalidRequestIDBeforeDispatch(t *testing.T) {
 		initialize := performHTTPRequest(t, server, "", rpcRequest{JSONRPC: "2.0", ID: "init", Method: "initialize"})
 		response := performHTTPRequest(t, server, initialize.Header().Get(SessionHeader), rpcRequest{
 			JSONRPC: "2.0", ID: id, Method: "tools/call",
-			Params: map[string]any{"name": "device_status"},
+			Params: map[string]any{"name": "read", "arguments": map[string]any{"action": "tools"}},
 		})
 		if response.Code != http.StatusBadRequest || dispatched {
 			t.Errorf("invalid id %T: status=%d dispatched=%v", id, response.Code, dispatched)

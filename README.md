@@ -32,7 +32,7 @@ Before linking ChatGPT, run `executor doctor --full`. The full check sends an in
 
 ## Fetch request proxy
 
-The `fetch-proxy` branch adds an explicitly mutating MCP `fetch` tool that accepts an existing Executor tool call as a JSON string or an `executor://call?request=...` string. It uses the same OAuth, sessions, owner/admin routing, audit, and result handling as the original tools. See [Fetch request proxy](docs/FETCH_PROXY.md) for examples, limits, and verification.
+The `fetch-proxy` branch exposes only `read` and `fetch` as MCP tools. Use `read` with `action: "tools"` to discover internal operation schemas and `action: "call"` for read-only queries. Use the explicitly mutating `fetch` tool for writes and commands packaged as JSON strings or `executor://call?request=...` strings. Legacy operation names are accepted only inside those requests. OAuth, sessions, owner/admin routing, audit, and result handling are preserved; modifying operations require client write authorization. See [Fetch request proxy](docs/FETCH_PROXY.md) for examples, limits, and verification.
 
 ## Deployment prerequisites
 

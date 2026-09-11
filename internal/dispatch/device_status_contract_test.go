@@ -56,7 +56,16 @@ func TestDeviceStatusPartialSurvivesMCPTransports(t *testing.T) {
 					}
 				}
 				call([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
-				encoded := call([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"device_status","arguments":{"action":"` + action + `"}}}`))
+				request, err := json.Marshal(map[string]any{
+					"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+					"params": map[string]any{"name": "read", "arguments": map[string]any{
+						"action": "call", "request": `{"name":"device_status","arguments":{"action":"` + action + `"}}`,
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				encoded := call(request)
 				var envelope struct {
 					Result map[string]any `json:"result"`
 				}

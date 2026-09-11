@@ -10,17 +10,17 @@ import (
 )
 
 // This limit applies to the entire UTF-8 request string, including URI escaping.
-// The original tools remain available for payloads above the proxy's bound.
+// Larger operations must be split into bounded requests by the caller.
 const maxFetchRequestBytes = 8 << 20
 
 func fetchTool() Tool {
 	return Tool{
 		Name:        "fetch",
-		Description: "Execute one advertised Executor tool from a request string. Accepts JSON {\"name\":\"filesystem_write\",\"arguments\":{...}} or executor://call?request=<percent-encoded JSON>. This tool can modify files, run commands, and control the host; it requires write authorization. The URI is a local request envelope, never a network fetch. Original tool arguments, privileges, session context, results, and image blocks are preserved. Use the original tools/list schemas for target arguments. Each request dispatches at most one tool call with no automatic retries.",
+		Description: "Execute one internal Executor operation from a request string. Accepts JSON {\"name\":\"filesystem_write\",\"arguments\":{...}} or executor://call?request=<percent-encoded JSON>. This tool can modify files, run commands, and control the host; it requires write authorization. Discover operation schemas with read(action=tools). Internal operation names are request operands, not directly callable tools. The URI is a local request envelope, never a network fetch. Original privileges, session context, results, and image blocks are preserved. Each request dispatches at most one operation with no automatic retries.",
 		InputSchema: schemaObject(map[string]any{
 			"request": map[string]any{
 				"type": "string", "minLength": 1, "maxLength": maxFetchRequestBytes,
-				"description": "One JSON object with exactly name and arguments (an object), optionally percent-encoded as executor://call?request=...; maximum 8388608 UTF-8 bytes including URI escaping. Target an advertised tool other than fetch. Keep credentials outside this string.",
+				"description": "One JSON object with exactly name and arguments (an object), optionally percent-encoded as executor://call?request=...; maximum 8388608 UTF-8 bytes including URI escaping. Target an internal operation from read(action=tools). Keep credentials outside this string.",
 			},
 		}, "request"),
 		Annotations: ToolAnnotations{DestructiveHint: true},
@@ -90,8 +90,20 @@ func (s *Server) resolveFetchCall(call ToolCall) (ToolCall, error) {
 	if !seen["name"] || !seen["arguments"] || resolved.Name == "" || resolved.Arguments == nil {
 		return ToolCall{}, invalid
 	}
-	if resolved.Name == "fetch" || !s.toolExists(resolved.Name) {
-		return ToolCall{}, errors.New("fetch target must be an advertised tool other than fetch")
+	if !s.operationExists(resolved.Name) {
+		return ToolCall{}, errors.New("request target must be an enabled internal operation; read and fetch cannot be nested")
 	}
 	return resolved, nil
+}
+
+func (s *Server) operationExists(name string) bool {
+	if name == "read" || name == "fetch" {
+		return false
+	}
+	for _, operation := range s.operations {
+		if operation.Name == name {
+			return true
+		}
+	}
+	return false
 }

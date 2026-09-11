@@ -4,6 +4,11 @@ These changes belong to the development branch `pro-fix`. Installed services,
 OAuth credentials, recovery keys, Tunnels, and the production Dashboard remain
 unchanged. Authenticated owner/admin capabilities retain their existing scope.
 
+On the `fetch-proxy` branch, the operation names below are internal request
+operands. Public MCP discovery exposes only `read` and `fetch`; obtain the
+operation schemas with `read(action=tools)`. Their result and pagination
+contracts are preserved through those wrappers. See [Fetch request proxy](FETCH_PROXY.md).
+
 ## File reads and writes
 
 `filesystem_read` / `read_file` interprets `offset` and `limit` as raw bytes.

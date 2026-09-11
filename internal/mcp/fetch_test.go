@@ -133,14 +133,14 @@ func TestFetchRejectsAmbiguousOrUnsafeEnvelopesBeforeDispatch(t *testing.T) {
 }
 
 func TestFetchCannotReachToolsExcludedFromServerCatalog(t *testing.T) {
-	var tools []Tool
-	for _, tool := range BuiltinTools() {
-		if tool.Name == "fetch" || tool.Name == "filesystem_read" {
-			tools = append(tools, tool)
+	var operations []Tool
+	for _, tool := range builtinOperations() {
+		if tool.Name == "filesystem_read" {
+			operations = append(operations, tool)
 		}
 	}
-	server := NewServer(ServerConfig{Tools: tools, Dispatcher: func(context.Context, ToolCall) (any, error) {
-		t.Fatal("unadvertised tool reached the dispatcher")
+	server := NewServer(ServerConfig{Operations: operations, Dispatcher: func(context.Context, ToolCall) (any, error) {
+		t.Fatal("excluded operation reached the dispatcher")
 		return nil, nil
 	}})
 	response, status, _ := server.handleRPC(context.Background(), server.newSession(), rpcRequest{
@@ -260,7 +260,7 @@ func FuzzFetchEnvelope(f *testing.F) {
 		resolved, err := server.resolveFetchCall(ToolCall{
 			SessionID: "original-session", Name: "fetch", Arguments: map[string]any{"request": request},
 		})
-		if err == nil && (resolved.SessionID != "original-session" || resolved.Name == "fetch" || !server.toolExists(resolved.Name) || resolved.Arguments == nil) {
+		if err == nil && (resolved.SessionID != "original-session" || !server.operationExists(resolved.Name) || resolved.Arguments == nil) {
 			t.Fatal("fetch accepted an invalid target or changed session scope")
 		}
 	})

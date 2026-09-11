@@ -103,9 +103,9 @@ func TestFetchRuntimeAuthenticatedHTTPAndStdio(t *testing.T) {
 	if initialized.StatusCode != http.StatusOK || session == "" {
 		t.Fatalf("initialize status=%d missingSession=%t", initialized.StatusCode, session == "")
 	}
-	call := func(name string, args map[string]any, uri, wantError bool) map[string]any {
+	invoke := func(payload map[string]any, wantError bool) map[string]any {
 		t.Helper()
-		response := send(http.MethodPost, tokens.AccessToken, session, "", fetchRuntimeRequest(t, name, args, uri))
+		response := send(http.MethodPost, tokens.AccessToken, session, "", payload)
 		var decoded struct {
 			Result struct {
 				IsError           bool           `json:"isError"`
@@ -115,10 +115,52 @@ func TestFetchRuntimeAuthenticatedHTTPAndStdio(t *testing.T) {
 		}
 		decodeHTTPJSON(t, response, &decoded)
 		if decoded.Error != nil || decoded.Result.IsError != wantError {
-			t.Fatalf("%s returned error=%v toolError=%t, want %t", name, decoded.Error, decoded.Result.IsError, wantError)
+			t.Fatalf("proxy returned error=%v toolError=%t, want %t", decoded.Error, decoded.Result.IsError, wantError)
 		}
 		return decoded.Result.StructuredContent
 	}
+	call := func(name string, args map[string]any, uri, wantError bool) map[string]any {
+		t.Helper()
+		return invoke(fetchRuntimeRequest(t, name, args, uri), wantError)
+	}
+	readCall := func(name string, args map[string]any, wantError bool) map[string]any {
+		t.Helper()
+		return invoke(readRuntimeRequest(t, name, args), wantError)
+	}
+
+	t.Run("public HTTP surface and read isolation", func(t *testing.T) {
+		response := send(http.MethodPost, tokens.AccessToken, session, "", map[string]any{"jsonrpc": "2.0", "id": "tools", "method": "tools/list"})
+		var listed struct {
+			Result struct {
+				Tools []mcp.Tool `json:"tools"`
+			} `json:"result"`
+		}
+		decodeHTTPJSON(t, response, &listed)
+		assertRuntimeProxyTools(t, listed.Result.Tools)
+		catalog := invoke(toolCallRequest("catalog", "read", map[string]any{"action": "tools"}), false)
+		if len(catalog["operations"].([]any)) != 9 || len(catalog["readOperations"].([]any)) != 6 {
+			t.Fatal("HTTP discovery lost internal schemas")
+		}
+		path := filepath.Join(cfg.StateDir, "direct-call-rejected.txt")
+		arguments := map[string]any{"action": "write_file", "path": path, "content": "DIRECT_REJECTED_FIXTURE"}
+		for _, name := range []string{"filesystem_write", "terminal", "desktop_control", "desktop_observe", "device_permissions", "filesystem_read", "terminal_output", "terminal_sessions", "device_status"} {
+			response := send(http.MethodPost, tokens.AccessToken, session, "", toolCallRequest("direct", name, arguments))
+			var decoded struct {
+				Error struct {
+					Code int `json:"code"`
+				} `json:"error"`
+			}
+			err := json.NewDecoder(response.Body).Decode(&decoded)
+			response.Body.Close()
+			if err != nil || response.StatusCode != http.StatusBadRequest || decoded.Error.Code != -32602 {
+				t.Fatalf("direct operation %s was not rejected", name)
+			}
+		}
+		readCall("filesystem_write", arguments, true)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatal("a direct operation or read request created a file")
+		}
+	})
 
 	t.Run("authentication origin and session boundaries", func(t *testing.T) {
 		path := filepath.Join(cfg.StateDir, "rejected.txt")
@@ -154,6 +196,9 @@ func TestFetchRuntimeAuthenticatedHTTPAndStdio(t *testing.T) {
 			read := call("filesystem_read", map[string]any{"action": "read_file", "privilege": privilege, "path": path}, true, false)
 			if read["content"] != content+"tail\n" {
 				t.Fatal("fetch read did not preserve Unicode content")
+			}
+			if query := readCall("filesystem_read", map[string]any{"action": "read_file", "privilege": privilege, "path": path}, false); query["content"] != content+"tail\n" {
+				t.Fatal("read proxy did not preserve actual Unicode file content")
 			}
 			data, err := os.ReadFile(path)
 			if err != nil || string(data) != content+"tail\n" {
@@ -217,21 +262,41 @@ func TestFetchRuntimeAuthenticatedHTTPAndStdio(t *testing.T) {
 		path := filepath.Join(cfg.StateDir, "stdio.txt")
 		var input, output bytes.Buffer
 		writeMCPFrame(t, &input, initializeRequest("init"))
+		writeMCPFrame(t, &input, map[string]any{"jsonrpc": "2.0", "id": "tools", "method": "tools/list"})
 		writeMCPFrame(t, &input, fetchRuntimeRequest(t, "filesystem_write", map[string]any{"action": "write_file", "privilege": "owner", "path": path, "content": content}, true))
+		writeMCPFrame(t, &input, readRuntimeRequest(t, "filesystem_read", map[string]any{"action": "read_file", "privilege": "owner", "path": path}))
+		writeMCPFrame(t, &input, toolCallRequest("direct", "filesystem_write", map[string]any{"action": "write_file", "path": path, "content": "REJECTED_DIRECT"}))
+		writeMCPFrame(t, &input, readRuntimeRequest(t, "filesystem_write", map[string]any{"action": "write_file", "path": path, "content": "REJECTED_READ"}))
 		if err := RunStdio(ctx, configPath, &input, &output); err != nil {
 			t.Fatal(err)
 		}
 		reader := bufio.NewReader(&output)
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 6; i++ {
 			var response struct {
 				Result struct {
-					IsError bool `json:"isError"`
+					IsError           bool           `json:"isError"`
+					Tools             []mcp.Tool     `json:"tools"`
+					StructuredContent map[string]any `json:"structuredContent"`
 				} `json:"result"`
-				Error any `json:"error"`
+				Error *struct {
+					Code int `json:"code"`
+				} `json:"error"`
 			}
 			decodeMCPFrame(t, reader, &response)
-			if response.Error != nil || response.Result.IsError {
-				t.Fatal("stdio fetch failed")
+			if i == 4 {
+				if response.Error == nil || response.Error.Code != -32602 {
+					t.Fatal("stdio accepted a direct filesystem write")
+				}
+				continue
+			}
+			if response.Error != nil || response.Result.IsError != (i == 5) {
+				t.Fatalf("unexpected stdio response at frame %d", i)
+			}
+			if i == 1 {
+				assertRuntimeProxyTools(t, response.Result.Tools)
+			}
+			if i == 3 && response.Result.StructuredContent["content"] != content {
+				t.Fatal("stdio read lost fixture content")
 			}
 		}
 		data, err := os.ReadFile(path)
@@ -298,4 +363,23 @@ func fetchRuntimeRequest(t *testing.T, name string, args map[string]any, uri boo
 		request = "executor://call?request=" + url.QueryEscape(request)
 	}
 	return toolCallRequest("fetch-test", "fetch", map[string]any{"request": request})
+}
+
+func readRuntimeRequest(t *testing.T, name string, args map[string]any) map[string]any {
+	t.Helper()
+	payload := fetchRuntimeRequest(t, name, args, true)
+	params := payload["params"].(map[string]any)
+	params["name"] = "read"
+	params["arguments"].(map[string]any)["action"] = "call"
+	return payload
+}
+
+func assertRuntimeProxyTools(t *testing.T, tools []mcp.Tool) {
+	t.Helper()
+	if len(tools) != 2 || tools[0].Name != "read" || tools[1].Name != "fetch" {
+		t.Fatalf("public tools must contain only read and fetch; got %d tools", len(tools))
+	}
+	if !tools[0].Annotations.ReadOnlyHint || tools[0].Annotations.DestructiveHint || tools[1].Annotations.ReadOnlyHint || !tools[1].Annotations.DestructiveHint {
+		t.Fatal("public tool side effects were misrepresented")
+	}
 }

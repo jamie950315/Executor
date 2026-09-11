@@ -15,7 +15,7 @@ func TestDispatcherFailureRemainsReadableMCPToolResult(t *testing.T) {
 				return nil, errors.New("content must be a string")
 			}})
 			call := rpcRequest{JSONRPC: "2.0", ID: "call", Method: "tools/call", Params: map[string]any{
-				"name": "filesystem_write", "arguments": map[string]any{"action": "write_file", "path": "/isolated-fixture"},
+				"name": "fetch", "arguments": map[string]any{"request": `{"name":"filesystem_write","arguments":{"action":"write_file","path":"/isolated-fixture"}}`},
 			}}
 			var encoded []byte
 			if transport == "http" {

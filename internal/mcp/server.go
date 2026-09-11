@@ -50,8 +50,11 @@ type ServerConfig struct {
 	ServerVersion   string
 	ProtocolVersion string
 	Tools           []Tool
-	Dispatcher      Dispatcher
-	NewSessionID    func() string
+	// Operations are internal targets for read/fetch, not directly callable tools.
+	// A nil value uses the built-ins, or Tools for an explicit custom catalog.
+	Operations   []Tool
+	Dispatcher   Dispatcher
+	NewSessionID func() string
 }
 
 type Server struct {
@@ -59,6 +62,7 @@ type Server struct {
 	serverVersion   string
 	protocolVersion string
 	tools           []Tool
+	operations      []Tool
 	dispatcher      Dispatcher
 	newSessionID    func() string
 
@@ -97,6 +101,12 @@ type StdioHandler struct {
 }
 
 func BuiltinTools() []Tool {
+	return []Tool{readTool(), fetchTool()}
+}
+
+// Internal operations keep their schemas and side-effect annotations for
+// discovery through read(action=tools). Only the two wrappers are advertised.
+func builtinOperations() []Tool {
 	return []Tool{
 		{
 			Name:        "terminal",
@@ -158,14 +168,20 @@ func BuiltinTools() []Tool {
 			OutputSchema: devicePermissionsOutputSchema(),
 			Annotations:  ToolAnnotations{DestructiveHint: true},
 		},
-		fetchTool(),
 	}
 }
 
 func NewServer(config ServerConfig) *Server {
 	tools := config.Tools
-	if len(tools) == 0 {
+	operations := config.Operations
+	if tools == nil {
 		tools = BuiltinTools()
+		if operations == nil {
+			operations = builtinOperations()
+		}
+	} else if operations == nil {
+		// An explicit catalog must not gain access to excluded operations.
+		operations = tools
 	}
 
 	protocolVersion := config.ProtocolVersion
@@ -183,6 +199,7 @@ func NewServer(config ServerConfig) *Server {
 		serverVersion:   fallback(config.ServerVersion, "dev"),
 		protocolVersion: protocolVersion,
 		tools:           append([]Tool(nil), tools...),
+		operations:      append([]Tool(nil), operations...),
 		dispatcher:      config.Dispatcher,
 		newSessionID:    newSessionID,
 		sessions:        make(map[string]*sessionState),
@@ -405,10 +422,6 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 		if !s.toolExists(name) {
 			return errorResponse(request.ID, -32602, "unknown tool"), http.StatusBadRequest, sessionID
 		}
-		if s.dispatcher == nil {
-			return errorResponse(request.ID, errCodeToolFailure, "tool dispatcher unavailable"), http.StatusInternalServerError, sessionID
-		}
-
 		arguments := map[string]any{}
 		if rawArguments, present := request.Params["arguments"]; present {
 			parsedArguments, ok := rawArguments.(map[string]any)
@@ -417,20 +430,16 @@ func (s *Server) handleRPC(ctx context.Context, sessionID string, request rpcReq
 			}
 			arguments = parsedArguments
 		}
+		if s.dispatcher == nil && !(name == "read" && arguments["action"] == "tools") {
+			return errorResponse(request.ID, errCodeToolFailure, "tool dispatcher unavailable"), http.StatusInternalServerError, sessionID
+		}
 
 		call := ToolCall{
 			SessionID: sessionID,
 			Name:      name,
 			Arguments: arguments,
 		}
-		var result any
-		var err error
-		if name == "fetch" {
-			call, err = s.resolveFetchCall(call)
-		}
-		if err == nil {
-			result, err = s.dispatcher(ctx, call)
-		}
+		result, err := s.dispatchProxyCall(ctx, call)
 		if err != nil {
 			// Execution failures belong in MCP tool results, not transport errors:
 			// clients otherwise replace the actionable message with "Internal error".

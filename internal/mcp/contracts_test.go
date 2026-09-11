@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuiltinContractDescriptionsAndByteBounds(t *testing.T) {
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		properties := tool.InputSchema["properties"].(map[string]any)
 		switch tool.Name {
 		case "filesystem_read", "terminal_output":
@@ -36,7 +36,7 @@ func TestBuiltinContractDescriptionsAndByteBounds(t *testing.T) {
 }
 
 func TestMutatingToolsExplicitlyExposeWriteAnnotations(t *testing.T) {
-	for _, tool := range BuiltinTools() {
+	for _, tool := range append(BuiltinTools(), builtinOperations()...) {
 		if !tool.Annotations.DestructiveHint {
 			continue
 		}
@@ -56,7 +56,7 @@ func TestMutatingToolsExplicitlyExposeWriteAnnotations(t *testing.T) {
 }
 
 func TestScreenshotExportHasAccurateSideEffectAnnotation(t *testing.T) {
-	for _, tool := range BuiltinTools() {
+	for _, tool := range builtinOperations() {
 		if tool.Name != "desktop_observe" {
 			continue
 		}
