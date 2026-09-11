@@ -1,5 +1,7 @@
 # Independent Fetch Proxy Mac deployment
 
+Safari DNS incident (2026-09-12): the Mac's Tailscale resolvers (Pi5, A1-JP, A1-US) returned cached empty answers for the newly created hostname while Cloudflare returned its A records. Sequential AdGuardHome restarts preserved configuration and service health but upstream negative answers remained. The Mac now has `/etc/resolver/fetch-proxy-executor-mac.0ruka.dev`, scoped only to this hostname, using 1.1.1.1 and 1.0.0.1. Other DNS/filter/Tailscale settings are unchanged. After flushing macOS DNS, system resolution returns IPv4/IPv6 addresses and ordinary HTTPS discovery succeeds without an IP override. This resolver override is persistent until removed; remove only that exact file when normal recursive resolution is confirmed. Recovery keys and OAuth state were not changed. Safari's existing failed authorization page should be reopened via a fresh ChatGPT connection attempt.
+
 The `fetch-proxy` source `4d3e6e8` is installed independently at `https://fetch-proxy-executor-mac.0ruka.dev/mcp`. It exposes exactly `read` and explicitly mutating `fetch`; it does not replace the nine-tool Beta line.
 
 Installation: `/Users/jamie/Library/Application Support/Executor Fetch Proxy/bundle-4d3e6e8`. Independent state: sibling `state/`. Agent port 19787; dashboard port 19788 is reserved but no dashboard runs. Services are `com.executor.fetchproxy.agent`, `.broker`, `.desktop`, with owner agent/desktop and root broker. Recovery material was generated separately and delivered privately; no Beta credentials were copied.
