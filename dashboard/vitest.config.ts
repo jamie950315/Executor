@@ -48,6 +48,12 @@ export default defineConfig({
   ],
   test: {
     include: ["test/worker/**/*.test.ts"],
+    // Windows hosted runners can spend >5s in local workerd/D1 round trips.
+    // Bound the integration budget without changing application deadlines or
+    // weakening assertions; avoid competing workerd instances on those runners.
+    fileParallelism: process.platform !== "win32",
+    testTimeout: process.platform === "win32" ? 20_000 : 5_000,
+    hookTimeout: process.platform === "win32" ? 20_000 : 10_000,
     provide: {
       accessPrivateJWK,
       migrations,
