@@ -22,6 +22,7 @@ import {
   callDevice,
   DeviceLockedError,
   DeviceOfflineError,
+  DeviceResponseError,
   fetchDevices,
   fetchSession,
   removeDevice,
@@ -64,6 +65,64 @@ afterEach(() => {
 });
 
 describe("fleet revalidation", () => {
+  it("never renders raw remote diagnostics in the persistent operation notice", async () => {
+    const view = render(<App />);
+    await flushAsyncWork();
+    vi.mocked(callDevice).mockRejectedValue(new DeviceResponseError("SECRET remote text", "SECRET token"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Owner Mac" }));
+    await flushAsyncWork();
+    expect(screen.getByRole("alert")).toHaveTextContent("outcome unconfirmed (relay_unavailable)");
+    expect(screen.queryByText(/SECRET/u)).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("retains an in-flight file read and its correlated error across offline/reconnect refreshes", async () => {
+    let rejectRead: ((error: Error) => void) | undefined;
+    let readSignal: AbortSignal | undefined;
+    vi.mocked(callDevice).mockImplementation(async (_id, method, args, signal) => {
+      if (method === "filesystem_read") {
+        if ((args as { action: string }).action === "read_directory") return { requestID: "directory", result: [] };
+        readSignal = signal;
+        return new Promise((_resolve, reject) => { rejectRead = reject; });
+      }
+      return { requestID: "probe", result: { ready: true } };
+    });
+    const view = render(<App />);
+    await flushAsyncWork();
+    fireEvent.click(screen.getByRole("button", { name: "Open Owner Mac" }));
+    await flushAsyncWork();
+    fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    await flushAsyncWork();
+    fireEvent.change(screen.getByLabelText("Operation path"), { target: { value: "/test/wait.fifo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Read UTF-8" }));
+    await flushAsyncWork();
+
+    vi.mocked(fetchDevices).mockResolvedValue([{ ...device, state: "offline" }]);
+    window.dispatchEvent(new Event("online"));
+    await flushAsyncWork();
+    expect(screen.getByRole("tab", { name: "Files" })).toBeVisible();
+    expect(readSignal?.aborted).toBe(false);
+    expect(screen.getByRole("button", { name: "Read UTF-8" })).toBeDisabled();
+    await act(async () => { rejectRead?.(new DeviceResponseError("relay_stream_failed", "11111111-1111-4111-8111-111111111111")); });
+    await flushAsyncWork();
+    expect(screen.getByRole("alert")).toHaveTextContent("relay_stream_failed");
+    expect(screen.getByRole("alert")).toHaveTextContent("11111111-1111-4111-8111-111111111111");
+    expect(screen.getByRole("alert")).toHaveTextContent("outcome unconfirmed");
+
+    vi.mocked(fetchDevices).mockResolvedValue([device]);
+    window.dispatchEvent(new Event("online"));
+    await flushAsyncWork();
+    expect(screen.getByRole("button", { name: "Read UTF-8" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save UTF-8" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("relay_stream_failed");
+    expect(vi.mocked(callDevice).mock.calls.filter(([, method, args]) => method === "filesystem_read" && (args as { action: string }).action === "read_file")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "← Fleet" }));
+    expect(screen.getByRole("alert")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss operation notice" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    view.unmount();
+  });
+
   it("maps expired grants, offline relays, other failures, and proven reconnects without inventing a grant", async () => {
     const view = render(<App />);
     await flushAsyncWork();
@@ -161,7 +220,7 @@ describe("fleet revalidation", () => {
   it.each([
     ["locked", new DeviceLockedError(), "Unlock Owner Mac"],
     ["offline", new DeviceOfflineError(), "Offline"],
-  ])("returns the workspace to the fleet when a call reports the device %s", async (_state, error, expected) => {
+  ])("returns non-file workspaces to the fleet when a call reports %s", async (_state, error, expected) => {
     const view = render(<App />);
     await flushAsyncWork();
     vi.mocked(callDevice).mockRejectedValue(error);
@@ -170,7 +229,7 @@ describe("fleet revalidation", () => {
     await flushAsyncWork();
     expect(screen.queryByRole("heading", { name: "Overview" })).not.toBeInTheDocument();
     if (_state === "locked") expect(screen.getByRole("button", { name: expected })).toBeVisible();
-    else expect(screen.getByText(expected)).toBeVisible();
+    else { expect(screen.getByText(expected)).toBeVisible(); expect(screen.getByRole("alert")).toHaveTextContent("outcome unconfirmed"); }
     view.unmount();
   });
 
@@ -190,7 +249,7 @@ describe("fleet revalidation", () => {
 
     expect(screen.queryByRole("tab", { name: "Control" })).not.toBeInTheDocument();
     if (_state === "locked") expect(screen.getByRole("button", { name: expected })).toBeVisible();
-    else expect(screen.getByText(expected)).toBeVisible();
+    else { expect(screen.getByText(expected)).toBeVisible(); expect(screen.getByRole("alert")).toHaveTextContent("outcome unconfirmed"); }
     view.unmount();
   });
 
