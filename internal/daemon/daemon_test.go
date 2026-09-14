@@ -516,7 +516,18 @@ func TestRunAgentAcceptsExplicitlyEnabledURLSecretAndDispatchesToDesktop(t *test
 		assertDaemonStopped(t, desktopErr)
 	}()
 
+	// HTTP initialization does not establish that the independently started
+	// Desktop helper is ready. Verify the exact authenticated IPC operation
+	// before exercising URL-secret dispatch, as the stdio fixture does below.
+	var sessions []terminal.SessionInfo
+	waitFor(t, func() error {
+		return ipc.NewRPCClient(cfg.DesktopEndpoint, []byte(values.DesktopIPCKey)).Call(
+			context.Background(), desktop.RPCMethodTerminalList, struct{}{}, &sessions,
+		)
+	})
+
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	errCh := startDaemon(t, func() error { return RunAgent(ctx, configPath) })
 	baseURL := "http://" + cfg.AgentAddress
 	response := waitForMCP(t, baseURL+"/"+values.URLSecret+"/mcp", "", initializeRequest("1"))

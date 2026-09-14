@@ -32,6 +32,8 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Release validation requires the native Windows Go tests as well as the Release artifact workflow. The URL-secret integration fixture waits for authenticated Desktop IPC readiness before dispatch; successful HTTP initialization alone does not prove that the independently started helper is ready. This is a test synchronization fix, not a change to production authentication or request retry behavior.
+
 - `main` now includes the complete `pro-fix` implementation and verification records. Use `main` for new production builds. The merge itself does not redeploy hosts or change the recorded installed revisions; `pro-fix`, temporary Beta and Fetch Proxy remain preserved.
 
 - Authenticated Dashboard follow-up on 2026-09-14 verifies all four unlocked devices, real Terminal/Files workflows, exact 180 KB multi-page Chinese read/save, Mac automatic live video and Windows relay-only live video, real pointer/keyboard/Chinese input in isolated editors, Stop cleanup, and unlock persistence after reload. The UI-pending statement below is superseded. Initial file reads received empty relay bodies and safely disabled Save; five subsequent complete reads and exact saved-byte checks passed, but the transient cause remains unconfirmed and is not claimed fixed. No source/binary, credential, or service configuration changes were made in this follow-up.
