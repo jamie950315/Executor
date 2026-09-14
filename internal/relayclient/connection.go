@@ -570,6 +570,9 @@ func (c *connection) writeResult(ctx context.Context, requestID string, result j
 		if errors.Is(err, ErrResultTooLarge) {
 			return c.writeFailure(ctx, requestID, "result_too_large")
 		}
+		if errors.Is(err, errInvalidRelayResult) {
+			return c.writeFailure(ctx, requestID, "invalid_result")
+		}
 		return err
 	}
 	for _, message := range messages {

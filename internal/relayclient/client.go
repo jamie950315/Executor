@@ -8,6 +8,7 @@ import (
 	"math"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jamie950315/executor/internal/relay"
 )
@@ -17,7 +18,10 @@ const (
 	maximumRelayResultBytes  = 64 << 20
 )
 
-var ErrResultTooLarge = errors.New("relay result too large")
+var (
+	ErrResultTooLarge     = errors.New("relay result too large")
+	errInvalidRelayResult = errors.New("invalid relay result")
+)
 
 func reconnectDelay(attempt int, sample uint64) time.Duration {
 	if attempt < 0 {
@@ -40,6 +44,11 @@ func resultMessages(requestID string, result []byte, maximumMessageBytes, maximu
 	if len(result) > maximumResultBytes {
 		return nil, ErrResultTooLarge
 	}
+	// Validate before the single-response fast path and the chunking fallback.
+	// Both encodings require one complete UTF-8 JSON value, including null.
+	if !utf8.Valid(result) || !json.Valid(result) {
+		return nil, errInvalidRelayResult
+	}
 	response, err := relay.NewEnvelope(relay.MessageTypeResponse, resultMessageID(requestID, "response"), relay.ResponsePayload{
 		RequestID: requestID, Result: append(json.RawMessage(nil), result...),
 	})
@@ -53,9 +62,6 @@ func resultMessages(requestID string, result []byte, maximumMessageBytes, maximu
 				return []relay.Envelope{response}, nil
 			}
 		}
-	}
-	if len(result) == 0 {
-		return nil, errors.New("invalid relay result")
 	}
 	chunkSize := (maximumMessageBytes - 160) * 3 / 4
 	if chunkSize < 1 {

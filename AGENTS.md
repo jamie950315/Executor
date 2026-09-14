@@ -32,6 +32,8 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Local branch `fix/relay-result-validation` fixes outgoing relay result validation before both response/chunk paths and returns correlated `invalid_result` failures. TDD reproduced 24 failing subcases before the correction; full Go tests, relay race checks, 100 repeated result-regression runs, vet/native build, six CGO-disabled cross-builds, 268 Dashboard tests (one existing skip), Dashboard checks/build, and isolated local TLS/stdio runtime checks pass. The original intermittent empty HTTP body remains unconfirmed. This is local-only; existing production devices, Worker, credentials, releases, and `main` are unchanged. See `docs/2026-09-relay-result-validation.md`.
+
 - Latest public release: `v0.3.1`, built from `185dc97` with all native Go, Dashboard/deployment and six-platform Release checks passing. GitHub hosts six verified archives plus `SHA256SUMS.txt`; the Mac archive also passed a local CLI smoke test. Automated macOS apps are ad-hoc signed/not notarized and Windows binaries are not Authenticode-signed, as stated in the release notes. `v0.3.0` remains an unpublished candidate tag and was not overwritten. Publishing did not reinstall or restart existing devices. See https://github.com/jamie950315/Executor/releases/tag/v0.3.1.
 
 - Release validation requires the native Windows Go tests as well as the Release artifact workflow. The URL-secret integration fixture waits for authenticated Desktop IPC readiness before dispatch; successful HTTP initialization alone does not prove that the independently started helper is ready. This is a test synchronization fix, not a change to production authentication or request retry behavior.

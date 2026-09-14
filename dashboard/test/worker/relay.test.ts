@@ -489,6 +489,123 @@ describe("DeviceRelay WebSocket", () => {
       clientSocket.close(1000, "test complete");
     },
   );
+
+  it.each(["response", "stream_chunk", "failure"] as const)(
+    "preserves a %s body across Durable Object RPC before closing",
+    async (responseType) => {
+      await enroll();
+      const socket = await connectAuthenticated();
+      try {
+        const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+        const requestID = `rpc-${responseType}-request`;
+        const request = makeEnvelope("request", `rpc-${responseType}-message`, {
+          request_id: requestID,
+          method: "device.status",
+          arguments: {},
+        });
+        const delivered = nextMessage(socket);
+        const result = await stub.relayStream(request);
+        expect(decodeEnvelope(await delivered)).toEqual(request);
+        if (!result.ok) throw new Error(`unexpected relay failure: ${result.error}`);
+        const response = responseType === "stream_chunk"
+          ? makeEnvelope("stream_chunk", "rpc-final-chunk", {
+              request_id: requestID, sequence: 0, data: btoa('{"ready":true}'), final: true,
+            })
+          : responseType === "failure"
+            ? makeEnvelope("response", "rpc-failure-response", {
+                request_id: requestID, failure: { code: "invalid_result" },
+              })
+            : makeEnvelope("response", "rpc-success-response", {
+                request_id: requestID, result: { ready: true },
+              });
+        const body = new Response(result.stream).text();
+        socket.send(JSON.stringify(response));
+        await expect(body).resolves.toBe(`${JSON.stringify(response)}\n`);
+      } finally {
+        socket.close(1000, "test complete");
+      }
+    },
+  );
+
+  it.each(["close", "error"] as const)(
+    "rejects a pending RPC stream on WebSocket %s before its first byte",
+    async (event) => {
+      await enroll();
+      const socket = await connectAuthenticated();
+      try {
+        const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+        const request = makeEnvelope("request", `early-${event}-message`, {
+          request_id: `early-${event}-request`, method: "device.status", arguments: {},
+        });
+        const delivered = nextMessage(socket);
+        const result = await stub.relayStream(request);
+        expect(decodeEnvelope(await delivered)).toEqual(request);
+        if (!result.ok) throw new Error(`unexpected relay failure: ${result.error}`);
+        // RPC may replace the source error message; the observable contract is rejection.
+        const rejected = new Response(result.stream).text().then(() => false, () => true);
+        await runInDurableObject(stub, async (instance: DeviceRelay, state) => {
+          const serverSocket = state.getWebSockets("device")[0];
+          if (serverSocket === undefined) throw new Error("missing relay socket");
+          if (event === "close") await instance.webSocketClose(serverSocket);
+          else await instance.webSocketError(serverSocket);
+        });
+        expect(await rejected).toBe(true);
+      } finally {
+        socket.close(1000, "test complete");
+      }
+    },
+  );
+
+  it("rejects an old pending RPC stream when a replacement connection becomes ready", async () => {
+    await enroll();
+    const socket = await connectAuthenticated();
+    let replacement: WebSocket | undefined;
+    try {
+      const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+      const request = makeEnvelope("request", "replacement-pending-message", {
+        request_id: "replacement-pending-request", method: "device.status", arguments: {},
+      });
+      const delivered = nextMessage(socket);
+      const result = await stub.relayStream(request);
+      expect(decodeEnvelope(await delivered)).toEqual(request);
+      if (!result.ok) throw new Error(`unexpected relay failure: ${result.error}`);
+      // RPC may replace the source error message; the observable contract is rejection.
+      const rejected = new Response(result.stream).text().then(() => false, () => true);
+      replacement = await connectAuthenticated();
+      expect(await rejected).toBe(true);
+      await expect(deviceState()).resolves.toBe("online");
+    } finally {
+      socket.close(1000, "test complete");
+      replacement?.close(1000, "test complete");
+    }
+  });
+
+  it("errors a stream whose deadline expires before its first response chunk", async () => {
+    await enroll();
+    const socket = await connectAuthenticated();
+    try {
+      const stub = env.DEVICE_RELAY.getByName("device-vector-1");
+      await runInDurableObject(stub, async (instance: DeviceRelay) => {
+        const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+        try {
+          const result = instance.relayStream(makeEnvelope("request", "empty-timeout-message", {
+            request_id: "empty-timeout-request", method: "device.status", arguments: {},
+          }));
+          if (!result.ok) throw new Error(`unexpected relay failure: ${result.error}`);
+          const expire = setTimeoutSpy.mock.calls.at(-1)?.[0];
+          if (typeof expire !== "function") throw new Error("missing deadline callback");
+          const rejected = expect(new Response(result.stream).text()).rejects.toThrow("relay timeout");
+          expire();
+          await rejected;
+        } finally {
+          setTimeoutSpy.mockRestore();
+        }
+      });
+    } finally {
+      socket.close(1000, "test complete");
+    }
+  });
+
 });
 
 async function enroll(generation = 7): Promise<void> {
