@@ -32,6 +32,8 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Latest public release: `v0.3.1`, built from `185dc97` with all native Go, Dashboard/deployment and six-platform Release checks passing. GitHub hosts six verified archives plus `SHA256SUMS.txt`; the Mac archive also passed a local CLI smoke test. Automated macOS apps are ad-hoc signed/not notarized and Windows binaries are not Authenticode-signed, as stated in the release notes. `v0.3.0` remains an unpublished candidate tag and was not overwritten. Publishing did not reinstall or restart existing devices. See https://github.com/jamie950315/Executor/releases/tag/v0.3.1.
+
 - Release validation requires the native Windows Go tests as well as the Release artifact workflow. The URL-secret integration fixture waits for authenticated Desktop IPC readiness before dispatch; successful HTTP initialization alone does not prove that the independently started helper is ready. This is a test synchronization fix, not a change to production authentication or request retry behavior.
 
 - `main` now includes the complete `pro-fix` implementation and verification records. Use `main` for new production builds. The merge itself does not redeploy hosts or change the recorded installed revisions; `pro-fix`, temporary Beta and Fetch Proxy remain preserved.
