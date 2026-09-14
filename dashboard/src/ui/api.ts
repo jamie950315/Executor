@@ -47,6 +47,25 @@ export class DeviceActionError extends Error {
   }
 }
 
+export class DeviceResponseError extends DeviceActionError {
+  readonly code: string;
+  readonly requestID: string | null;
+  readonly receivedBytes: number;
+
+  constructor(code: string, requestID: string | null, receivedBytes = 0) {
+    super(`Invalid device response (${code}${requestID === null ? "" : `; request ${requestID}`}); operation outcome unconfirmed`);
+    this.name = "DeviceResponseError";
+    this.code = code;
+    this.requestID = requestID;
+    this.receivedBytes = receivedBytes;
+  }
+}
+
+function responseRequestID(response: Response): string | null {
+  const value = response.headers.get("x-executor-request-id");
+  return value !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value) ? value : null;
+}
+
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export async function fetchSession(signal?: AbortSignal, fetcher: Fetcher = fetch): Promise<SessionContext> {
@@ -133,6 +152,12 @@ export async function callDevice<T = unknown>(
     signal,
   });
   if (!response.ok) {
+    const code = response.headers.get("x-executor-relay-error");
+    if (code !== null && ["relay_empty_body", "relay_stream_failed", "relay_response_too_large", "relay_cancelled"].includes(code)) {
+      // Use fixed error codes and a validated server-generated ID, never remote error text.
+      try { await response.body?.cancel(); } catch { /* transport already closed */ }
+      throw new DeviceResponseError(code, responseRequestID(response));
+    }
     throw responseError(response.status);
   }
   return parseCallResponse(response) as Promise<CallResult<T>>;
@@ -145,8 +170,10 @@ export async function parseCallResponse(
     maximumLineBytes: MAXIMUM_RELAY_MESSAGE_BYTES,
   },
 ): Promise<CallResult> {
-  if (response.body === null || !response.headers.get("content-type")?.startsWith("application/x-ndjson")) {
-    throw new DeviceActionError("Invalid device response");
+  const expectedRequestID = responseRequestID(response);
+  if (response.body === null) throw new DeviceResponseError("missing_body", expectedRequestID);
+  if (!response.headers.get("content-type")?.startsWith("application/x-ndjson")) {
+    throw new DeviceResponseError("invalid_content_type", expectedRequestID);
   }
   const reader = response.body.getReader();
   let bodyCancelled = false;
@@ -175,6 +202,9 @@ export async function parseCallResponse(
       throw new DeviceActionError("Invalid device response");
     }
     const envelope = decodeEnvelope(line);
+    if ((envelope.type === "response" || envelope.type === "stream_chunk") && expectedRequestID !== null && envelope.payload.request_id !== expectedRequestID) {
+      throw new DeviceResponseError("request_mismatch", expectedRequestID, totalBytes);
+    }
     if (envelope.type === "response") {
       if (requestID !== null || envelope.payload.failure !== undefined) {
         if (envelope.payload.failure !== undefined) {
@@ -210,7 +240,10 @@ export async function parseCallResponse(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let part: ReadableStreamReadResult<Uint8Array>;
+      try { part = await reader.read(); }
+      catch { throw new DeviceResponseError("stream_read_failed", expectedRequestID, totalBytes); }
+      const { done, value } = part;
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > bounds.maximumBytes) {
@@ -231,7 +264,7 @@ export async function parseCallResponse(
     textBuffer += decoder.decode();
     if (textBuffer.length > 0) consumeLine(textBuffer);
     if (!complete || requestID === null) {
-      throw new DeviceActionError("Invalid device response");
+      throw new DeviceResponseError(totalBytes === 0 ? "empty_body" : "incomplete_response", expectedRequestID, totalBytes);
     }
     if (streamParts.length === 0) {
       return { requestID, result: responseResult };

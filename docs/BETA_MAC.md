@@ -1,5 +1,11 @@
 # Temporary Mac Beta MCP
 
+## Current deployment — 2026-09-14
+
+The independent Beta now runs relay-validation source `ec5f53d` from `bundle-ec5f53d`, preserving its existing hostname, credentials and service labels. Production is unchanged. Native installed acceptance passed 100 complete 210 KB Chinese file reads, owner/admin file and pipe-terminal checks, desktop prerequisites, and public metadata/401 checks. Central Dashboard enrollment remains pending. See `2026-09-beta-relay-deployment.md` for exact scope and Beta-only management.
+
+## Earlier deployment record
+
 Updated to `pro-fix` source `8dadd7e` on 2026-09-12, installed under `bundle-8dadd7e`. Beta retains nine tools and its existing credentials. Public owner/admin tests confirm native resize, SIGTERM handler completion with exit 42, pipe-mode separate streams/EOF and accurate cwd errors. The independent Fetch Proxy deployment uses another hostname, port, service labels and state. Production remains in place.
 
 ## Connection

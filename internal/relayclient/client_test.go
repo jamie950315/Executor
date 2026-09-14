@@ -221,7 +221,10 @@ func TestResultMessagesUseOneResponseOrOrderedLosslessChunksWithinBounds(t *test
 		t.Fatalf("small response payload = %s err=%v", payload.Result, err)
 	}
 
-	large := bytes.Repeat([]byte("0123456789abcdef"), 80)
+	large, err := json.Marshal(strings.Repeat("0123456789abcdef", 80))
+	if err != nil {
+		t.Fatal(err)
+	}
 	messages, err = resultMessages("request-large", large, 300, 16*1024)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import {
 } from "./http";
 import { verifyDeviceGrant } from "./shared/crypto";
 import { decodeEnvelope, makeEnvelope } from "./shared/wire";
+import { relayHTTPResponse } from "./relay-response";
 
 const maximumControlBodyBytes = 16 * 1024 * 1024;
 
@@ -205,13 +206,14 @@ async function handleCall(
     await writeAudit(env.DB, deviceID, access.subject, method, relayed.error, Date.now());
     return relayErrorResponse(relayed.error);
   }
-  await writeAudit(env.DB, deviceID, access.subject, method, "forwarded", Date.now());
-  return new Response(relayed.stream, {
-    headers: {
-      "cache-control": "no-store",
-      "content-type": "application/x-ndjson; charset=utf-8",
-    },
-  });
+  const response = await relayHTTPResponse(relayed.stream, requestID, request.signal);
+  try {
+    await writeAudit(env.DB, deviceID, access.subject, method, response.ok ? "forwarded" : "response_failed", Date.now());
+  } catch {
+    // The device may already have executed the operation. Preserve its response.
+    console.error("executor_relay_audit", { request_id: requestID, code: "audit_write_failed" });
+  }
+  return response;
 }
 
 async function handleDelete(

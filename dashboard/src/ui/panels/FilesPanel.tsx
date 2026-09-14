@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PanelProps } from "./types";
+import { DeviceOfflineError, DeviceResponseError } from "../api";
 
 const uploadChunkBytes = 4 * 1024 * 1024;
 const maximumFileBytes = 64 * 1024 * 1024;
@@ -46,7 +47,7 @@ export function FilesPanel({ call }: PanelProps) {
       if (controller.signal.aborted) return;
       const record = asRecord(response.result); if (typeof record?.content !== "string") throw new Error();
       setFilePath(entry.path); setContent(record.content); setPreviewFailed(false); setStatus(`${record.size ?? record.content.length} bytes · UTF-8`);
-    } catch { if (!controller.signal.aborted) { setStatus("Text preview unavailable. Use Download for binary data."); setFilePath(entry.path); setContent(""); } }
+    } catch (error) { if (!controller.signal.aborted) { setStatus(error instanceof DeviceResponseError || error instanceof DeviceOfflineError ? "Text preview unavailable. Operation outcome unconfirmed; see the operation notice. Nothing was retried." : "Text preview unavailable. Use Download for binary data."); setFilePath(entry.path); setContent(""); } }
   };
   const save = async () => {
     if (!filePath || previewFailed) return;
