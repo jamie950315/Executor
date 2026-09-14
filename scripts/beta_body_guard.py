@@ -70,6 +70,40 @@ def cleanup(directory):
     directory.rmdir()
 
 
+def signal_fixture(directory, name):
+    if name not in ('complete', 'stop.request'):
+        raise RuntimeError('Unknown fixture signal')
+    if directory.parent != Path('/private/tmp') or not directory.name.startswith('executor-beta-final-'):
+        raise RuntimeError('Unexpected fixture location')
+    try:
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        if name == 'complete':
+            return 'already_cleaned'
+        raise
+    try:
+        validate_fixture(directory)
+        info = os.fstat(descriptor)
+        current = directory.lstat()
+        if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+            raise RuntimeError('Fixture directory changed')
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+        except FileExistsError:
+            return 'already_signalled'
+        try:
+            os.write(fd, b'fixture-signal\n')
+        finally:
+            os.close(fd)
+        return 'signalled'
+    except FileNotFoundError:
+        if name == 'complete':
+            return 'already_cleaned'
+        raise
+    finally:
+        os.close(descriptor)
+
+
 def restore_dashboard():
     beta_stop.validate()
     target, plist = beta_stop.TARGETS[0]
@@ -144,12 +178,14 @@ def cancelled(_signum, _frame):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['prepare', 'watch'])
+    parser.add_argument('action', choices=['prepare', 'watch', 'request-stop', 'complete'])
     parser.add_argument('--directory', type=Path)
     parser.add_argument('--report-dir', type=Path)
     args = parser.parse_args()
     if args.action == 'prepare':
         print(create_fixture())
+    elif args.action in ('request-stop', 'complete'):
+        print(signal_fixture(args.directory, 'stop.request' if args.action == 'request-stop' else 'complete'))
     else:
         signal.signal(signal.SIGTERM, cancelled)
         signal.signal(signal.SIGINT, cancelled)

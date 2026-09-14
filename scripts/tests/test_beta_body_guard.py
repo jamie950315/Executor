@@ -72,6 +72,16 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(extra.read_text(), 'preserve')
         extra.unlink()
 
+    def test_late_completion_does_not_recreate_cleaned_directory(self):
+        guard.cleanup(self.directory)
+        self.assertEqual(guard.signal_fixture(self.directory, 'complete'), 'already_cleaned')
+        self.assertFalse(self.directory.exists())
+
+    def test_signal_writes_only_inside_existing_owned_fixture(self):
+        self.assertEqual(guard.signal_fixture(self.directory, 'stop.request'), 'signalled')
+        self.assertEqual(guard.signal_fixture(self.directory, 'complete'), 'signalled')
+        self.assertEqual(guard.signal_fixture(self.directory, 'complete'), 'already_signalled')
+
 
 if __name__ == '__main__':
     unittest.main()
