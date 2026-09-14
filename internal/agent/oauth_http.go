@@ -21,12 +21,13 @@ import (
 type RecoveryVerifier func(string) bool
 
 type oauthHandler struct {
-	core           *oauth.Core
-	resource       string
-	verifyRecovery RecoveryVerifier
-	cimdClient     *http.Client
-	statePath      string
-	recordOAuth    OAuthEventRecorder
+	core            *oauth.Core
+	resource        string
+	resourceAliases []string
+	verifyRecovery  RecoveryVerifier
+	cimdClient      *http.Client
+	statePath       string
+	recordOAuth     OAuthEventRecorder
 }
 
 type OAuthEvent struct {
@@ -41,6 +42,33 @@ type OAuthEvent struct {
 type OAuthEventRecorder func(OAuthEvent)
 
 type OAuthOption func(*oauthHandler)
+
+// WithOAuthResourceAliases explicitly identifies alternate transport addresses
+// for this same logical resource. Callers must supply trusted operator config,
+// never values derived from an incoming request or discovered client metadata.
+// Matching is exact; OAuth owner consent, PKCE and token authentication remain
+// unchanged. The canonical resource advertised by Executor is not changed.
+func WithOAuthResourceAliases(aliases []string) OAuthOption {
+	copyOfAliases := append([]string(nil), aliases...)
+	return func(h *oauthHandler) { h.resourceAliases = append([]string(nil), copyOfAliases...) }
+}
+
+func (h *oauthHandler) acceptsResource(values url.Values) bool {
+	resources := values["resource"]
+	if len(resources) > 1 {
+		return false
+	}
+	resource := values.Get("resource")
+	if resource == "" || resource == h.resource {
+		return true
+	}
+	for _, alias := range h.resourceAliases {
+		if alias != "" && resource == alias {
+			return true
+		}
+	}
+	return false
+}
 
 func WithCIMDHTTPClient(client *http.Client) OAuthOption {
 	return func(handler *oauthHandler) {
@@ -224,7 +252,7 @@ func (h *oauthHandler) validateAuthorize(ctx context.Context, values url.Values)
 	if values.Get("code_challenge_method") != "S256" || values.Get("code_challenge") == "" {
 		return &oauthRequestError{"PKCE S256 is required"}
 	}
-	if resource := values.Get("resource"); resource != "" && resource != h.resource {
+	if !h.acceptsResource(values) {
 		return &oauthRequestError{"resource does not match this Executor"}
 	}
 	clientID := values.Get("client_id")
@@ -291,7 +319,7 @@ func (h *oauthHandler) token(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", err.Error())
 		return
 	}
-	if resource := r.Form.Get("resource"); resource != "" && resource != h.resource {
+	if !h.acceptsResource(r.Form) {
 		h.recordOAuthFailure(event, "invalid_target", errors.New("resource mismatch"))
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource does not match this Executor")
 		return

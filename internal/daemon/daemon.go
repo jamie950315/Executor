@@ -152,6 +152,7 @@ func RunAgent(ctx context.Context, configPath string) error {
 		resource,
 		values.VerifyRecoveryKey,
 		agent.WithOAuthStatePath(statePath),
+		agent.WithOAuthResourceAliases(cfg.OAuthResourceAliases),
 		agent.WithOAuthEventRecorder(newOAuthAuditRecorder(cfg)),
 	)
 

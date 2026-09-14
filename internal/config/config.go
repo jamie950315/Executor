@@ -18,17 +18,18 @@ import (
 const CurrentVersion = 2
 
 type Config struct {
-	Version          int                      `json:"version"`
-	StateDir         string                   `json:"state_dir"`
-	Domain           string                   `json:"domain,omitempty"`
-	AgentAddress     string                   `json:"agent_address"`
-	DashboardAddress string                   `json:"dashboard_address"`
-	BrokerEndpoint   string                   `json:"broker_endpoint"`
-	DesktopEndpoint  string                   `json:"desktop_endpoint"`
-	AuditRetentionH  int                      `json:"audit_retention_hours"`
-	URLSecretEnabled bool                     `json:"url_secret_enabled,omitempty"`
-	Cloudflare       CloudflareMetadata       `json:"cloudflare,omitempty"`
-	UnifiedDashboard UnifiedDashboardMetadata `json:"unified_dashboard"`
+	Version              int                      `json:"version"`
+	StateDir             string                   `json:"state_dir"`
+	Domain               string                   `json:"domain,omitempty"`
+	OAuthResourceAliases []string                 `json:"oauth_resource_aliases,omitempty"`
+	AgentAddress         string                   `json:"agent_address"`
+	DashboardAddress     string                   `json:"dashboard_address"`
+	BrokerEndpoint       string                   `json:"broker_endpoint"`
+	DesktopEndpoint      string                   `json:"desktop_endpoint"`
+	AuditRetentionH      int                      `json:"audit_retention_hours"`
+	URLSecretEnabled     bool                     `json:"url_secret_enabled,omitempty"`
+	Cloudflare           CloudflareMetadata       `json:"cloudflare,omitempty"`
+	UnifiedDashboard     UnifiedDashboardMetadata `json:"unified_dashboard"`
 }
 
 type UnifiedDashboardMetadata struct {
@@ -131,6 +132,9 @@ func loadUnlocked(path string) (Config, error) {
 	if err := validateUnifiedDashboard(cfg.UnifiedDashboard); err != nil {
 		return Config{}, err
 	}
+	if err := validateOAuthResourceAliases(cfg.OAuthResourceAliases); err != nil {
+		return Config{}, err
+	}
 	if needsSave {
 		if err := saveUnlocked(path, cfg); err != nil {
 			return Config{}, fmt.Errorf("save migrated config: %w", err)
@@ -152,6 +156,9 @@ func Save(path string, cfg Config) error {
 }
 
 func saveUnlocked(path string, cfg Config) error {
+	if err := validateOAuthResourceAliases(cfg.OAuthResourceAliases); err != nil {
+		return err
+	}
 	if cfg.Version == 0 {
 		cfg.Version = CurrentVersion
 	}
@@ -215,6 +222,21 @@ func saveUnlocked(path string, cfg Config) error {
 	closed = true
 	if err := replaceFileDurable(tmp, path); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateOAuthResourceAliases(aliases []string) error {
+	if len(aliases) > 8 {
+		return errors.New("too many OAuth resource aliases")
+	}
+	seen := make(map[string]bool)
+	for _, alias := range aliases {
+		u, err := url.Parse(alias)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(alias, "*\\ \t\r\n") || seen[alias] {
+			return errors.New("OAuth resource aliases must be unique exact HTTPS URLs without credentials, query, fragment or wildcards")
+		}
+		seen[alias] = true
 	}
 	return nil
 }

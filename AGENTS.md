@@ -32,6 +32,14 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
+  `executor-openai-tunnel` runtime forwards to the existing authenticated Mac
+  canonical HTTPS endpoint without changing installed OAuth or production services.
+  Branch-only `oauth_resource_aliases` adds explicit equivalent transport resource
+  names; isolated HTTP OAuth and regression tests pass. ChatGPT app/DCR and
+  transport registration pass, but installed-server authorization and write
+  acceptance remain pending. See `docs/OPENAI_TUNNEL.md`.
+
 - Main now integrates the Beta-verified relay result validation, first-byte HTTP guard, persistent UI diagnostics and four-target Mac Beta maintenance helper. Installed production versions must be verified separately; merging does not deploy or rotate credentials. Beta-specific maintenance scripts remain scoped to the separate Mac Beta installation and must not manage production service labels.
 
 - Isolated Beta Dashboard now runs UI `b5d6b29` on `codex/beta-relay-error-ui` with unchanged `b39d818` Worker code; current Worker version is `530fafe6-3806-4b9c-8ccf-36ef586238a2`. Real browser verification passes normal/empty/212 KB four-page reads, pre-first-byte HTTP 502 with persistent request-correlated error, offline Files retention and disabled controls, reconnect without retry, failed-preview Save protection, and manual dismissal. Other workspaces retain offline cleanup. D1/DO/Access remain Beta-only; enrollment stays disabled and existing Beta `bundle-ec5f53d` credentials are unchanged. Only `com.executor.beta.dashboard` was restarted for fault tests; the installed `stop.py` now validates and manages all four Beta services (canonical source `scripts/beta_stop.py`). Production was not modified. See `docs/BETA_DASHBOARD.md` for versions, acceptance and rollback.

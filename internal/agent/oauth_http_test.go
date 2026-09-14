@@ -44,9 +44,43 @@ func TestRegistrationRejectsTrailingDataBeforePersisting(t *testing.T) {
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
+	testOAuthHTTPFlow(t, "")
+}
+
+func TestOAuthHTTPAliasRegistrationAuthorizationAndToken(t *testing.T) {
+	testOAuthHTTPFlow(t, "https://tunnel.example.test/v1/mcp/tunnel_test")
+}
+
+func testOAuthHTTPFlow(t *testing.T, transportResource string) {
+	t.Helper()
 	core := testOAuthCore(t)
 	statePath := filepath.Join(t.TempDir(), "oauth-state.json")
-	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" }, WithOAuthStatePath(statePath))
+	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" }, WithOAuthStatePath(statePath), WithOAuthResourceAliases([]string{transportResource}))
+	if transportResource != "" {
+		server := httptest.NewServer(h)
+		defer server.Close()
+		client := server.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			request, err := http.NewRequest(r.Method, server.URL+r.URL.RequestURI(), r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header = r.Header.Clone()
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			for key, values := range response.Header {
+				w.Header()[key] = values
+			}
+			w.WriteHeader(response.StatusCode)
+			if _, err := io.Copy(w, response.Body); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 
 	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"} {
 		res := httptest.NewRecorder()
@@ -94,6 +128,7 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		"code_challenge_method": {"S256"},
 	}
 	authorizePage := httptest.NewRecorder()
+	values.Set("resource", transportResource)
 	h.ServeHTTP(authorizePage, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
 	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), "ChatGPT") || !strings.Contains(authorizePage.Body.String(), client.RedirectURIs[0]) {
 		t.Fatalf("authorize page status=%d body=%q", authorizePage.Code, authorizePage.Body.String())
@@ -128,6 +163,7 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		"redirect_uri":  {client.RedirectURIs[0]},
 		"code_verifier": {verifier},
 	}
+	tokenForm.Set("resource", transportResource)
 	tokenReq := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenRes := httptest.NewRecorder()
