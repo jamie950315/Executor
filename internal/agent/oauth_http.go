@@ -166,7 +166,11 @@ func (h *oauthHandler) authorizePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-"+authorizeScriptHash+"'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	// validateAuthorize already checked this URI against the registered client.
+	// Browsers apply form-action to the POST's redirect as well as its target.
+	callback, _ := url.Parse(values.Get("redirect_uri"))
+	callbackOrigin := callback.Scheme + "://" + callback.Host
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-"+authorizeScriptHash+"'; form-action 'self' "+callbackOrigin+"; frame-ancestors 'none'; base-uri 'none'")
 	_ = authorizeTemplate.Execute(w, struct {
 		ClientName          string
 		ClientID            string

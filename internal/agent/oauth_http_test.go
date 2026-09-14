@@ -133,6 +133,9 @@ func testOAuthHTTPFlow(t *testing.T, transportResource string) {
 	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), "ChatGPT") || !strings.Contains(authorizePage.Body.String(), client.RedirectURIs[0]) {
 		t.Fatalf("authorize page status=%d body=%q", authorizePage.Code, authorizePage.Body.String())
 	}
+	if !strings.Contains(authorizePage.Header().Get("Content-Security-Policy"), "form-action 'self' https://chatgpt.com;") {
+		t.Fatal("authorization CSP must allow the validated callback origin after POST redirect")
+	}
 
 	values.Set("recovery_key", "wrong")
 	deniedReq := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(values.Encode()))
