@@ -52,6 +52,13 @@ reload. Full Go tests, focused race tests, vet, native build and six
 CGO-disabled platform builds pass. ChatGPT acceptance requires a separately
 deployed test endpoint and is not implied by these local checks.
 
+Deployment preflight on 2026-09-15 confirms the existing Beta Agent is a
+system LaunchDaemon. Noninteractive sudo requires a password, so no Beta
+service or configuration was changed. The original Beta recovery credential
+remains required for its owner-consent flow; no credential reset was attempted.
+The alias HTTP regression also rejects an unapproved resource at token exchange
+without consuming the authorization code; ten race-enabled repeats pass.
+
 - Branch `tunnel`; official client 0.0.14 installed.
 - 18 helper tests pass, including credential handling and alias collision checks.
 - Existing Mac endpoint `http://127.0.0.1:8787/mcp` rejects unauthenticated

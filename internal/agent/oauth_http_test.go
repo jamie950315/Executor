@@ -164,6 +164,18 @@ func testOAuthHTTPFlow(t *testing.T, transportResource string) {
 		"code_verifier": {verifier},
 	}
 	tokenForm.Set("resource", transportResource)
+	if transportResource != "" {
+		// Reject a different tunnel before consuming the one-time code.
+		tokenForm.Set("resource", transportResource+"-other")
+		badRequest := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
+		badRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		badResponse := httptest.NewRecorder()
+		h.ServeHTTP(badResponse, badRequest)
+		if badResponse.Code != http.StatusBadRequest || !strings.Contains(badResponse.Body.String(), "invalid_target") {
+			t.Fatalf("wrong alias token exchange status=%d", badResponse.Code)
+		}
+		tokenForm.Set("resource", transportResource)
+	}
 	tokenReq := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenRes := httptest.NewRecorder()
