@@ -108,6 +108,7 @@ describe("fleet revalidation", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("relay_stream_failed");
     expect(screen.getByRole("alert")).toHaveTextContent("11111111-1111-4111-8111-111111111111");
     expect(screen.getByRole("alert")).toHaveTextContent("outcome unconfirmed");
+    expect(screen.queryByText(/Use Download for binary data/u)).not.toBeInTheDocument();
 
     vi.mocked(fetchDevices).mockResolvedValue([device]);
     window.dispatchEvent(new Event("online"));
