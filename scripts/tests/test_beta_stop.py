@@ -75,6 +75,14 @@ class FixtureTests(unittest.TestCase):
     def fake_launchctl(self, args, **kwargs):
         self.assertEqual(args[0], '/bin/launchctl')
         self.assertEqual(kwargs['timeout'], 10)
+        if args[1] == 'bootstrap':
+            domain, plist = args[2:]
+            matches = [target for target, path in stop.TARGETS if str(path) == plist and target.rsplit('/', 1)[0] == domain]
+            self.assertEqual(len(matches), 1, 'Only an exact fixture Beta plist can be restored')
+            target = matches[0]
+            self.calls.append(('bootstrap', target))
+            self.loaded[target] = True
+            return subprocess.CompletedProcess(args, 0, '', '')
         action, target = args[1:]
         self.assertIn(target, self.loaded, 'No production/shared target may be called')
         self.calls.append((action, target))
@@ -134,6 +142,20 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn('dashboard: already_unloaded', out)
         self.assertNotIn(('bootout', stop.TARGETS[0][0]), self.calls)
+
+    def test_isolated_full_stop_then_start_cycle(self):
+        # Only the fake test controller starts services; stop.py has no Resume command.
+        before = {p: p.read_bytes() for p in stop.STATE.iterdir()}
+        self.assertEqual(self.run_stop()[0], 0)
+        self.assertFalse(any(self.loaded.values()))
+        (stop.STATE / 'disabled').unlink()
+        for target, path in reversed(stop.TARGETS):
+            stop.launchctl('bootstrap', target.rsplit('/', 1)[0], str(path))
+        self.assertTrue(all(self.loaded.values()))
+        self.assertEqual(self.run_stop(check=True)[0], 0)
+        self.assertEqual(before, {p: p.read_bytes() for p in stop.STATE.iterdir()})
+        self.assertEqual([target for action, target in self.calls if action == 'bootstrap'],
+                         [target for target, _ in reversed(stop.TARGETS)])
 
     def test_failure_reports_target_and_preserves_marker(self):
         self.fail_stop.add(stop.TARGETS[0][0])
