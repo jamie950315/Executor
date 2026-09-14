@@ -128,6 +128,129 @@ describe("unlocked device control", () => {
     socket.close(1000, "test complete");
   });
 
+  it("waits for actual relay bytes before committing an HTTP 200", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const callPromise = controlRequest("call", unlocked, { method: "filesystem_read", arguments: {} });
+    const request = decodeEnvelope(await nextMessage(socket));
+    if (request.type !== "request") throw new Error("expected request");
+    const early = await Promise.race([
+      callPromise.then((response) => ({ state: "headers" as const, status: response.status })),
+      scheduler.wait(50).then(() => ({ state: "pending" as const })),
+    ]);
+    socket.send(JSON.stringify(makeEnvelope("response", "first-byte-result", {
+      request_id: request.payload.request_id, result: { content: "", eof: true },
+    })));
+    const response = await callPromise;
+    await response.arrayBuffer();
+    socket.close(1000, "test complete");
+    expect(early).toEqual({ state: "pending" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-executor-request-id")).toBe(request.payload.request_id);
+  });
+
+  it.each(["close", "error"] as const)("returns a nonempty HTTP error when relay %s occurs before the first byte", async (event) => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const callPromise = controlRequest("call", unlocked, { method: "filesystem_read", arguments: {} });
+    const request = decodeEnvelope(await nextMessage(socket));
+    if (request.type !== "request") throw new Error("expected request");
+    await scheduler.wait(30);
+    await runInDurableObject(env.DEVICE_RELAY.getByName(deviceID), async (instance, state) => {
+      const server = state.getWebSockets("device")[0];
+      if (server === undefined) throw new Error("missing socket");
+      if (event === "close") await instance.webSocketClose(server);
+      else await instance.webSocketError(server);
+    });
+    const response = await callPromise;
+    let body = "";
+    let readFailed = false;
+    try { body = await response.text(); } catch { readFailed = true; }
+    socket.close(1000, "test complete");
+    console.log(JSON.stringify({ fixture: `before-first-byte-${event}`, status: response.status, bytes: new TextEncoder().encode(body).byteLength, readFailed }));
+    expect(response.status).toBe(502);
+    expect(readFailed).toBe(false);
+    expect(JSON.parse(body)).toMatchObject({ code: "relay_stream_failed", request_id: request.payload.request_id, outcome: "unconfirmed" });
+    expect(response.headers.get("x-executor-request-id")).toBe(request.payload.request_id);
+  });
+
+  it("returns a nonempty HTTP error when the device connection is replaced before first byte", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const pending = controlRequest("call", unlocked, { method: "filesystem_read", arguments: {} });
+    const request = decodeEnvelope(await nextMessage(socket));
+    if (request.type !== "request") throw new Error("expected request");
+    const replacement = await connectReadySocket();
+    const response = await pending;
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "relay_stream_failed", request_id: request.payload.request_id, outcome: "unconfirmed" });
+    await expect(noMessage(replacement, 20)).resolves.toBe(true);
+    // A later explicit call succeeds; the abandoned call is never replayed.
+    const nextCall = controlRequest("call", unlocked, { method: "device_status", arguments: {} });
+    const next = decodeEnvelope(await nextMessage(replacement));
+    if (next.type !== "request") throw new Error("expected request");
+    replacement.send(JSON.stringify(makeEnvelope("response", "reconnected", { request_id: next.payload.request_id, result: { ready: true } })));
+    const recovered = await nextCall;
+    expect(recovered.status).toBe(200);
+    await recovered.arrayBuffer();
+    replacement.close(1000, "test complete");
+  });
+
+  it("returns a nonempty HTTP error at the existing relay deadline", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const pending = controlRequest("call", unlocked, { method: "filesystem_read", arguments: {} });
+    const request = decodeEnvelope(await nextMessage(socket));
+    if (request.type !== "request") throw new Error("expected request");
+    const cancellation = decodeEnvelope(await nextMessage(socket));
+    expect(cancellation).toMatchObject({ type: "cancellation", payload: { request_id: request.payload.request_id } });
+    const response = await pending;
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "relay_stream_failed", request_id: request.payload.request_id, outcome: "unconfirmed" });
+    socket.close(1000, "test complete");
+  }, 15_000);
+
+  it("preserves a delivered chunk and rejects subsequent transport loss", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    const pending = controlRequest("call", unlocked, { method: "filesystem_read", arguments: {} });
+    const request = decodeEnvelope(await nextMessage(socket));
+    if (request.type !== "request") throw new Error("expected request");
+    const chunk = makeEnvelope("stream_chunk", "before-loss", { request_id: request.payload.request_id, sequence: 0, data: btoa("{}"), final: false });
+    socket.send(JSON.stringify(chunk));
+    const response = await pending;
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(new TextDecoder().decode(first.value)).toBe(`${JSON.stringify(chunk)}\n`);
+    const rejected = expect(reader.read()).rejects.toThrow();
+    socket.close(1000, "controlled transport loss");
+    await rejected;
+    reader.releaseLock();
+  });
+
+  it("preserves a completed device response when the forwarded audit insert fails", async () => {
+    const socket = await enrolledAuthenticatedSocket();
+    const unlocked = await unlock(socket);
+    await env.DB.prepare(`CREATE TRIGGER fail_forwarded_audit BEFORE INSERT ON audits
+      WHEN NEW.outcome = 'forwarded' BEGIN SELECT RAISE(ABORT, 'test audit unavailable'); END`).run();
+    try {
+      const pending = controlRequest("call", unlocked, { method: "filesystem_write", arguments: {} });
+      const request = decodeEnvelope(await nextMessage(socket));
+      if (request.type !== "request") throw new Error("expected request");
+      const expected = makeEnvelope("response", "completed-write", { request_id: request.payload.request_id, result: { writtenBytes: 17 } });
+      socket.send(JSON.stringify(expected));
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(new TextDecoder().decode(await response.arrayBuffer()).trim()).toBe(JSON.stringify(expected));
+      await expect(noMessage(socket, 20)).resolves.toBe(true);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER fail_forwarded_audit").run();
+      socket.close(1000, "test complete");
+    }
+  });
+
   it("rejects unknown methods without relaying or persisting the untrusted method", async () => {
     const socket = await enrolledAuthenticatedSocket();
     const unlocked = await unlock(socket);
@@ -403,6 +526,10 @@ function controlHeaders(accessToken: string, cookie: string): HeadersInit {
 async function enrolledAuthenticatedSocket(): Promise<WebSocket> {
   const enrolled = await enrollDeviceGeneration(7);
   expect(enrolled.status).toBe(201);
+  return connectReadySocket();
+}
+
+async function connectReadySocket(): Promise<WebSocket> {
   const response = await SELF.fetch(`${dashboardOrigin}/api/device/connect/${deviceID}`, {
     headers: { upgrade: "websocket" },
   });

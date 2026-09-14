@@ -28,6 +28,7 @@ interface PendingStream {
   controller: ReadableStreamDefaultController<Uint8Array>;
   nextSequence: number;
   totalBytes: number;
+  startedAt: number;
   timeout: ReturnType<typeof setTimeout>;
 }
 
@@ -179,6 +180,7 @@ export class DeviceRelay extends DurableObject<Env> {
       controller: streamController,
       nextSequence: 0,
       totalBytes: 0,
+      startedAt: Date.now(),
       timeout,
     });
     try {
@@ -187,6 +189,8 @@ export class DeviceRelay extends DurableObject<Env> {
       this.failPending(requestID, "offline");
       return { ok: false, error: "offline" };
     }
+    const dispatched = this.pending.get(requestID);
+    if (dispatched !== undefined) this.tracePending(requestID, dispatched, "dispatched");
     return { ok: true, stream };
   }
 
@@ -228,7 +232,7 @@ export class DeviceRelay extends DurableObject<Env> {
     if (attachment?.phase !== "ready") {
       return;
     }
-    this.failPendingForSocket(socket, "offline");
+    this.failPendingForSocket(socket, "offline", "socket_close");
     if (!this.hasOtherReadySocket(socket, attachment.generation)) {
       await this.setDeviceOffline(attachment.deviceID, attachment.generation);
     }
@@ -239,7 +243,7 @@ export class DeviceRelay extends DurableObject<Env> {
     if (attachment?.phase !== "ready") {
       return;
     }
-    this.failPendingForSocket(socket, "offline");
+    this.failPendingForSocket(socket, "offline", "socket_error");
     if (!this.hasOtherReadySocket(socket, attachment.generation)) {
       await this.setDeviceOffline(attachment.deviceID, attachment.generation);
     }
@@ -394,6 +398,8 @@ export class DeviceRelay extends DurableObject<Env> {
       return;
     }
     pending.controller.enqueue(bytes);
+    pending.totalBytes += bytes.byteLength;
+    this.tracePending(envelope.payload.request_id, pending, "complete");
     pending.controller.close();
   }
 
@@ -451,7 +457,7 @@ export class DeviceRelay extends DurableObject<Env> {
     } satisfies ReadyAttachment);
     for (const existing of this.ctx.getWebSockets("device")) {
       if (existing !== socket && relayAttachment(existing)?.phase === "ready") {
-        this.failPendingForSocket(existing, "offline");
+        this.failPendingForSocket(existing, "offline", "connection_replaced");
         existing.close(1000, "connection replaced");
       }
     }
@@ -484,6 +490,7 @@ export class DeviceRelay extends DurableObject<Env> {
   private failPending(
     requestID: string,
     error: RelayFailureCode,
+    reason: string = error,
   ): void {
     const pending = this.pending.get(requestID);
     if (pending === undefined) {
@@ -494,15 +501,32 @@ export class DeviceRelay extends DurableObject<Env> {
     if (pending.mode === "once") {
       pending.resolve({ ok: false, error });
     } else {
+      this.tracePending(requestID, pending, "failed", reason);
       pending.controller.error(new Error(relayFailureMessage(error)));
     }
   }
 
-  private failPendingForSocket(socket: WebSocket, error: RelayFailureCode): void {
+  private failPendingForSocket(socket: WebSocket, error: RelayFailureCode, reason: string = error): void {
     for (const [requestID, pending] of this.pending) {
       if (pending.socket === socket) {
-        this.failPending(requestID, error);
+        this.failPending(requestID, error, reason);
       }
+    }
+  }
+
+  private tracePending(requestID: string, pending: PendingRelay, stage: "dispatched" | "complete" | "failed", reason?: string): void {
+    if (pending.mode !== "stream") return;
+    try {
+      console.info("executor_relay_device", {
+        request_id: requestID,
+        stage,
+        ...(reason === undefined ? {} : { reason }),
+        wire_bytes: pending.totalBytes,
+        chunks: pending.nextSequence,
+        elapsed_ms: Math.max(0, Date.now() - pending.startedAt),
+      });
+    } catch {
+      // Credential-free diagnostics cannot affect request delivery.
     }
   }
 
@@ -543,6 +567,7 @@ export class DeviceRelay extends DurableObject<Env> {
     pending.totalBytes = total;
     pending.nextSequence += 1;
     if (envelope.payload.final) {
+      this.tracePending(requestID, pending, "complete");
       clearTimeout(pending.timeout);
       this.pending.delete(requestID);
       pending.controller.close();
