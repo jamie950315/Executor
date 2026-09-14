@@ -47,3 +47,15 @@ Toolchain: Go 1.24.3 on darwin/arm64, Node.js 24.10.0, and the repository's pinn
 ## Incident boundary
 
 This work proves and fixes an outgoing-result validation defect. The original intermittent empty HTTP/relay body still lacks a correlated production request trace establishing its cause. The new tests establish successful delivery and error propagation for the exercised local paths; they do not establish the root cause of that production incident or a production fix for it. Production request retry, WebSocket lifecycle logic, and UI error wording are unchanged.
+
+## Independent Mac MCP revalidation after reconnection
+
+On 2026-09-14, the reconnected Mac was inspected through Executor MCP. The branch already contained fix commit `6ab49031f51e22804417c0739503bec686f9ef98`, and the worktree was clean. The existing correction was preserved and independently retested; the earlier extracted-function patch was not reapplied.
+
+- A temporary archive of baseline `8019410`, with the current result-validation regression test added, reproduced exactly 24 failing subcases on native Go 1.24.3. The expected failing test exited 1; the verification wrapper confirmed the failure count and exited 0. The branch worktree remained unchanged during this baseline test.
+- The corrected branch passed fresh `go test ./... -count=1`, relay/client race checks, 100 runs of the focused result regressions, `go vet ./...`, and native `go build ./...`.
+- The initial Dashboard test invocation exited 127 because the local `vitest` executable was missing. `npm ci --no-audit --no-fund` restored the locked dependencies without changing `package.json` or `package-lock.json`. The subsequent full suite passed: unit 137, UI 74, Worker 57, totaling 268 passing tests and one existing skipped test. TypeScript, ESLint, client build, and Worker dry-run build also exited 0.
+- The Worker fault-injection cases emitted the previously documented `device offline` diagnostics. Vitest completed all 57 Worker tests and exited 0.
+- All six `CGO_ENABLED=0` cross-builds passed for darwin/linux/windows on amd64/arm64. Native local TLS WebSocket and isolated stdio runtime fixtures were rerun explicitly and passed. Go formatting and Git whitespace checks were clean.
+
+This revalidation changes only this review record. The source fix remains in `6ab4903`; `main` remains `8019410`. No push, merge, release publication, production installation, service restart, or credential change was performed. The production incident boundary above remains unchanged.
