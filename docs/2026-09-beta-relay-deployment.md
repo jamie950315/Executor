@@ -65,3 +65,9 @@ The rollback path was prepared but was not invoked during this successful update
 Beta retains its existing unenrolled central-Dashboard state; its optional local Dashboard service is not running. The shared production tunnel supplies its HTTPS route, so the Beta CLI's own tunnel status remains `not-configured` while the public endpoint is reachable.
 
 The 100-read result establishes installed local MCP/helper behavior. An authenticated public ChatGPT connection and central Dashboard -> relay -> Beta end-to-end acceptance remain separate follow-up coverage. The original intermittent empty HTTP body still lacks a production request trace proving its cause. The result-validation fix and its earlier native regression/race/Worker tests remain documented in `2026-09-relay-result-validation.md`.
+
+## Owner-approved Beta recovery reset
+
+At 2026-09-14T20:14:30+08:00, the owner explicitly approved a Beta-only reset after losing the prior Beta recovery key. Native secret-store rotation advanced the Beta credential generation to 2; persisted OAuth code and refresh grants were revoked while client registrations and the relay identity were preserved. Only the three exact Beta services were restarted. The new recovery key was delivered exclusively in the requesting private conversation; its plaintext is excluded from this document and repository.
+
+Public HTTPS verification passed new-key consent, PKCE authorization-code exchange, refresh exchange, nine-tool discovery, and authenticated owner/admin helper capability checks. All three Beta components were online. Production process IDs and protected-file hashes, along with the Beta domain and configuration, matched their pre-reset snapshots. The earlier credential-preservation statements describe deployment history; the approved reset in this section supersedes them for the current Beta credential generation.
