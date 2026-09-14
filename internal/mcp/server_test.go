@@ -68,7 +68,7 @@ func TestBuiltinToolsExposeExpectedAnnotations(t *testing.T) {
 		"terminal_sessions":  {ReadOnlyHint: true},
 		"filesystem_read":    {ReadOnlyHint: true},
 		"filesystem_write":   {DestructiveHint: true},
-		"desktop_observe":    {ReadOnlyHint: true},
+		"desktop_observe":    {DestructiveHint: true},
 		"desktop_control":    {DestructiveHint: true},
 		"device_status":      {ReadOnlyHint: true},
 		"device_permissions": {DestructiveHint: true},

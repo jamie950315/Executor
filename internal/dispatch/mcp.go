@@ -9,16 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jamie950315/executor/internal/agent"
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/mcp"
-	"github.com/jamie950315/executor/internal/terminal"
 )
 
 type Caller interface {
@@ -60,6 +57,15 @@ func NewMCP(broker, desktop Caller) *MCP {
 
 func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	switch call.Name {
+	case "terminal", "terminal_output", "terminal_sessions", "filesystem_read", "filesystem_write":
+		if raw, exists := call.Arguments["privilege"]; exists {
+			privilege, ok := raw.(string)
+			if !ok || (privilege != "owner" && privilege != "admin") {
+				return nil, errors.New("privilege must be owner or admin")
+			}
+		}
+	}
+	switch call.Name {
 	case "desktop_live":
 		input := make(map[string]any, len(call.Arguments))
 		for k, v := range call.Arguments {
@@ -82,47 +88,9 @@ func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	case "terminal":
 		return d.terminal(ctx, call.Arguments)
 	case "terminal_output":
-		sessionID, err := requiredString(call.Arguments, "sessionId")
-		if err != nil {
-			return nil, err
-		}
-		return d.call(ctx, d.privilegedCaller(call.Arguments), desktop.RPCMethodTerminalRead, desktop.RPCTerminalReadParams{
-			SessionID: sessionID,
-			Cursor:    integer(call.Arguments["cursor"]),
-		})
+		return d.terminalOutput(ctx, call.Arguments)
 	case "terminal_sessions":
-		action, err := requiredString(call.Arguments, "action")
-		if err != nil {
-			return nil, err
-		}
-		method, ok := map[string]string{"list": "terminal.list", "inspect": "terminal.inspect"}[action]
-		if !ok {
-			return nil, fmt.Errorf("unsupported terminal sessions action %q", action)
-		}
-		if action == "inspect" {
-			sessionID, err := requiredString(call.Arguments, "sessionId")
-			if err != nil {
-				return nil, err
-			}
-			listed, err := d.call(ctx, d.privilegedCaller(call.Arguments), desktop.RPCMethodTerminalList, struct{}{})
-			if err != nil {
-				return nil, err
-			}
-			for _, item := range anySlice(listed) {
-				entry, _ := item.(map[string]any)
-				session, _ := entry["Session"].(map[string]any)
-				id, _ := session["ID"].(string)
-				if id == "" {
-					session, _ = entry["session"].(map[string]any)
-					id, _ = session["id"].(string)
-				}
-				if id == sessionID {
-					return entry, nil
-				}
-			}
-			return nil, fmt.Errorf("terminal session %q not found", sessionID)
-		}
-		return d.call(ctx, d.privilegedCaller(call.Arguments), method, struct{}{})
+		return d.terminalSessions(ctx, call.Arguments)
 	case "filesystem_read":
 		return d.filesystemRead(ctx, call.Arguments)
 	case "filesystem_write":
@@ -138,221 +106,6 @@ func (d *MCP) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported Executor tool %q", call.Name)
 	}
-}
-
-func (d *MCP) terminal(ctx context.Context, arguments map[string]any) (any, error) {
-	action, err := requiredString(arguments, "action")
-	if err != nil {
-		return nil, err
-	}
-	method, ok := map[string]string{
-		"create": "terminal.start",
-		"write":  "terminal.write",
-		"signal": desktop.RPCMethodTerminalSignal,
-		"resize": desktop.RPCMethodTerminalResize,
-		"close":  "terminal.close",
-	}[action]
-	if !ok {
-		return nil, fmt.Errorf("unsupported terminal action %q", action)
-	}
-	caller := d.privilegedCaller(arguments)
-	switch action {
-	case "create":
-		command, _ := arguments["command"].(string)
-		initial := []byte(nil)
-		if command != "" {
-			initial = []byte(command + "\n")
-		}
-		environment := map[string]string{}
-		if raw, ok := arguments["environment"].(map[string]any); ok {
-			for key, value := range raw {
-				if text, ok := value.(string); ok {
-					environment[key] = text
-				}
-			}
-		}
-		columns := int(integer(arguments["columns"]))
-		rows := int(integer(arguments["rows"]))
-		if columns < 0 || rows < 0 || columns > terminal.MaxDimension || rows > terminal.MaxDimension {
-			return nil, fmt.Errorf("terminal dimensions must be between 1 and %d when provided", terminal.MaxDimension)
-		}
-		cwd, _ := arguments["cwd"].(string)
-		return d.call(ctx, caller, method, desktop.RPCTerminalStartParams{
-			Dir: cwd, Env: environment, InitialInput: initial,
-			Columns: columns, Rows: rows,
-		})
-	case "write":
-		sessionID, err := requiredString(arguments, "sessionId")
-		if err != nil {
-			return nil, err
-		}
-		input, _ := arguments["input"].(string)
-		return d.call(ctx, caller, method, desktop.RPCTerminalWriteParams{SessionID: sessionID, Input: []byte(input)})
-	case "signal":
-		sessionID, err := requiredString(arguments, "sessionId")
-		if err != nil {
-			return nil, err
-		}
-		signalName, err := requiredString(arguments, "signal")
-		if err != nil {
-			return nil, err
-		}
-		signal := terminal.Signal(signalName)
-		if signal != terminal.SignalInterrupt && signal != terminal.SignalTerminate && signal != terminal.SignalKill {
-			return nil, fmt.Errorf("unsupported terminal signal %q", signalName)
-		}
-		return d.call(ctx, caller, desktop.RPCMethodTerminalSignal, desktop.RPCTerminalSignalParams{SessionID: sessionID, Signal: signal})
-	case "resize":
-		sessionID, err := requiredString(arguments, "sessionId")
-		if err != nil {
-			return nil, err
-		}
-		columns := int(integer(arguments["columns"]))
-		rows := int(integer(arguments["rows"]))
-		if columns < 1 || rows < 1 || columns > terminal.MaxDimension || rows > terminal.MaxDimension {
-			return nil, fmt.Errorf("terminal resize requires columns and rows between 1 and %d", terminal.MaxDimension)
-		}
-		return d.call(ctx, caller, desktop.RPCMethodTerminalResize, desktop.RPCTerminalResizeParams{SessionID: sessionID, Columns: columns, Rows: rows})
-	case "close":
-		sessionID, err := requiredString(arguments, "sessionId")
-		if err != nil {
-			return nil, err
-		}
-		return d.call(ctx, caller, method, desktop.RPCSessionParams{SessionID: sessionID})
-	default:
-		return nil, fmt.Errorf("unsupported terminal action %q", action)
-	}
-}
-
-func (d *MCP) filesystemRead(ctx context.Context, arguments map[string]any) (any, error) {
-	action, err := requiredString(arguments, "action")
-	if err != nil {
-		return nil, err
-	}
-	method, ok := map[string]string{
-		"read_file":      "filesystem.read",
-		"read_directory": "filesystem.list",
-		"stat":           "filesystem.stat",
-	}[action]
-	if !ok {
-		return nil, fmt.Errorf("unsupported filesystem read action %q", action)
-	}
-	path, err := requiredString(arguments, "path")
-	if err != nil {
-		return nil, err
-	}
-	caller := d.privilegedCaller(arguments)
-	if action == "read_file" {
-		encoding, encoded, err := optionalFileEncoding(arguments)
-		if err != nil {
-			return nil, err
-		}
-		if caller == nil {
-			return nil, errors.New("Executor helper is unavailable")
-		}
-		var data []byte
-		if err := caller.Call(ctx, method, desktop.RPCFilesystemPathParams{Path: path}, &data); err != nil {
-			return nil, err
-		}
-		if !encoded {
-			return map[string]any{"content": string(data)}, nil
-		}
-		switch encoding {
-		case "utf8":
-			if !utf8.Valid(data) {
-				return nil, errors.New("file is not valid UTF-8")
-			}
-			return map[string]any{"content": string(data), "encoding": encoding, "size": len(data)}, nil
-		case "base64":
-			return map[string]any{
-				"content": base64.StdEncoding.EncodeToString(data), "encoding": encoding, "size": len(data),
-			}, nil
-		default:
-			return nil, errors.New("unsupported filesystem encoding")
-		}
-	}
-	return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
-}
-
-func (d *MCP) filesystemWrite(ctx context.Context, arguments map[string]any) (any, error) {
-	action, err := requiredString(arguments, "action")
-	if err != nil {
-		return nil, err
-	}
-	method, ok := map[string]string{
-		"write_file":  "filesystem.write",
-		"append_file": "filesystem.append",
-		"mkdir":       "filesystem.mkdir",
-		"move":        "filesystem.move",
-		"delete":      "filesystem.delete",
-	}[action]
-	if !ok {
-		return nil, fmt.Errorf("unsupported filesystem write action %q", action)
-	}
-	caller := d.privilegedCaller(arguments)
-	path, err := requiredString(arguments, "path")
-	if err != nil {
-		return nil, err
-	}
-	switch action {
-	case "write_file", "append_file":
-		content, ok := arguments["content"].(string)
-		if !ok {
-			return nil, errors.New("content must be a string")
-		}
-		data, encoding, encoded, err := decodeFileContent(arguments, content)
-		if err != nil {
-			return nil, err
-		}
-		result, err := d.call(ctx, caller, method, desktop.RPCFilesystemWriteParams{Path: path, Data: data, Perm: fs.FileMode(0o644)})
-		if err != nil {
-			return nil, err
-		}
-		if encoded {
-			return map[string]any{"encoding": encoding, "size": len(data)}, nil
-		}
-		return result, nil
-	case "move":
-		destination, err := requiredString(arguments, "destination")
-		if err != nil {
-			return nil, err
-		}
-		return d.call(ctx, caller, method, desktop.RPCFilesystemMoveParams{Src: path, Dst: destination})
-	case "delete":
-		return d.call(ctx, caller, method, desktop.RPCFilesystemPathParams{Path: path})
-	case "mkdir":
-		return d.call(ctx, caller, method, desktop.RPCFilesystemMkdirParams{Path: path, Perm: fs.FileMode(0o755)})
-	default:
-		return nil, fmt.Errorf("unsupported filesystem write action %q", action)
-	}
-}
-
-func optionalFileEncoding(arguments map[string]any) (string, bool, error) {
-	raw, exists := arguments["encoding"]
-	if !exists {
-		return "", false, nil
-	}
-	encoding, ok := raw.(string)
-	if !ok || (encoding != "utf8" && encoding != "base64") {
-		return "", false, errors.New("filesystem encoding must be utf8 or base64")
-	}
-	return encoding, true, nil
-}
-
-func decodeFileContent(arguments map[string]any, content string) ([]byte, string, bool, error) {
-	encoding, encoded, err := optionalFileEncoding(arguments)
-	if err != nil {
-		return nil, "", false, err
-	}
-	if !encoded || encoding == "utf8" {
-		return []byte(content), encoding, encoded, nil
-	}
-	data, err := base64.StdEncoding.Strict().DecodeString(content)
-	if err != nil || base64.StdEncoding.EncodeToString(data) != content {
-		clear(data)
-		return nil, "", false, errors.New("file content is not strict standard base64")
-	}
-	return data, encoding, true, nil
 }
 
 func (d *MCP) desktopObserve(ctx context.Context, sessionID string, arguments map[string]any) (any, error) {
@@ -689,13 +442,9 @@ func (d *MCP) deviceStatus(ctx context.Context, arguments map[string]any) (any, 
 	case "desktop":
 		return d.call(ctx, d.desktop, desktop.RPCMethodDeviceStatus, struct{}{})
 	case "terminals":
-		owner, ownerErr := d.call(ctx, d.desktop, "terminal.list", map[string]any{})
-		admin, adminErr := d.call(ctx, d.broker, "terminal.list", map[string]any{})
-		return map[string]any{"owner": owner, "admin": admin}, errors.Join(ownerErr, adminErr)
+		return diagnosticComponents(ctx, "terminal.list", diagnosticTarget{"owner", d.desktop}, diagnosticTarget{"admin", d.broker})
 	case "summary":
-		broker, brokerErr := d.call(ctx, d.broker, desktop.RPCMethodDeviceStatus, struct{}{})
-		desktop, desktopErr := d.call(ctx, d.desktop, desktop.RPCMethodDeviceStatus, struct{}{})
-		return map[string]any{"broker": broker, "desktop": desktop}, errors.Join(brokerErr, desktopErr)
+		return diagnosticComponents(ctx, desktop.RPCMethodDeviceStatus, diagnosticTarget{"broker", d.broker}, diagnosticTarget{"desktop", d.desktop})
 	default:
 		return nil, fmt.Errorf("unsupported device status action %q", action)
 	}
@@ -714,7 +463,11 @@ func (d *MCP) devicePermissions(ctx context.Context, arguments map[string]any) (
 	default:
 		return nil, fmt.Errorf("unsupported device permissions action %q", action)
 	}
-	return d.call(ctx, d.desktop, desktop.RPCMethodDesktopPermissions, desktop.RPCDesktopPermissionsParams{Request: request})
+	result, err := d.call(ctx, d.desktop, desktop.RPCMethodDesktopPermissions, desktop.RPCDesktopPermissionsParams{Request: request})
+	if err != nil {
+		return nil, err
+	}
+	return desktopPermissionResult(result)
 }
 
 func (d *MCP) privilegedCaller(arguments map[string]any) Caller {

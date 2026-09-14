@@ -7,9 +7,10 @@ The four existing production installations now run `pro-fix` commit
 used to avoid nested-worktree version stamping. The binaries report this exact
 revision with `vcs.modified=false`.
 
-Production rebuilds should select `pro-fix`. This rollout does not merge its
-implementation into `main`; the main checkout only receives the deployment
-handoff documentation.
+The deployed implementation and its verification records are now merged into
+`main`; use `main` for new production builds. This repository merge does not
+redeploy the devices or change the installed revision recorded above. The
+`pro-fix` branch and separate test installations remain preserved.
 
 Existing per-device URLs, configuration, OAuth/recovery/IPC credentials,
 enrollment, Cloudflare Tunnels and TURN settings were preserved. No Setup,

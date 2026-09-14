@@ -42,7 +42,7 @@ export function FilesPanel({ call }: PanelProps) {
     setStatus("Reading UTF-8 file…");
     setPreviewFailed(true);
     try {
-      const response = await call("filesystem_read", { action: "read_file", path: entry.path, privilege: "owner", encoding: "utf8" }, controller.signal);
+      const response = await readCompleteFile(call, entry.path, "utf8", controller.signal);
       if (controller.signal.aborted) return;
       const record = asRecord(response.result); if (typeof record?.content !== "string") throw new Error();
       setFilePath(entry.path); setContent(record.content); setPreviewFailed(false); setStatus(`${record.size ?? record.content.length} bytes · UTF-8`);
@@ -73,7 +73,7 @@ export function FilesPanel({ call }: PanelProps) {
   const download = async () => {
     if (!filePath) return;
     try {
-      const response = await call("filesystem_read", { action: "read_file", path: filePath, privilege: "owner", encoding: "base64" }, new AbortController().signal);
+      const response = await readCompleteFile(call, filePath, "base64", new AbortController().signal);
       const record = asRecord(response.result); if (typeof record?.content !== "string") throw new Error();
       const bytes = decodeStandardBase64(record.content); const blob = new Blob([Uint8Array.from(bytes).buffer]); bytes.fill(0);
       const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = basename(filePath); link.click(); URL.revokeObjectURL(url); setStatus(`${record.size ?? blob.size} bytes downloaded`);
@@ -110,3 +110,4 @@ function basename(path: string): string { return path.split(/[\\/]/u).filter(Boo
 function breadcrumbs(path: string): Array<{ label: string; path: string }> { if (/^[A-Za-z]:\\/u.test(path)) { const parts = path.split("\\").filter(Boolean); return parts.map((label, index) => ({ label, path: parts.slice(0, index + 1).join("\\") + (index === 0 ? "\\" : "") })); } const parts = path.split("/").filter(Boolean); return [{ label: "/", path: "/" }, ...parts.map((label, index) => ({ label, path: `/${parts.slice(0, index + 1).join("/")}` }))]; }
 function standardBase64(bytes: Uint8Array): string { let binary = ""; const block = 32_768; for (let offset = 0; offset < bytes.length; offset += block) binary += String.fromCharCode(...bytes.subarray(offset, offset + block)); return btoa(binary); }
 function decodeStandardBase64(value: string): Uint8Array { if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) throw new Error(); const binary = atob(value); if (btoa(binary) !== value) throw new Error(); return Uint8Array.from(binary, (character) => character.charCodeAt(0)); }
+import { readCompleteFile } from "../file-read";

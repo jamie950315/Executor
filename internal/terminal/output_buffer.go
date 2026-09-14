@@ -35,6 +35,10 @@ func (b *outputBuffer) Append(chunk []byte) {
 }
 
 func (b *outputBuffer) Read(cursor int64) OutputChunk {
+	return b.read(cursor, 0)
+}
+
+func (b *outputBuffer) read(cursor int64, limit int) OutputChunk {
 	if cursor < 0 {
 		cursor = 0
 	}
@@ -48,6 +52,9 @@ func (b *outputBuffer) Read(cursor int64) OutputChunk {
 	}
 
 	length := int(b.endCursor - cursor)
+	if limit > 0 {
+		length = min(length, limit)
+	}
 	data := make([]byte, length)
 	offset := int(cursor - b.startCursor)
 	index := (b.head + offset) % len(b.data)
@@ -55,9 +62,12 @@ func (b *outputBuffer) Read(cursor int64) OutputChunk {
 	copy(data[n:], b.data)
 
 	return OutputChunk{
-		Data:        data,
-		StartCursor: cursor,
-		NextCursor:  b.endCursor,
-		Truncated:   truncated,
+		Data:          data,
+		StartCursor:   cursor,
+		NextCursor:    cursor + int64(length),
+		Truncated:     truncated,
+		Encoding:      "base64",
+		ReturnedBytes: length,
+		HasMore:       cursor+int64(length) < b.endCursor,
 	}
 }

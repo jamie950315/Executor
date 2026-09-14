@@ -27,6 +27,9 @@ func newPTYLauncher() ptyLauncher {
 }
 
 func (windowsLauncher) Start(spec SessionSpec) (terminalProcess, error) {
+	if !usesTTY(spec) {
+		return nil, errors.New("TTY_MODE_UNSUPPORTED: tty=false currently requires macOS or Linux; Windows retains ConPTY sessions")
+	}
 	if !conpty.IsConPtyAvailable() {
 		return nil, errors.New("ConPTY requires Windows 10 version 1809 or Windows Server 2019 or newer")
 	}
@@ -99,8 +102,14 @@ func (p *conPTYProcess) Write(data []byte) (int, error) {
 }
 func (p *conPTYProcess) Resize(columns, rows int) error { return p.instance.Resize(columns, rows) }
 func (p *conPTYProcess) Wait() error {
-	_, err := p.instance.Wait(context.Background())
-	return err
+	code, err := p.instance.Wait(context.Background())
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return processExitError{code: int(code)}
+	}
+	return nil
 }
 func (p *conPTYProcess) CloseInput() error { return p.Kill() }
 func (p *conPTYProcess) Kill() error {
