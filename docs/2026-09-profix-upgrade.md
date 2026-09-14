@@ -95,10 +95,32 @@ The protected deployment record was backed up and only version/deployment
 bookkeeping changed; enrollment remains disabled. All four relays reconnected
 and reported fresh heartbeats.
 
-The fresh in-app Dashboard session reached the expected Cloudflare Access
-sign-in page. Authenticated Dashboard UI, live video and actual pointer/keyboard
-input were not revalidated in this rollout because that separate login was not
-available. This does not substitute for a logged-in page test.
+After the owner signed in, authenticated Dashboard follow-up verified:
+
+- All four devices remained unlocked and relay-connected after a full reload.
+- Each device's Terminal panel created a new session, displayed the intended
+  marker, and its Files panel read back the correct isolated test content.
+- The Mac Files editor reassembled a 180,026-byte Chinese fixture exactly;
+  five consecutive repeat reads passed. Saving the appended marker produced
+  exactly 180,032 bytes, independently verified on the host.
+- Mac automatic-mode live video and Windows private-relay-only live video
+  displayed their actual primary desktops with the 30 FPS setting selected.
+- Real live pointer and keyboard actions focused isolated text editors.
+  Chinese text reached the Mac editor exactly; Windows remote Ctrl+S saved
+  the exact 31-byte test string, independently verified through the host API.
+- Both live sessions were stopped and all four newly created terminal
+  sessions were closed. Test documents were retained; existing work and
+  credentials were not changed.
+- The matching Dashboard suite passed again: 247 tests, one platform-specific
+  skip, successful client build and Worker dry-run. No application code,
+  deployed artifacts, or service configuration changed in this follow-up.
+
+Initial reads intermittently received zero-byte relay bodies despite HTTP 200
+and successful host-side read events. The UI rejected these responses and
+disabled Save rather than exposing partial/empty editable content. No payload
+corruption was found; subsequent complete reads and saved content were exact.
+The transient cause could not be confirmed, and this observation is not
+recorded as a fixed bug or a guarantee of uninterrupted transport.
 
 Windows local stdio acceptance needs an administrator runner because the
 installed audit file is protected. The test still exercised both owner and
