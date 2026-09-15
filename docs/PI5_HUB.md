@@ -113,7 +113,7 @@ the registered Hub public key, not a browser-supplied replacement key, and
 validates the device certificate before updating the registry. Revocation leaves
 a versioned tombstone so a late older response cannot re-enable routing. A
 registry failure after a device action returns an unconfirmed outcome without
-automatic replay. The Dashboard management UI is still pending.
+automatic replay. The Dashboard management UI is implemented as described below.
 
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
 them to the originating MCP caller session, target device and owner/admin
@@ -158,6 +158,22 @@ to these owner endpoints. Worker tests cover these boundaries and late-response
 ordering after revocation.
 
 ## Agent runtime configuration
+
+The fleet page now has a collapsed **Manage Pi5 Hub** panel using the existing
+Dashboard design. It supports public-identity registration, Hub disable, and
+authorization/revocation for unlocked online devices. Mutations require a
+separate confirmation step; device generation changes invalidate a pending
+confirmation. Private-key registration JSON is rejected before transmission.
+Read failures and unconfirmed mutations do not trigger automatic operation
+retries. Unlocking for Hub management returns to the fleet rather than opening
+an unrelated device workspace.
+
+Component tests cover confirmation, generation changes, private-key rejection
+and no-retry errors. A local browser fixture verified confirmation/cancellation,
+focus restoration, updated authorization status, locked/offline controls and
+390px responsive layout without horizontal overflow. The fixture has no real
+device/network mutations and is not part of the production asset build. Live
+Dashboard owner operations still require deployment/provisioning acceptance.
 
 `hub_enabled: true` in a dedicated Agent configuration selects Hub-only dispatch.
 `executor agent --config <path>` retains the normal OAuth-protected HTTP MCP

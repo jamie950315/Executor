@@ -60,6 +60,9 @@ it("registers only an authenticated owner-provided public identity and token has
   expect((await request({ origin, "content-type": "application/json" })).status).toBe(401);
   expect((await request()).status).toBe(201);
   expect((await request()).status).toBe(200);
+  const links = await SELF.fetch(origin+"/api/hubs/pi5/devices",{headers});
+  expect(links.status).toBe(200);
+  expect(await links.json()).toEqual({devices:[]});
   const listed = await SELF.fetch(origin + "/api/hubs", { headers });
   expect(listed.status).toBe(200);
   const text = await listed.text();
