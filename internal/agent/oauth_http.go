@@ -107,7 +107,7 @@ func (h *oauthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/.well-known/oauth-protected-resource":
+	case r.Method == http.MethodGet && (r.URL.Path == "/.well-known/oauth-protected-resource" || r.URL.Path == "/.well-known/oauth-protected-resource/mcp"):
 		writeJSON(w, http.StatusOK, h.core.ProtectedResourceMetadata())
 	case r.Method == http.MethodGet && r.URL.Path == "/.well-known/oauth-authorization-server":
 		writeJSON(w, http.StatusOK, h.core.AuthorizationServerMetadata())

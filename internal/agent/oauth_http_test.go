@@ -82,7 +82,7 @@ func testOAuthHTTPFlow(t *testing.T, transportResource string) {
 		})
 	}
 
-	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"} {
+	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server"} {
 		res := httptest.NewRecorder()
 		h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
 		if res.Code != http.StatusOK || res.Header().Get("Content-Type") != "application/json" {
