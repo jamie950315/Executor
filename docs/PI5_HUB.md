@@ -159,6 +159,27 @@ ordering after revocation.
 
 ## Agent runtime configuration
 
+The CLI now provides dedicated, non-deploying initialization:
+
+```sh
+executor hub init --state-dir /absolute/dedicated/hub-state \
+  --hub-id pi5-hub --domain hub.example.com \
+  --dashboard-url https://dashboard.example.com --listen 127.0.0.1:28787
+executor hub registration --state-dir /absolute/dedicated/hub-state
+executor hub run --state-dir /absolute/dedicated/hub-state
+```
+
+Add `--resource-alias <exact-verified-Tunnel-resource>` when required for OAuth.
+Initialization creates its own protected signing/OAuth state and random machine
+token, and prints the one-time Hub recovery key for the owner. An AI running
+initialization must deliver that new key in the same private chat, including on
+a later partial-init error. The separate registration command outputs only the
+public key, Hub ID and machine-token hash for the Dashboard form.
+Repeated identical initialization preserves credentials; existing ordinary
+device state or mismatched configuration is refused. No service, Cloudflare
+route, Dashboard record or device permission is changed by initialization.
+`hub run` requires valid Hub state and does not fall back to a device runtime.
+
 The fleet page now has a collapsed **Manage Pi5 Hub** panel using the existing
 Dashboard design. It supports public-identity registration, Hub disable, and
 authorization/revocation for unlocked online devices. Mutations require a

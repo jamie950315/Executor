@@ -43,7 +43,7 @@ func LoadRouter(stateDir string, identity *relay.DeviceIdentity) (*Router, error
 		return nil, errors.New("invalid Hub configuration")
 	}
 	name := cfg.MachineTokenFile
-	if name == "" || filepath.IsAbs(name) || filepath.Clean(name) != name || name == "." || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+	if !validStateReference(name) {
 		return nil, errors.New("Hub token reference must remain inside Hub state")
 	}
 	token, err := readProtectedHubFile(root, name, 4096)
@@ -59,6 +59,10 @@ func LoadRouter(stateDir string, identity *relay.DeviceIdentity) (*Router, error
 		return nil, err
 	}
 	return New(signed), nil
+}
+
+func validStateReference(name string) bool {
+	return name != "" && !filepath.IsAbs(name) && filepath.VolumeName(name) == "" && filepath.Clean(name) == name && name != "." && name != ".." && !strings.HasPrefix(name, ".."+string(filepath.Separator))
 }
 
 func readProtectedHubFile(root *os.Root, name string, maximum int) ([]byte, error) {

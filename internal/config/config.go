@@ -242,6 +242,12 @@ func validateOAuthResourceAliases(aliases []string) error {
 	return nil
 }
 
+// ValidateOAuthResourceAliases supports initialization preflight before any
+// state directory or credentials are created.
+func ValidateOAuthResourceAliases(aliases []string) error {
+	return validateOAuthResourceAliases(aliases)
+}
+
 func migrateV1ToV2(cfg *Config) error {
 	if cfg == nil || cfg.Version != 1 {
 		return errors.New("invalid config migration")
