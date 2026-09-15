@@ -52,6 +52,14 @@ and browser/Hub token substitution. Execution still needs verified Hub request
 proof plus persisted delegation state; signing primitives are not enrollment
 or a complete authorization path.
 
+Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
+them to the originating MCP caller session, target device and owner/admin
+privilege. Cross-scope use is rejected before relay dispatch. Session listings
+only show that caller's bindings; inspect responses must match the requested
+remote ID. Confirmed close removes a binding, while an unconfirmed close retains
+it for explicit recovery. Bindings are in memory with a 2,048-entry cap; Hub
+restart recovery/persistence and device-side enforcement remain pending.
+
 Remaining implementation: machine-authenticated Dashboard API; device-side Hub
 proof/replay checks and delegated execution; protocol adapter wiring; device/caller-bound sessions and capture
 handling; Pi5 daemon/CLI integration; enrollment UX; isolated multi-device and

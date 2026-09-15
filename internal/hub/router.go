@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/jamie950315/executor/internal/mcp"
 )
@@ -31,9 +32,15 @@ type Relay interface {
 	Call(context.Context, string, mcp.ToolCall) (any, error)
 }
 
-type Router struct{ relay Relay }
+type Router struct {
+	relay    Relay
+	mu       sync.Mutex
+	sessions map[string]sessionBinding
+}
 
-func New(relay Relay) *Router { return &Router{relay: relay} }
+func New(relay Relay) *Router {
+	return &Router{relay: relay, sessions: make(map[string]sessionBinding)}
+}
 
 func Tools() []mcp.Tool {
 	tools := mcp.BuiltinTools()
@@ -107,6 +114,9 @@ func (r *Router) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	call.Arguments = arguments
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if call.Name == "terminal" || call.Name == "terminal_output" || call.Name == "terminal_sessions" {
+		return r.dispatchTerminal(ctx, id, call)
 	}
 	result, err := r.relay.Call(ctx, id, call)
 	if err != nil {
