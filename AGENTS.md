@@ -32,6 +32,12 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- `codex/pi5-hub` is the separate Pi5-only Hub implementation branch: one OpenAI
+  Tunnel client on Pi5, explicit per-call device routing through Dashboard relay,
+  and no direct-device fallback. `internal/hub` is currently an offline routing
+  core only; machine authorization, relay integration and live acceptance remain
+  pending. Existing deployments are unchanged. See `docs/PI5_HUB.md`.
+
 - Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
   `executor-openai-tunnel` runtime now forwards to authenticated Mac Beta HTTPS.
   Beta Agent `61aeb58` in `bundle-tunnel-csp` adds exact OAuth resource aliases
