@@ -20,8 +20,17 @@ func TestHubCallerScopeSeparatesOAuthClients(t *testing.T) {
 	if hubCallerScope("session", a) == hubCallerScope("session", b) {
 		t.Fatal("OAuth clients share Hub caller scope")
 	}
-	if hubCallerScope("session", a) == hubCallerScope("other-session", a) {
-		t.Fatal("MCP sessions share Hub caller scope")
+	if hubCallerScope("session", a) != hubCallerScope("other-session", a) {
+		t.Fatal("OAuth owner cannot resume across MCP transport sessions")
+	}
+	otherOwner := a
+	otherOwner.Subject = "another-owner"
+	if hubCallerScope("session", a) == hubCallerScope("session", otherOwner) {
+		t.Fatal("different OAuth subjects share Hub caller scope")
+	}
+	local := agent.Actor{Subject: "owner", Method: "stdio"}
+	if hubCallerScope("session", local) == hubCallerScope("other-session", local) {
+		t.Fatal("non-OAuth transports lost session isolation")
 	}
 }
 

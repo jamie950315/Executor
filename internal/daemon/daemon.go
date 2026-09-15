@@ -483,6 +483,12 @@ func runtimeMCPConfig(cfg config.Config, dispatcher mcp.Dispatcher) mcp.ServerCo
 }
 
 func hubCallerScope(session string, actor agent.Actor) string {
+	// OAuth transport sessions can change between tool calls. Ownership belongs
+	// to the authenticated subject and OAuth client, not that transport handle.
+	// Keep session isolation when no complete OAuth identity is available.
+	if actor.Method == "oauth" && actor.Subject != "" && actor.ClientID != "" {
+		session = ""
+	}
 	data, _ := json.Marshal([]string{"executor-hub-caller-v1", actor.Method, actor.Subject, actor.ClientID, session})
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
