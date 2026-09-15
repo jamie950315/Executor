@@ -52,6 +52,15 @@ and browser/Hub token substitution. Execution still needs verified Hub request
 proof plus persisted delegation state; signing primitives are not enrollment
 or a complete authorization path.
 
+Hub request proofs now bind the device, Hub, caller/session, request ID, method,
+exact input-byte hash and delegation-token hash with a domain-separated ES256
+signature. Proofs expire within 60 seconds and permit at most five seconds of
+future clock skew. Verification derives the Hub key ID from RFC 7638 canonical
+JWK members and rejects tampering before consuming a nonce. The replay-consumer
+contract requires atomic durable consumption before execution and fails closed
+when absent or unavailable. Tests use an isolated replay fixture; production
+replay persistence and device adapter integration are still pending.
+
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
 them to the originating MCP caller session, target device and owner/admin
 privilege. Cross-scope use is rejected before relay dispatch. Session listings
