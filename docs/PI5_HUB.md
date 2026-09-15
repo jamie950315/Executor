@@ -56,7 +56,8 @@ paths `/api/hub/devices` and `/api/hub/devices/{id}/call`. It removes cookie-jar
 authentication, rejects redirects, bounds request/response bodies and uses an
 explicit machine bearer credential. Its real-loopback HTTP tests verify target
 selection and credential/redirect boundaries. The corresponding Worker API is
-not implemented yet; the adapter alone grants no device authority.
+implemented in the Worker source as described below; the adapter alone grants
+no device authority.
 
 Device-signed Hub delegations use the distinct `executor-hub-grant+jwt` type,
 binding device ID, Hub ID/key ID, device generation, delegation version and
@@ -102,7 +103,24 @@ remote ID. Confirmed close removes a binding, while an unconfirmed close retains
 it for explicit recovery. Bindings are in memory with a 2,048-entry cap; Hub
 restart recovery/persistence and device-side enforcement remain pending.
 
-Remaining implementation: machine-authenticated Dashboard Worker API; device/caller-bound sessions and capture
+The Worker machine API now has independent `hubs` and `hub_devices` registry
+tables (migration 0003). It stores machine-token hashes and delegation metadata,
+not recovery keys or bearer tokens. Each directory/call authenticates the Hub
+anew. Calls require an active, current-generation device link and a valid
+device-signed Hub grant matching its delegation revision. Only signature-bearing
+proof envelopes bound to the authenticated Hub and requested device are relayed;
+the device remains responsible for verifying the request proof and replay state.
+No browser cookies or public device URLs are used. Existing browser APIs remain
+unchanged. Ordinary calls retain 10-second relay deadlines; interactive Hub
+desktop/permission calls inherit their existing 120-second class.
+
+Worker tests exercise machine revocation, wrong targets, signed-grant checking,
+precise routing and stale delegation rejection using test D1 and a relay stub.
+Full Dashboard tests/checks and dry-run build pass. No migration was applied to
+a deployed database. Public deployment still requires an explicitly scoped
+machine-API Access route and an owner-approved registration/provisioning flow.
+
+Remaining implementation: machine-API deployment/provisioning; device/caller-bound sessions and capture
 handling; Pi5 daemon/CLI integration; enrollment UX; isolated multi-device and
 real ChatGPT read/write acceptance. No live deployment or permission changes
 have been performed for this branch.

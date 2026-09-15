@@ -625,6 +625,17 @@ export class DeviceRelay extends DurableObject<Env> {
 }
 
 function relayTimeoutForRequest(envelope: RelayEnvelope<"request">): number {
+  if (envelope.payload.method === "hub.call") {
+    const proof = envelope.payload.arguments;
+    if (typeof proof === "object" && proof !== null && !Array.isArray(proof)) {
+      const request = (proof as Record<string, unknown>).request;
+      if (typeof request === "object" && request !== null && !Array.isArray(request)) {
+        const method = (request as Record<string, unknown>).method;
+        if (method === "desktop_control" || method === "device_permissions") return longRunningRelayTimeoutMilliseconds;
+      }
+    }
+    return relayTimeoutMilliseconds;
+  }
   switch (envelope.payload.method) {
     case "control.rotate":
     case "control.kill":

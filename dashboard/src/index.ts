@@ -1,4 +1,5 @@
 import { verifyAccess } from "./access";
+import { handleHubRoute } from "./hub";
 import { handleControlRoute, matchControlRoute } from "./control";
 import { enrollDevice, getDevice, listDevices, writeAudit, type EnrollmentInput } from "./db";
 import { browserIdentity, errorResponse, jsonResponse, readBoundedJSON, rejectCrossOrigin, requireStateChangingRequest } from "./http";
@@ -25,6 +26,8 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     return crossOrigin;
   }
   const url = new URL(request.url);
+
+  if (url.pathname.startsWith("/api/hub/")) return handleHubRoute(request, env);
 
   if (request.method === "POST" && url.pathname === "/api/device/enroll") {
     return handleEnrollment(request, env);

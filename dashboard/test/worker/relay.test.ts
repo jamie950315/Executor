@@ -460,16 +460,16 @@ describe("DeviceRelay WebSocket", () => {
     clientSocket.close(1000, "test complete");
   });
 
-  it.each(["desktop_control", "desktop_live", "device_permissions", "control.permissions"])(
-    "keeps interactive %s requests pending beyond the ordinary relay deadline",
+  it.each(["desktop_control", "desktop_live", "device_permissions", "control.permissions", "hub:desktop_control", "hub:device_permissions", "hub:filesystem_read"])(
+    "uses the expected relay deadline for %s",
     async (method) => {
       await enroll();
       const clientSocket = await connectAuthenticated();
       const stub = env.DEVICE_RELAY.getByName("device-vector-1");
       const request = makeEnvelope("request", `message-${method}-deadline`, {
         request_id: `request-${method}-deadline`,
-        method,
-        arguments: {},
+        method: method.startsWith("hub:") ? "hub.call" : method,
+        arguments: method.startsWith("hub:") ? { request: { method: method.slice(4) } } : {},
       });
 
       await runInDurableObject(stub, async (instance: DeviceRelay) => {
@@ -479,7 +479,7 @@ describe("DeviceRelay WebSocket", () => {
           if (!result.ok) {
             throw new Error(`unexpected relay failure: ${result.error}`);
           }
-          expect(setTimeoutSpy.mock.calls.at(-1)?.[1]).toBe(120_000);
+          expect(setTimeoutSpy.mock.calls.at(-1)?.[1]).toBe(method === "hub:filesystem_read" ? 10_000 : 120_000);
           await result.stream.cancel("test complete");
         } finally {
           setTimeoutSpy.mockRestore();
