@@ -7,14 +7,19 @@ read/write, grant/request verification, cross-process replay persistence and
 owner delegation/revocation. The source `b3a93e2` Linux binary hash is
 `bc94fb69f69babc8f0cfef7fbac4cce82d6f1e5a3827cd07ebef840cb02f395e`,
 staged at `/home/jamie/.local/share/executor-hub-pilot/bin/b3a93e2/executor`.
-No Pi5 Hub services or real pilot credentials have been created yet; existing
-Executor services remain active.
+Dedicated `hub-state` and `device-state` directories have now been initialized
+under `/home/jamie/.local/share/executor-hub-pilot`. Hub ID is `pi5-hub-pilot`;
+the relay-only device ID is `device-UxpNgpolb3JbvZGWjAHJsbSqlqyZ5xQV`. New recovery
+keys are delivered only in the owner's private chat, not this repository.
+No Pi5 Hub/pilot services have been started; existing Executor services remain active.
 
 The isolated Beta Dashboard has migration 0003 and Worker version
 `9e4d801f-7600-45ba-b26d-18e3de79f2f8`. Its authenticated public UI displays
 the existing Mac Beta and empty Hub registry. Access/enrollment rejection
-checks pass. Native Mac Beta relay upgrade, machine-API edge routing, Hub
-initialization and physical ChatGPT multi-device acceptance remain pending.
+checks pass. Mac Beta relay source `52a6b91` and the scoped machine-API Access
+route are installed; native state/credential preservation checks pass.
+Pi5 service startup, public Hub routing, owner registration/delegation and
+physical ChatGPT multi-device acceptance remain pending.
 This is not completion of the Pi5 Hub goal. See `BETA_DASHBOARD.md` for rollback.
 
 ## Approved direction
