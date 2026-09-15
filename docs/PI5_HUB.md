@@ -61,6 +61,15 @@ contract requires atomic durable consumption before execution and fails closed
 when absent or unavailable. Tests use an isolated replay fixture; production
 replay persistence and device adapter integration are still pending.
 
+`FileReplayStore` now provides a dedicated protected local nonce directory with
+cross-process locking, exclusive record creation, write-through/file sync,
+bounded capacity and expiry pruning. It stores only hashed nonce IDs and expiry
+times, never request contents or credentials. Reopen and six-process contention
+tests pass on macOS; corrupted state and symlink entries fail closed. Windows
+uses file locking/write-through and inherits its protected state-parent ACL;
+native Windows and power-loss behavior remain unverified. Device adapter wiring
+is still pending; no production request path uses this store yet.
+
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
 them to the originating MCP caller session, target device and owner/admin
 privilege. Cross-scope use is rejected before relay dispatch. Session listings
