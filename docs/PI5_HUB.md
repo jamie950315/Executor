@@ -11,14 +11,29 @@ Dedicated `hub-state` and `device-state` directories have now been initialized
 under `/home/jamie/.local/share/executor-hub-pilot`. Hub ID is `pi5-hub-pilot`;
 the relay-only device ID is `device-UxpNgpolb3JbvZGWjAHJsbSqlqyZ5xQV`. New recovery
 keys are delivered only in the owner's private chat, not this repository.
-No Pi5 Hub/pilot services have been started; existing Executor services remain active.
+Pi5 transient services `executor-hub-pilot`, `executor-relay-pilot-broker`,
+`executor-relay-pilot-desktop` and `executor-relay-pilot-dashboard` are active.
+They use only the dedicated pilot states; the existing Executor service PIDs
+remain unchanged. These transient units are not yet a reboot-persistent install.
 
 The isolated Beta Dashboard has migration 0003 and Worker version
 `9e4d801f-7600-45ba-b26d-18e3de79f2f8`. Its authenticated public UI displays
 the existing Mac Beta and empty Hub registry. Access/enrollment rejection
 checks pass. Mac Beta relay source `52a6b91` and the scoped machine-API Access
 route are installed; native state/credential preservation checks pass.
-Pi5 service startup, public Hub routing, owner registration/delegation and
+The Hub is reachable at `https://beta-executor-hub-pi5.0ruka.dev/mcp`; public
+OAuth metadata passes and unauthenticated MCP returns 401. Pi5's existing
+Cloudflare tunnel configuration advanced from version 2 to 3 with only the new
+Hub ingress added; its original service route remains intact. The new DNS record
+is `5efa95a6360a1db3d561ba1a8725883c`.
+
+Official Linux arm64 tunnel-client 0.0.14 is installed under the pilot directory
+and its archive SHA-256 matches the official formula:
+`2de3fb879a18edb847e0313592c912f1983685488290a7fdba7ac403e6a4fb0a`.
+It reports revision `0f870e50a973fa820d4c409000059e181e8d242b` but has not been
+connected yet. The existing Mac Executor Tunnel client remains active until a
+controlled handoff; do not run both against the same Tunnel ID.
+Owner registration/delegation, relay-only device enrollment, Tunnel handoff and
 physical ChatGPT multi-device acceptance remain pending.
 This is not completion of the Pi5 Hub goal. See `BETA_DASHBOARD.md` for rollback.
 

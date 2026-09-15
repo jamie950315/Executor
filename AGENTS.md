@@ -39,10 +39,12 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   Two isolated native-helper read/write tests and local Hub management UI checks
   pass, including native Pi5 tests. Beta Dashboard now runs Hub pilot Worker
   `9e4d801f-7600-45ba-b26d-18e3de79f2f8` with migration 0003; the Pi5 binary is
-  staged and dedicated Hub/relay-only state is initialized, without starting Pi5
-  pilot services. Mac Beta Dashboard/relay uses `bundle-hub-52a6b91`; the scoped
-  machine Access route is installed. Service startup, registration and ChatGPT
-  Hub acceptance remain pending. Production is unchanged.
+  staged and dedicated Hub/relay-only transient services are active on Pi5.
+  The new public Hub hostname passes OAuth metadata/401 checks; the official
+  Linux tunnel client is installed but not connected. Mac Beta Dashboard/relay
+  uses `bundle-hub-52a6b91`; the scoped machine Access route is installed.
+  Enrollment, registration, Tunnel handoff and ChatGPT Hub acceptance remain
+  pending. Original service PIDs and routing are preserved.
   See `docs/PI5_HUB.md` and `docs/BETA_DASHBOARD.md`.
 
 - Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
