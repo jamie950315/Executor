@@ -247,6 +247,8 @@ function validText(value: unknown, maximum: number): value is string {
 }
 
 function validMCPURL(value: string): boolean {
+  // Explicitly empty means an authenticated relay-only device, not a fallback URL.
+  if (value === "") return true;
   if (value.length > 2048) {
     return false;
   }

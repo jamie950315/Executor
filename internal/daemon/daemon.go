@@ -112,6 +112,9 @@ func RunAgent(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.RelayOnly {
+		return errors.New("relay-only devices do not expose an HTTP MCP Agent")
+	}
 	if cfg.AgentAddress == "" {
 		return errors.New("agent address is required")
 	}

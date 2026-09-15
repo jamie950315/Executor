@@ -76,6 +76,12 @@ describe("dashboard HTTP control plane", () => {
     expect(count?.count).toBe(0);
   });
 
+  it("accepts an explicitly relay-only device without a public MCP URL", async () => {
+    const response = await enrollRequest({...deviceFixture(),mcp_url:""},enrollmentToken);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({device:{mcp_url:"",state:"offline"}});
+  });
+
   it("keeps newer device metadata during stale enrollment retries and rejects replacement keys", async () => {
     expect((await enrollRequest(deviceFixture(), enrollmentToken)).status).toBe(201);
 

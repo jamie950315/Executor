@@ -180,6 +180,24 @@ device state or mismatched configuration is refused. No service, Cloudflare
 route, Dashboard record or device permission is changed by initialization.
 `hub run` requires valid Hub state and does not fall back to a device runtime.
 
+New private devices can use `executor relay-device init --state-dir <dedicated>
+--listen 127.0.0.1:29788`. This creates separate helper/relay state and a one-time
+owner recovery key, with no public hostname, Agent listener, Cloudflare tunnel
+or OpenAI tunnel client. Enrollment explicitly sends an empty `mcp_url`; the
+Dashboard labels this as relay-only while retaining signed enrollment checks.
+Run only its scoped Broker/Desktop/Dashboard components. Generic remote
+Kill/Rotate/Resume is unavailable for this mode until instance-specific service
+ownership is provisioned, preventing it from touching production service labels.
+Hub and relay-only device modes cannot be combined in one state directory.
+
+Read-only deployment preflight confirmed the Pi5 is aarch64, its existing
+Executor services are active, SSH and administrator access are available, and
+the proposed Hub port 28787 was unused. The existing Beta Dashboard deployment
+matches its documented resource identity; Wrangler and the Cloudflare connector
+can read the owning account. No runtime or cloud resource was changed by this
+preflight. Use the Beta-only Dashboard configuration, never the generic
+production deployment defaults.
+
 The fleet page now has a collapsed **Manage Pi5 Hub** panel using the existing
 Dashboard design. It supports public-identity registration, Hub disable, and
 authorization/revocation for unlocked online devices. Mutations require a

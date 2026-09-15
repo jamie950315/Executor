@@ -204,9 +204,13 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 	if err != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "Executor Device"
 	}
+	mcpURL := configuredMCPURL(cfg.Domain)
+	if cfg.RelayOnly {
+		mcpURL = ""
+	}
 	body, err := json.Marshal(enrollmentRequest{
 		DeviceID: cfg.UnifiedDashboard.DeviceID, Name: hostname, Platform: runtime.GOOS, Arch: runtime.GOARCH,
-		Version: options.ExecutorVersion, MCPURL: configuredMCPURL(cfg.Domain), PublicJWK: identity.PublicJWK(),
+		Version: options.ExecutorVersion, MCPURL: mcpURL, PublicJWK: identity.PublicJWK(),
 		Generation: values.Generation,
 	})
 	if err != nil {

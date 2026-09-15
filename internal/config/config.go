@@ -23,6 +23,7 @@ type Config struct {
 	Domain               string                   `json:"domain,omitempty"`
 	OAuthResourceAliases []string                 `json:"oauth_resource_aliases,omitempty"`
 	HubEnabled           bool                     `json:"hub_enabled,omitempty"`
+	RelayOnly            bool                     `json:"relay_only,omitempty"`
 	AgentAddress         string                   `json:"agent_address"`
 	DashboardAddress     string                   `json:"dashboard_address"`
 	BrokerEndpoint       string                   `json:"broker_endpoint"`
@@ -136,6 +137,9 @@ func loadUnlocked(path string) (Config, error) {
 	if err := validateOAuthResourceAliases(cfg.OAuthResourceAliases); err != nil {
 		return Config{}, err
 	}
+	if cfg.HubEnabled && cfg.RelayOnly {
+		return Config{}, errors.New("Hub and relay-only device modes are mutually exclusive")
+	}
 	if needsSave {
 		if err := saveUnlocked(path, cfg); err != nil {
 			return Config{}, fmt.Errorf("save migrated config: %w", err)
@@ -157,6 +161,9 @@ func Save(path string, cfg Config) error {
 }
 
 func saveUnlocked(path string, cfg Config) error {
+	if cfg.HubEnabled && cfg.RelayOnly {
+		return errors.New("Hub and relay-only device modes are mutually exclusive")
+	}
 	if err := validateOAuthResourceAliases(cfg.OAuthResourceAliases); err != nil {
 		return err
 	}

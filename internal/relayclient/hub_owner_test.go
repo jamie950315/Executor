@@ -3,6 +3,7 @@ package relayclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,26 @@ import (
 	"github.com/jamie950315/executor/internal/relay"
 	"github.com/jamie950315/executor/internal/secrets"
 )
+
+func TestRelayOnlyDeviceDoesNotInvokeGenericHostLifecycle(t *testing.T) {
+	path, cfg, values := relayFixture(t)
+	cfg.RelayOnly = true
+	cfg.Domain = ""
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0)
+	called := false
+	adapter, err := NewAdapter(AdapterOptions{ConfigPath: path, Now: func() time.Time { return now }, LifecycleFactory: func(string) (Lifecycle, error) { called = true; return nil, errors.New("unexpected lifecycle") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signGrantForTest(t, values, cfg, "owner", "browser", now)
+	_, err = adapter.HandleRequest(context.Background(), "kill", "control.kill", callArgumentsForTest(t, grant, "owner", "browser", map[string]any{}))
+	if err == nil || called {
+		t.Fatal("relay-only device invoked generic service lifecycle")
+	}
+}
 
 func TestOwnerCanDelegateAndRevokeHubWithoutRecoveryKeyStorage(t *testing.T) {
 	path, cfg, values := relayFixture(t)
