@@ -106,8 +106,12 @@ holding the delegation-state lock, and increment a persistent delegation
 revision. Delegation signs a Hub-key-bound certificate; revocation disables the
 local approval immediately. Device approval state contains public keys/revisions
 only, not recovery keys or grants. Atomic writes preserve Unix ownership and use
-Windows write-through replacement. The Dashboard registration UI and automatic
-registry update following these owner actions are still pending.
+Windows write-through replacement. The Worker now prepares these actions from
+the registered Hub public key, not a browser-supplied replacement key, and
+validates the device certificate before updating the registry. Revocation leaves
+a versioned tombstone so a late older response cannot re-enable routing. A
+registry failure after a device action returns an unconfirmed outcome without
+automatic replay. The Dashboard management UI is still pending.
 
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
 them to the originating MCP caller session, target device and owner/admin
@@ -134,6 +138,14 @@ precise routing and stale delegation rejection using test D1 and a relay stub.
 Full Dashboard tests/checks and dry-run build pass. No migration was applied to
 a deployed database. Public deployment still requires an explicitly scoped
 machine-API Access route and an owner-approved registration/provisioning flow.
+
+Owner registry endpoints `/api/hubs` and `/api/hubs/{id}/disable` require the
+verified Cloudflare Access identity; mutations additionally require same-origin
+JSON. Registration accepts only a public P-256 JWK and machine token hash.
+Existing IDs cannot be rebound to another key/hash, and replaying registration
+does not re-enable a disabled Hub. No machine private key or bearer token is sent
+to these owner endpoints. Worker tests cover these boundaries and late-response
+ordering after revocation.
 
 ## Agent runtime configuration
 

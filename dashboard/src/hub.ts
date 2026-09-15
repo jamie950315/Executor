@@ -72,7 +72,7 @@ export async function handleHubRoute(request: Request, env: Env): Promise<Respon
   return response;
 }
 
-async function validDelegation(device: DeviceRecord, hubID: string, link: HubLink, token: string, now: number): Promise<boolean> {
+export async function validDelegation(device: DeviceRecord, hubID: string, link: HubLink, token: string, now: number, expectedKeyID?: string, expectedExpiry?: number): Promise<boolean> {
   try {
     const key = await importJWK(device.public_jwk, "ES256");
     const verified = await compactVerify(token, key, { algorithms: ["ES256"] });
@@ -81,6 +81,7 @@ async function validDelegation(device: DeviceRecord, hubID: string, link: HubLin
     const issued = claims.issued_at, expires = claims.expires_at;
     return claims.version === 1 && claims.device_id === device.device_id && claims.hub_id === hubID &&
       claims.generation === device.generation && claims.delegation_version === link.delegation_version &&
+      (expectedKeyID === undefined || claims.hub_key_id === expectedKeyID) && (expectedExpiry === undefined || claims.expires_at === expectedExpiry) &&
       typeof claims.hub_key_id === "string" && /^[0-9a-f]{64}$/.test(claims.hub_key_id) && text(claims.jti, 256) &&
       typeof issued === "number" && typeof expires === "number" && Number.isSafeInteger(issued) && Number.isSafeInteger(expires) &&
       issued > 0 && expires > issued && expires - issued <= 30 * 86400 && issued <= Math.floor(now / 1000) + 120 && expires > Math.floor(now / 1000);

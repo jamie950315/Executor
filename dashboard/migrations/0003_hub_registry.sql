@@ -1,6 +1,7 @@
 CREATE TABLE hubs (
   hub_id TEXT PRIMARY KEY NOT NULL,
   token_hash TEXT UNIQUE NOT NULL CHECK (length(token_hash) = 64),
+  public_jwk TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
 );
 
