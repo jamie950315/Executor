@@ -86,11 +86,13 @@ native Windows and power-loss behavior remain unverified. The source device
 adapter now consumes this store for `hub.call`; no installed device has been
 upgraded or granted Hub authority yet.
 
-One macOS race-suite run reported a child replay-store initialization failure
-before execution. Fifty isolated multiprocess repeats and three subsequent
-related race-suite runs passed. Initialization now reports stage/syscall metadata
-without paths or request data; the transient cause is not established. Do not
-describe that isolated failure as fixed or infer a replay-acceptance failure.
+The macOS initialization failure was later captured as lock-open ENOENT while
+the nonce directory still existed. Lock initialization now uses an exclusive
+creator followed by a separate, identity-checked existing-file opener, rather
+than concurrent ordinary O_CREATE. Thirty multiprocess repeats and three related
+race-suite runs pass after this change. Stage/syscall diagnostics remain; the
+underlying filesystem behavior is not asserted beyond that observed boundary.
+The failure occurred before execution, not as acceptance of a replayed request.
 
 The device adapter reads owner-provisioned `hub-delegations.json` public-key
 approvals from its protected state directory. It checks the signed inner/outer

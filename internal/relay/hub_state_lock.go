@@ -22,7 +22,7 @@ func WithHubStateLock(directory string, action func() error) error {
 	} else if err != nil && !os.IsNotExist(err) {
 		return ErrReplayStorage
 	}
-	file, err := root.OpenFile(".hub-delegations.lock", os.O_CREATE|os.O_RDWR|os.O_SYNC, 0600)
+	file, err := openHubLockFile(root, ".hub-delegations.lock")
 	if err != nil {
 		return ErrReplayStorage
 	}

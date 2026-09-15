@@ -178,3 +178,28 @@ func TestFileReplayRejectsUnsafeDirectoryAndSymlinkEntry(t *testing.T) {
 		t.Fatal("symlink entry accepted")
 	}
 }
+
+func TestHubLockExclusiveCreatePreservesExistingFile(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	file, err := openHubLockFile(root, ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("sentinel"); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	file, err = openHubLockFile(root, ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data := make([]byte, 8)
+	if _, err := file.Read(data); err != nil || string(data) != "sentinel" {
+		t.Fatal("existing lock was truncated or replaced")
+	}
+}

@@ -51,12 +51,42 @@ func NewFileReplayStore(directory string, now func() time.Time) (*FileReplayStor
 		root.Close()
 		return nil, replayInitError("lock-stat", err)
 	}
-	lock, err := root.OpenFile(".lock", os.O_RDWR|os.O_CREATE|os.O_SYNC, 0600)
+	lock, err := openHubLockFile(root, ".lock")
 	if err != nil {
 		root.Close()
 		return nil, replayInitError("lock-open", err)
 	}
 	return &FileReplayStore{root: root, lock: lock, now: now}, nil
+}
+
+// Use an exclusive creator and a separate existing-file opener. This avoids
+// concurrent O_CREATE resolution on a just-created directory entry while
+// retaining rooted access and refusing symbolic-link lock files.
+func openHubLockFile(root *os.Root, name string) (*os.File, error) {
+	file, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_SYNC, 0600)
+	if err == nil {
+		return file, nil
+	}
+	if !os.IsExist(err) {
+		return nil, err
+	}
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrReplayStorage
+	}
+	file, err = root.OpenFile(name, os.O_RDWR|os.O_SYNC, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		file.Close()
+		return nil, ErrReplayStorage
+	}
+	return file, nil
 }
 
 func replayInitError(stage string, err error) error {
