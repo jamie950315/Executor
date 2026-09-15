@@ -179,6 +179,10 @@ func RunAgent(ctx context.Context, configPath string) error {
 			http.Error(writer, "Executor is disabled", http.StatusServiceUnavailable)
 			return
 		}
+		if request.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+			oauthHandler.ServeHTTP(writer, request)
+			return
+		}
 		if request.URL.Path == "/mcp" || strings.HasSuffix(request.URL.Path, "/mcp") {
 			protectedMCP.ServeHTTP(writer, request)
 			return

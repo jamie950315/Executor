@@ -74,6 +74,11 @@ func TestHubRuntimeUsesMachineDirectoryWithoutLocalHelpers(t *testing.T) {
 	if metadata.StatusCode != http.StatusOK {
 		t.Fatal("Hub OAuth metadata unavailable")
 	}
+	scoped := waitForHTTP(t, http.MethodGet, "http://"+cfg.AgentAddress+"/.well-known/oauth-protected-resource/mcp", nil, nil)
+	scoped.Body.Close()
+	if scoped.StatusCode != http.StatusOK {
+		t.Fatalf("MCP-scoped metadata routed incorrectly: %d", scoped.StatusCode)
+	}
 	unauthorized := waitForHTTP(t, http.MethodGet, "http://"+cfg.AgentAddress+"/mcp", nil, nil)
 	unauthorized.Body.Close()
 	if unauthorized.StatusCode != http.StatusUnauthorized {
