@@ -28,51 +28,61 @@ type HubApprovalFile struct {
 }
 
 func readHubApproval(stateDir, deviceID, hubID string) (HubApproval, error) {
+	var file HubApprovalFile
+	err := relay.WithHubStateLock(stateDir, func() error { var err error; file, err = readHubApprovals(stateDir, deviceID, false); return err })
+	if err != nil {
+		return HubApproval{}, err
+	}
+	for _, entry := range file.Hubs {
+		if entry.HubID == hubID && entry.Enabled {
+			return entry, nil
+		}
+	}
+	return HubApproval{}, ErrRequestUnauthorized
+}
+
+func readHubApprovals(stateDir, deviceID string, allowMissing bool) (HubApprovalFile, error) {
 	root, err := os.OpenRoot(stateDir)
 	if err != nil {
-		return HubApproval{}, ErrRequestUnauthorized
+		return HubApprovalFile{}, ErrRequestUnauthorized
 	}
 	defer root.Close()
 	info, err := root.Lstat("hub-delegations.json")
+	if os.IsNotExist(err) && allowMissing {
+		return HubApprovalFile{Version: relay.ProtocolVersion, DeviceID: deviceID, Hubs: []HubApproval{}}, nil
+	}
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 || runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
-		return HubApproval{}, ErrRequestUnauthorized
+		return HubApprovalFile{}, ErrRequestUnauthorized
 	}
 	file, err := root.Open("hub-delegations.json")
 	if err != nil {
-		return HubApproval{}, ErrRequestUnauthorized
+		return HubApprovalFile{}, ErrRequestUnauthorized
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil || !os.SameFile(info, opened) {
-		return HubApproval{}, ErrRequestUnauthorized
+		return HubApprovalFile{}, ErrRequestUnauthorized
 	}
 	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
-		return HubApproval{}, ErrRequestUnauthorized
+		return HubApprovalFile{}, ErrRequestUnauthorized
 	}
 	var approvals HubApprovalFile
 	if decodeStrictJSON(data, &approvals) != nil || approvals.Version != relay.ProtocolVersion || approvals.DeviceID != deviceID || len(approvals.Hubs) > 64 {
-		return HubApproval{}, ErrRequestUnauthorized
+		return HubApprovalFile{}, ErrRequestUnauthorized
 	}
 	seen := map[string]bool{}
-	var matched *HubApproval
 	for i := range approvals.Hubs {
 		entry := &approvals.Hubs[i]
 		if strings.TrimSpace(entry.HubID) == "" || len(entry.HubID) > 256 || seen[entry.HubID] || entry.DelegationVersion == 0 {
-			return HubApproval{}, ErrRequestUnauthorized
+			return HubApprovalFile{}, ErrRequestUnauthorized
 		}
 		if _, err := relay.HubKeyID(entry.PublicKey); err != nil {
-			return HubApproval{}, ErrRequestUnauthorized
+			return HubApprovalFile{}, ErrRequestUnauthorized
 		}
 		seen[entry.HubID] = true
-		if entry.HubID == hubID {
-			matched = entry
-		}
 	}
-	if matched == nil || !matched.Enabled {
-		return HubApproval{}, ErrRequestUnauthorized
-	}
-	return *matched, nil
+	return approvals, nil
 }
 
 func (a *Adapter) handleHubRequest(ctx context.Context, requestID string, raw json.RawMessage) (HandleResult, error) {

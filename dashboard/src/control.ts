@@ -35,6 +35,8 @@ const allowedControlMethods = new Set([
   "control.rotate",
   "control.kill",
   "control.resume",
+  "hub.delegate",
+  "hub.revoke",
 ]);
 
 export function isAllowedControlMethod(method: string): boolean { return allowedControlMethods.has(method); }

@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,8 @@ func TestFileReplayChildHelper(t *testing.T) {
 	}
 	store, err := NewFileReplayStore(dir, time.Now)
 	if err != nil {
+		info, statErr := os.Stat(dir)
+		fmt.Fprintf(os.Stderr, "initialization failed: %v; directory=%v stat_error=%v\n", err, info, statErr)
 		os.Exit(2)
 	}
 	err = store.Consume(strings.Repeat("e", 64), time.Now().Add(time.Minute))
@@ -32,20 +36,22 @@ func TestFileReplayChildHelper(t *testing.T) {
 func TestFileReplayAcrossProcesses(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "replay")
 	commands := make([]*exec.Cmd, 6)
+	outputs := make([]bytes.Buffer, len(commands))
 	for i := range commands {
 		commands[i] = exec.Command(os.Args[0], "-test.run=^TestFileReplayChildHelper$")
 		commands[i].Env = append(os.Environ(), "EXECUTOR_REPLAY_TEST_DIR="+dir)
+		commands[i].Stderr = &outputs[i]
 		if err := commands[i].Start(); err != nil {
 			t.Fatal(err)
 		}
 	}
 	winners := 0
-	for _, cmd := range commands {
+	for i, cmd := range commands {
 		err := cmd.Wait()
 		if err == nil {
 			winners++
 		} else if cmd.ProcessState.ExitCode() != 3 {
-			t.Fatalf("child store failed: %v", err)
+			t.Errorf("child store failed: %v; %s", err, outputs[i].String())
 		}
 	}
 	if winners != 1 {

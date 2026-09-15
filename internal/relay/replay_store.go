@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -30,32 +31,41 @@ func NewFileReplayStore(directory string, now func() time.Time) (*FileReplayStor
 		now = time.Now
 	}
 	if err := os.Mkdir(directory, 0700); err != nil && !os.IsExist(err) {
-		return nil, ErrReplayStorage
+		return nil, replayInitError("mkdir", err)
 	}
 	info, err := os.Lstat(directory)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, ErrReplayStorage
+		return nil, replayInitError("directory-type", err)
 	}
 	if !privateReplayDirectory(info) {
-		return nil, ErrReplayStorage
+		return nil, replayInitError("directory-mode", nil)
 	}
 	root, err := os.OpenRoot(directory)
 	if err != nil {
-		return nil, ErrReplayStorage
+		return nil, replayInitError("open-root", err)
 	}
 	if info, err := root.Lstat(".lock"); err == nil && !info.Mode().IsRegular() {
 		root.Close()
-		return nil, ErrReplayStorage
+		return nil, replayInitError("lock-type", nil)
 	} else if err != nil && !os.IsNotExist(err) {
 		root.Close()
-		return nil, ErrReplayStorage
+		return nil, replayInitError("lock-stat", err)
 	}
 	lock, err := root.OpenFile(".lock", os.O_RDWR|os.O_CREATE|os.O_SYNC, 0600)
 	if err != nil {
 		root.Close()
-		return nil, ErrReplayStorage
+		return nil, replayInitError("lock-open", err)
 	}
 	return &FileReplayStore{root: root, lock: lock, now: now}, nil
+}
+
+func replayInitError(stage string, err error) error {
+	// Report a syscall reason without leaking local paths or request data.
+	var pathError *os.PathError
+	if errors.As(err, &pathError) {
+		err = pathError.Err
+	}
+	return fmt.Errorf("%w: %s (%v)", ErrReplayStorage, stage, err)
 }
 
 func validReplayKey(key string) bool {

@@ -100,6 +100,7 @@ var hostToolMethods = map[string]struct{}{
 }
 
 var lifecycleMethods = map[string]struct{}{
+	"hub.delegate": {}, "hub.revoke": {},
 	"control.status": {}, "control.audit": {}, "control.permissions": {}, "control.rotate": {},
 	"control.kill": {}, "control.resume": {},
 }
@@ -256,6 +257,9 @@ func (a *Adapter) handleLifecycle(ctx context.Context, requestID, method string,
 	if disabled(filepath.Join(call.config.StateDir, "disabled")) {
 		a.appendAudit(call.config, actor, method, "disabled")
 		return HandleResult{}, ErrExecutorDisabled
+	}
+	if method == "hub.delegate" || method == "hub.revoke" {
+		return a.handleHubOwner(ctx, method, call, actor)
 	}
 	lifecycle, err := a.lifecycleFactory(a.configPath)
 	if err != nil {

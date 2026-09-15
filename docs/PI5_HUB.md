@@ -86,6 +86,12 @@ native Windows and power-loss behavior remain unverified. The source device
 adapter now consumes this store for `hub.call`; no installed device has been
 upgraded or granted Hub authority yet.
 
+One macOS race-suite run reported a child replay-store initialization failure
+before execution. Fifty isolated multiprocess repeats and three subsequent
+related race-suite runs passed. Initialization now reports stage/syscall metadata
+without paths or request data; the transient cause is not established. Do not
+describe that isolated failure as fixed or infer a replay-acceptance failure.
+
 The device adapter reads owner-provisioned `hub-delegations.json` public-key
 approvals from its protected state directory. It checks the signed inner/outer
 request ID, approved Hub key, current device generation/delegation revision,
@@ -94,7 +100,14 @@ mutable approval/generation/disabled state. Missing approval files deny Hub
 requests by default; browser grants cannot reach this execution path. Tests
 verify approved execution, revocation, disabled-device rejection and rejection
 of replay after rebuilding the adapter. Owner-facing approval issuance is still
-pending; tests provision only disposable fixture state.
+implemented at the device relay layer as `hub.delegate` and `hub.revoke`.
+These owner actions use the existing unlocked browser grant, revalidate it while
+holding the delegation-state lock, and increment a persistent delegation
+revision. Delegation signs a Hub-key-bound certificate; revocation disables the
+local approval immediately. Device approval state contains public keys/revisions
+only, not recovery keys or grants. Atomic writes preserve Unix ownership and use
+Windows write-through replacement. The Dashboard registration UI and automatic
+registry update following these owner actions are still pending.
 
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
 them to the originating MCP caller session, target device and owner/admin
