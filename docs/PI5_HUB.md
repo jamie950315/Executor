@@ -58,8 +58,8 @@ signature. Proofs expire within 60 seconds and permit at most five seconds of
 future clock skew. Verification derives the Hub key ID from RFC 7638 canonical
 JWK members and rejects tampering before consuming a nonce. The replay-consumer
 contract requires atomic durable consumption before execution and fails closed
-when absent or unavailable. Tests use an isolated replay fixture; production
-replay persistence and device adapter integration are still pending.
+when absent or unavailable. Cryptographic tests use an isolated replay fixture;
+the device adapter integration below uses the file-backed store.
 
 `FileReplayStore` now provides a dedicated protected local nonce directory with
 cross-process locking, exclusive record creation, write-through/file sync,
@@ -67,8 +67,19 @@ bounded capacity and expiry pruning. It stores only hashed nonce IDs and expiry
 times, never request contents or credentials. Reopen and six-process contention
 tests pass on macOS; corrupted state and symlink entries fail closed. Windows
 uses file locking/write-through and inherits its protected state-parent ACL;
-native Windows and power-loss behavior remain unverified. Device adapter wiring
-is still pending; no production request path uses this store yet.
+native Windows and power-loss behavior remain unverified. The source device
+adapter now consumes this store for `hub.call`; no installed device has been
+upgraded or granted Hub authority yet.
+
+The device adapter reads owner-provisioned `hub-delegations.json` public-key
+approvals from its protected state directory. It checks the signed inner/outer
+request ID, approved Hub key, current device generation/delegation revision,
+request proof, expiry and persisted nonce before dispatch. It then rechecks
+mutable approval/generation/disabled state. Missing approval files deny Hub
+requests by default; browser grants cannot reach this execution path. Tests
+verify approved execution, revocation, disabled-device rejection and rejection
+of replay after rebuilding the adapter. Owner-facing approval issuance is still
+pending; tests provision only disposable fixture state.
 
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
 them to the originating MCP caller session, target device and owner/admin
@@ -78,8 +89,8 @@ remote ID. Confirmed close removes a binding, while an unconfirmed close retains
 it for explicit recovery. Bindings are in memory with a 2,048-entry cap; Hub
 restart recovery/persistence and device-side enforcement remain pending.
 
-Remaining implementation: machine-authenticated Dashboard API; device-side Hub
-proof/replay checks and delegated execution; protocol adapter wiring; device/caller-bound sessions and capture
+Remaining implementation: machine-authenticated Dashboard API; signed Hub client
+and protocol adapter wiring; device/caller-bound sessions and capture
 handling; Pi5 daemon/CLI integration; enrollment UX; isolated multi-device and
 real ChatGPT read/write acceptance. No live deployment or permission changes
 have been performed for this branch.

@@ -132,6 +132,9 @@ func (a *Adapter) HandleRequest(ctx context.Context, requestID, method string, a
 	if ctx == nil || requestID == "" || method == "" {
 		return HandleResult{}, ErrRequestInvalid
 	}
+	if method == "hub.call" {
+		return a.handleHubRequest(ctx, requestID, arguments)
+	}
 	call, err := a.verifyCall(arguments)
 	if err != nil {
 		return HandleResult{}, err
