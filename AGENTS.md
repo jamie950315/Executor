@@ -33,12 +33,13 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 ## Current status
 
 - Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
-  `executor-openai-tunnel` runtime forwards to the existing authenticated Mac
-  canonical HTTPS endpoint without changing installed OAuth or production services.
-  Branch-only `oauth_resource_aliases` adds explicit equivalent transport resource
-  names; isolated HTTP OAuth and regression tests pass. ChatGPT app/DCR and
-  transport registration pass, but installed-server authorization and write
-  acceptance remain pending. See `docs/OPENAI_TUNNEL.md`.
+  `executor-openai-tunnel` runtime now forwards to authenticated Mac Beta HTTPS.
+  Beta Agent `61aeb58` in `bundle-tunnel-csp` adds exact OAuth resource aliases
+  and validated callback-origin CSP support. Credentials and production services
+  are preserved. `Executor Tunnel Beta` completes OAuth and real ChatGPT AI
+  create/read/overwrite/append and cross-page/binary acceptance.
+  Other Beta roles keep `bundle-ec5f53d`; the dedicated stop helper validates
+  these mixed paths. See `docs/OPENAI_TUNNEL.md` for evidence and rollback.
 
 - Main now integrates the Beta-verified relay result validation, first-byte HTTP guard, persistent UI diagnostics and four-target Mac Beta maintenance helper. Installed production versions must be verified separately; merging does not deploy or rotate credentials. Beta-specific maintenance scripts remain scoped to the separate Mac Beta installation and must not manage production service labels.
 

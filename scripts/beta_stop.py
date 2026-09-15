@@ -51,7 +51,7 @@ def checked_read(path, owner=None):
 
 def expected_argv(role):
     relative = 'Executor Desktop.app/Contents/MacOS/executor-desktop' if role == 'desktop' else 'executor'
-    bundle = 'bundle-tunnel-1cc79b1' if role == 'agent' else 'bundle-ec5f53d'
+    bundle = 'bundle-tunnel-csp' if role == 'agent' else 'bundle-ec5f53d'
     return [str(BASE / bundle / relative), role, '--config', str(STATE / 'config.json')]
 
 def validate():

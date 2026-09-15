@@ -1,5 +1,58 @@
 # OpenAI Secure MCP Tunnel
 
+## Current accepted route — 2026-09-15
+
+The **Executor Tunnel Beta** ChatGPT app now connects through
+`executor-openai-tunnel` to `https://beta-executor-mac.0ruka.dev/mcp`.
+Beta Agent source `61aeb58` is installed in `bundle-tunnel-csp`, executable
+SHA-256 `b29e5e7da9f55a4e5981e4f30ca8c54dcad93ded186b9787b59f540615447cb4`.
+Only the Agent was restarted. Broker/Desktop/Dashboard retain their old bundle;
+Beta credentials, production hashes/PIDs and Cloudflare routes are preserved.
+
+OAuth and nine-tool discovery now pass in ChatGPT. Two fixes are required:
+exact operator-configured transport resource aliases, and consent-page CSP
+allowing the already-validated callback origin after the POST redirect.
+Neither OAuth nor write annotations were disabled. The app retains its default
+approval policy. The older **Executor Tunnel** app remains unlinked; use the
+Beta app instead.
+
+The ChatGPT AI itself completed creation, read-back, overwrite, modification,
+append and complete final read-back in this conversation:
+https://chatgpt.com/c/6aa911c9-b578-83e8-a86a-194d451bae89
+
+Independent local verification confirms the expected final three-line UTF-8
+file is 71 bytes, SHA-256
+`8bdccabe98d2a3cca21fab72a07ebc4ec46dbdcc671aa917bfa43d01a8a8e423`.
+Metadata audit independently records the successful reads/writes. Cross-page
+and binary acceptance also pass in the same conversation, using only
+disposable data under `/tmp/executor-tunnel-chatgpt.if56Fl`.
+
+The AI read a 70,000-byte file in 65,536 + 4,464-byte pages, appended a 20-byte
+UTF-8 tail, and read the exact tail back. Independent local verification confirms
+70,020 bytes and SHA-256 `9e647184cd080d8c3636c904115db628a97657f6c3527ab9e6ed7369fe7228d8`.
+Binary bytes `00 01 02 03 fe ff` also match exactly after MCP base64 round-trip.
+The AI reported two extra calls on an already-closed session; those correctly
+returned not-found. The corrected lifecycle follow-up completed with zero errors:
+create, read exact `tunnel-lifecycle-ok` output, inspect exit code 0, then close
+once. The AI's full final reply was received before concluding acceptance.
+
+Full Go tests, focused race tests, vet, native build, six cross-builds and
+50 Python tests pass. Final post-acceptance inventory confirms production
+files and PIDs remain unchanged, the deployed binary matches its recorded
+hash, and all four Beta services pass the dedicated stop helper's read-only check.
+The runtime remains locally supervised rather than a boot service; reboot
+durability is not verified. It still depends on the existing public Beta HTTPS
+route, rather than a fully private OAuth-server deployment.
+
+Beta's installed `stop.py --check` validates the mixed bundle paths.
+Administrator-only `scripts/beta_csp_upgrade.py --rollback` restores the
+alias-only Agent; then `scripts/beta_tunnel_upgrade.py --rollback` restores
+the original Agent/configuration. They refuse independently changed files.
+Backups are retained under Beta's `deployment-backups/tunnel-agent-*`.
+A live rollback was not exercised. Do not use production lifecycle commands.
+
+## Historical pre-deployment notes (superseded by current status above)
+
 This optional transport uses the official `tunnel-client` with Executor's
 existing authenticated HTTPS or loopback HTTP endpoint. It does not bypass ChatGPT
 permissions, relabel writes as reads, or replace Executor OAuth.
