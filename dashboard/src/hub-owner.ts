@@ -2,8 +2,10 @@ import { importJWK } from "jose";
 import type { DeviceRecord } from "./db";
 import { registeredHub, type RegisteredHub } from "./hub-admin";
 import { validDelegation } from "./hub";
-import { jsonResponse, readBoundedJSON } from "./http";
+import { jsonResponse } from "./http";
 import { sha256Hex } from "./shared/crypto";
+import { parseCallResponse } from "./shared/relay-reader";
+import { canonicalEnvelope, makeEnvelope } from "./shared/wire";
 
 export interface HubOwnerAction { hub: RegisteredHub; method: "hub.delegate" | "hub.revoke"; input: Record<string,unknown>; keyID: string }
 
@@ -24,9 +26,11 @@ export async function prepareHubOwner(db: D1Database, method: "hub.delegate"|"hu
 
 export async function finalizeHubOwner(request: Request, response: Response, env: Env, device: DeviceRecord, action: HubOwnerAction, requestID: string): Promise<Response> {
   if (!response.ok) return response;
-  const uncertain = () => jsonResponse({ error:"Hub owner action could not be fully confirmed",outcome:"unconfirmed",request_id:requestID },502);
+  const uncertain = () => jsonResponse({ error:"Hub owner action could not be fully confirmed",outcome:"unconfirmed",request_id:requestID },502,new Headers({"x-executor-request-id":requestID,"x-executor-relay-error":"hub_owner_unconfirmed"}));
   try {
-    const raw = await readBoundedJSON(new Request(request.url,{ method:"POST",body:response.body }),65536);
+    const parsed = await parseCallResponse(response,{maximumBytes:65536,maximumLineBytes:65536});
+    if (parsed.requestID !== requestID) return uncertain();
+    const raw = parsed.result;
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return uncertain();
     const result = raw as Record<string,unknown>;
     const enabled = action.method === "hub.delegate";
@@ -45,6 +49,7 @@ export async function finalizeHubOwner(request: Request, response: Response, env
       WHERE excluded.device_generation>hub_devices.device_generation OR (excluded.device_generation=hub_devices.device_generation AND excluded.delegation_version>=hub_devices.delegation_version)`)
       .bind(action.hub.hub_id,device.device_id,device.generation,version,expires,grant,action.hub.hub_id,action.hub.public_jwk,action.hub.token_hash,enabled?1:0,device.device_id,device.generation).run();
     if (saved.meta.changes !== 1) return uncertain();
-    return jsonResponse({ hub_id:action.hub.hub_id,device_id:device.device_id,enabled,delegation_version:version,expires_at:expires });
+    const resultEnvelope = makeEnvelope("response",crypto.randomUUID(),{request_id:requestID,result:{hub_id:action.hub.hub_id,device_id:device.device_id,enabled,delegation_version:version,expires_at:expires}});
+    return new Response(canonicalEnvelope(resultEnvelope)+"\n",{headers:{"content-type":"application/x-ndjson; charset=utf-8","cache-control":"no-store","x-executor-request-id":requestID}});
   } catch { return uncertain(); }
 }

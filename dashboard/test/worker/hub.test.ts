@@ -2,6 +2,7 @@ import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeEach, expect, inject, it } from "vitest";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { handleHubRoute } from "../../src/hub";
+import { canonicalEnvelope, makeEnvelope } from "../../src/shared/wire";
 
 const token = "hub-test-" + "a".repeat(64);
 const origin = "https://dashboard.example";
@@ -38,7 +39,7 @@ it("does not accept browser control envelopes or unknown targets", async () => {
   expect(response.status).toBe(403);
 });
 
-it("routes only a delegated signed envelope to the exact device, without cookies or fallback", async () => {
+it.each(["response","chunks","wrong-id","truncated"])("handles real relay wire format: %s", async (mode) => {
   const keys = await generateKeyPair("ES256", { extractable: true });
   const publicKey = await exportJWK(keys.publicKey);
   const now = Date.now(), seconds = Math.floor(now / 1000);
@@ -57,11 +58,22 @@ it("routes only a delegated signed envelope to the exact device, without cookies
     return { relayStream(envelope: { payload: { request_id: string; method: string; arguments: unknown } }) {
       calls++;
       expect(envelope.payload).toEqual({ request_id: "request", method: "hub.call", arguments: proof });
-      return { ok: true, stream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode('{"ok":true}')); c.close(); } }) };
+      const frames = mode === "chunks" || mode === "truncated"
+        ? [makeEnvelope("stream_chunk",crypto.randomUUID(),{request_id:"request",sequence:0,data:btoa('{"ok":'),final:false}),
+          ...(mode === "chunks" ? [makeEnvelope("stream_chunk",crypto.randomUUID(),{request_id:"request",sequence:1,data:btoa('true}'),final:true})] : [])]
+        : [makeEnvelope("response",crypto.randomUUID(),{request_id:mode === "wrong-id" ? "another-request" : "request",result:{ok:true}})];
+      const wire = frames.map(frame => canonicalEnvelope(frame)+"\n").join("");
+      return { ok: true, stream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(wire)); c.close(); } }) };
     } };
   } } } as unknown as Env;
   const request = () => new Request(origin + "/api/hub/devices/mac/call", { method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" }, body: JSON.stringify(proof) });
   const response = await handleHubRoute(request(), fixtureEnv);
+  if (mode === "wrong-id" || mode === "truncated") {
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({outcome:"unconfirmed"});
+    expect(calls).toBe(1);
+    return;
+  }
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ ok: true });
   expect(calls).toBe(1);

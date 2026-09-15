@@ -4,8 +4,11 @@ import { beforeEach, expect, inject, it } from "vitest";
 import { finalizeHubOwner, prepareHubOwner } from "../../src/hub-owner";
 import { getDevice } from "../../src/db";
 import { sha256Hex } from "../../src/shared/crypto";
+import { canonicalEnvelope, makeEnvelope } from "../../src/shared/wire";
+import { parseCallResponse } from "../../src/shared/relay-reader";
 
 const origin = "https://dashboard.example";
+function deviceResponse(id: string,result: unknown) { return new Response(canonicalEnvelope(makeEnvelope("response",crypto.randomUUID(),{request_id:id,result}))+"\n",{headers:{"content-type":"application/x-ndjson"}}); }
 beforeEach(async () => {
   await applyD1Migrations(env.DB, inject("migrations"));
   await env.DB.prepare("DELETE FROM hub_devices").run();
@@ -30,10 +33,15 @@ it("persists validated device delegation and retains revocation against late res
   const grant = await new SignJWT({version:1,device_id:"mac",hub_id:"pi5",hub_key_id:keyID,generation:1,delegation_version:1,issued_at:seconds,expires_at:seconds+3600,jti:"fixture"}).setProtectedHeader({alg:"ES256",typ:"executor-hub-grant+jwt",version:1}).sign(devicePair.privateKey);
   const output = {hub_id:"pi5",device_id:"mac",generation:1,delegation_version:1,enabled:true,grant,expires_at:seconds+3600};
   const request = new Request(origin+"/api/devices/mac/call");
-  expect((await finalizeHubOwner(request,Response.json(output),env,device!,action,"approve")).status).toBe(200);
+  const finalized = await finalizeHubOwner(request,deviceResponse("approve",output),env,device!,action,"approve");
+  expect(finalized.status).toBe(200);
+  const decoded = await parseCallResponse(finalized);
+  expect(decoded.requestID).toBe("approve");
+  expect(decoded.result).toMatchObject({hub_id:"pi5",device_id:"mac",enabled:true});
+  expect(decoded.result).not.toHaveProperty("grant");
   const revoke = await prepareHubOwner(env.DB,"hub.revoke",{hub_id:"pi5"});
-  expect((await finalizeHubOwner(request,Response.json({hub_id:"pi5",device_id:"mac",generation:1,delegation_version:2,enabled:false}),env,device!,revoke,"revoke")).status).toBe(200);
-  expect((await finalizeHubOwner(request,Response.json(output),env,device!,action,"late")).status).toBe(502);
+  expect((await finalizeHubOwner(request,deviceResponse("revoke",{hub_id:"pi5",device_id:"mac",generation:1,delegation_version:2,enabled:false}),env,device!,revoke,"revoke")).status).toBe(200);
+  expect((await finalizeHubOwner(request,deviceResponse("late",output),env,device!,action,"late")).status).toBe(502);
   expect(await env.DB.prepare("SELECT delegation_version,grant,expires_at FROM hub_devices WHERE hub_id='pi5' AND device_id='mac'").first()).toEqual({delegation_version:2,grant:"",expires_at:0});
 });
 

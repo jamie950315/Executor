@@ -5,6 +5,7 @@ import { MAXIMUM_RELAY_MESSAGE_BYTES } from "./limits";
 import { relayHTTPResponse } from "./relay-response";
 import { sha256Hex } from "./shared/crypto";
 import { makeEnvelope } from "./shared/wire";
+import { parseCallResponse } from "./shared/relay-reader";
 
 interface HubLink { device_id: string; device_generation: number; delegation_version: number; expires_at: number; grant: string }
 const methods = new Set(["filesystem_read", "filesystem_write", "terminal", "terminal_output", "terminal_sessions", "device_status", "device_permissions", "desktop_observe", "desktop_control"]);
@@ -67,7 +68,16 @@ export async function handleHubRoute(request: Request, env: Env): Promise<Respon
   const envelope = makeEnvelope("request", crypto.randomUUID(), { request_id: requestID, method: "hub.call", arguments: proof });
   const relayed = await env.DEVICE_RELAY.getByName(deviceID).relayStream(envelope);
   if (!relayed.ok) return jsonResponse({ error: "Hub relay unavailable", outcome: "unconfirmed", request_id: requestID }, relayed.error === "message_too_large" ? 413 : 503);
-  const response = await relayHTTPResponse(relayed.stream, requestID, request.signal);
+  let response = await relayHTTPResponse(relayed.stream, requestID, request.signal);
+  if (response.ok) {
+    try {
+      const parsed = await parseCallResponse(response);
+      if (parsed.requestID !== requestID) throw new Error("response mismatch");
+      response = jsonResponse(parsed.result,200,new Headers({"x-executor-request-id":requestID}));
+    } catch {
+      response = jsonResponse({error:"Hub relay response unconfirmed",outcome:"unconfirmed",request_id:requestID},502);
+    }
+  }
   await writeAudit(env.DB, deviceID, "hub:" + hubID, body.method as string, response.status === 200 ? "forwarded" : "unconfirmed", now);
   return response;
 }

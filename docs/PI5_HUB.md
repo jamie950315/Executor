@@ -141,6 +141,14 @@ Full Dashboard tests/checks and dry-run build pass. No migration was applied to
 a deployed database. Public deployment still requires an explicitly scoped
 machine-API Access route and an owner-approved registration/provisioning flow.
 
+Real relay responses are NDJSON envelopes, not plain JSON. The Worker and browser
+now share the same bounded reader for response/chunk validation, sequence checks,
+request correlation and complete EOF. The machine API unwraps a fully verified
+result to JSON; owner actions re-emit a correlated NDJSON result for the existing
+Dashboard client. Tests now use actual response and stream-chunk envelopes and
+reject mismatched IDs or truncated streams. Earlier plain-JSON relay stubs did
+not cover this integration boundary and are no longer used for those tests.
+
 Owner registry endpoints `/api/hubs` and `/api/hubs/{id}/disable` require the
 verified Cloudflare Access identity; mutations additionally require same-origin
 JSON. Registration accepts only a public P-256 JWK and machine token hash.
