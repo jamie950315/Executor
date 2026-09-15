@@ -1,5 +1,29 @@
 # Isolated Mac Beta Dashboard
 
+## Current deployment — Pi5 Hub pilot (2026-09-15)
+
+The Beta Worker now runs source `b3a93e2`, version
+`9e4d801f-7600-45ba-b26d-18e3de79f2f8`, deployment
+`49646077-83ed-49e0-a9d1-16ceef00ea9e`. Only Beta D1 migration
+`0003_hub_registry.sql` was added; existing device tables and the same D1/DO
+bindings remain. The Beta-only config uses `keep_vars` and preserves secret
+bindings. The previous Worker version `530fafe6-3806-4b9c-8ccf-36ef586238a2`
+is the code rollback point; the additive Hub tables can remain after rollback.
+
+Public verification confirms Access redirects unauthenticated page requests,
+enrollment rejects a valid-origin request without a token with 401, and the
+authenticated browser shows the existing unlocked Mac Beta plus the new Hub
+manager with zero registered Hubs. No Hub/device permissions were granted.
+The Mac Beta relay binary has not yet been upgraded for Hub calls; machine-API
+Access routing and Pi5 Hub provisioning are still pending.
+
+Prepared artifacts and config are under
+`/Users/jamie/Library/Application Support/Executor Beta/dashboard-hub-b3a93e2`.
+Do not use generic production deployment defaults. Production resources were
+not targeted by this rollout. See `PI5_HUB.md` for the ongoing pilot.
+
+## Previous deployment record
+
 ## Current deployment
 
 The Beta at https://beta-executor-dashboard.0ruka.dev uses UI revision `b5d6b29` from `codex/beta-relay-error-ui`, based on `b39d818`. The original verified `b39d818` Worker program is unchanged; only client assets changed. No production deployment was performed.

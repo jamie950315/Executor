@@ -1,5 +1,22 @@
 # Pi5-only Executor Hub
 
+## Pilot deployment status
+
+Pi5 native aarch64 tests passed for isolated two-helper signed HTTP/IPC file
+read/write, grant/request verification, cross-process replay persistence and
+owner delegation/revocation. The source `b3a93e2` Linux binary hash is
+`bc94fb69f69babc8f0cfef7fbac4cce82d6f1e5a3827cd07ebef840cb02f395e`,
+staged at `/home/jamie/.local/share/executor-hub-pilot/bin/b3a93e2/executor`.
+No Pi5 Hub services or real pilot credentials have been created yet; existing
+Executor services remain active.
+
+The isolated Beta Dashboard has migration 0003 and Worker version
+`9e4d801f-7600-45ba-b26d-18e3de79f2f8`. Its authenticated public UI displays
+the existing Mac Beta and empty Hub registry. Access/enrollment rejection
+checks pass. Native Mac Beta relay upgrade, machine-API edge routing, Hub
+initialization and physical ChatGPT multi-device acceptance remain pending.
+This is not completion of the Pi5 Hub goal. See `BETA_DASHBOARD.md` for rollback.
+
 ## Approved direction
 
 Branch `codex/pi5-hub` explores a single Pi5 MCP gateway. Only Pi5 runs the
@@ -137,8 +154,8 @@ desktop/permission calls inherit their existing 120-second class.
 
 Worker tests exercise machine revocation, wrong targets, signed-grant checking,
 precise routing and stale delegation rejection using test D1 and a relay stub.
-Full Dashboard tests/checks and dry-run build pass. No migration was applied to
-a deployed database. Public deployment still requires an explicitly scoped
+Full Dashboard tests/checks and dry-run build pass. Migration 0003 is now applied
+only to the Beta database. Public machine access still requires an explicitly scoped
 machine-API Access route and an owner-approved registration/provisioning flow.
 
 Real relay responses are NDJSON envelopes, not plain JSON. The Worker and browser

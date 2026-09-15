@@ -37,8 +37,11 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   and no direct-device fallback. Source now includes an OAuth-protected Hub Agent,
   signed machine API, device-side proof/replay checks and owner delegation actions.
   Two isolated native-helper read/write tests and local Hub management UI checks
-  pass. Provisioning, physical Pi5 deployment and ChatGPT Hub acceptance remain pending; existing
-  deployments are unchanged. See `docs/PI5_HUB.md`.
+  pass, including native Pi5 tests. Beta Dashboard now runs Hub pilot Worker
+  `9e4d801f-7600-45ba-b26d-18e3de79f2f8` with migration 0003; the Pi5 binary is
+  staged but no Hub runtime has been initialized. Mac Beta relay upgrade,
+  provisioning and ChatGPT Hub acceptance remain pending. Production is unchanged.
+  See `docs/PI5_HUB.md` and `docs/BETA_DASHBOARD.md`.
 
 - Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
   `executor-openai-tunnel` runtime now forwards to authenticated Mac Beta HTTPS.
