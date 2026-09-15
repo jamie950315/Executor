@@ -38,8 +38,22 @@ tests for explicit selection, missing/unknown/offline/unauthorized devices,
 fresh directory lookup, no retry and truthful write annotations.
 It is not wired into a daemon or exposed to ChatGPT yet.
 
+The Hub-side Dashboard HTTP adapter now targets only the fixed machine API
+paths `/api/hub/devices` and `/api/hub/devices/{id}/call`. It removes cookie-jar
+authentication, rejects redirects, bounds request/response bodies and uses an
+explicit machine bearer credential. Its real-loopback HTTP tests verify target
+selection and credential/redirect boundaries. The corresponding Worker API is
+not implemented yet; the adapter alone grants no device authority.
+
+Device-signed Hub delegations use the distinct `executor-hub-grant+jwt` type,
+binding device ID, Hub ID/key ID, device generation, delegation version and
+expiry. Tests reject wrong Hub/device/key, stale generations, expired grants
+and browser/Hub token substitution. Execution still needs verified Hub request
+proof plus persisted delegation state; signing primitives are not enrollment
+or a complete authorization path.
+
 Remaining implementation: machine-authenticated Dashboard API; device-side Hub
-delegation validation; protocol adapter; device/caller-bound sessions and capture
+proof/replay checks and delegated execution; protocol adapter wiring; device/caller-bound sessions and capture
 handling; Pi5 daemon/CLI integration; enrollment UX; isolated multi-device and
 real ChatGPT read/write acceptance. No live deployment or permission changes
 have been performed for this branch.
