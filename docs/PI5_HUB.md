@@ -38,6 +38,19 @@ tests for explicit selection, missing/unknown/offline/unauthorized devices,
 fresh directory lookup, no retry and truthful write annotations.
 It is not wired into a daemon or exposed to ChatGPT yet.
 
+`SignedRelay` now verifies each device-signed grant against the approved device
+key, Hub identity and grant generation/version before signing every call with
+a fresh nonce. Directory authorization is also intersected with current local
+grant validity. `DashboardRelay` accepts signed envelopes only; its earlier
+unsigned call method was removed, not retained as a fallback.
+
+An integration test runs two isolated native Desktop helpers, each with separate
+state, IPC keys and device approval. Hub -> signed HTTP request -> fixture
+gateway -> real device adapter/proof/replay checks -> authenticated IPC -> native
+filesystem read/write passes, with independent byte verification. This verifies
+the client/device path but not the Cloudflare Worker, physical multi-host routing
+or ChatGPT. All fixture files and helper lifetimes are test-owned.
+
 The Hub-side Dashboard HTTP adapter now targets only the fixed machine API
 paths `/api/hub/devices` and `/api/hub/devices/{id}/call`. It removes cookie-jar
 authentication, rejects redirects, bounds request/response bodies and uses an
@@ -89,8 +102,7 @@ remote ID. Confirmed close removes a binding, while an unconfirmed close retains
 it for explicit recovery. Bindings are in memory with a 2,048-entry cap; Hub
 restart recovery/persistence and device-side enforcement remain pending.
 
-Remaining implementation: machine-authenticated Dashboard API; signed Hub client
-and protocol adapter wiring; device/caller-bound sessions and capture
+Remaining implementation: machine-authenticated Dashboard Worker API; device/caller-bound sessions and capture
 handling; Pi5 daemon/CLI integration; enrollment UX; isolated multi-device and
 real ChatGPT read/write acceptance. No live deployment or permission changes
 have been performed for this branch.

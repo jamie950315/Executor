@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jamie950315/executor/internal/mcp"
+	wire "github.com/jamie950315/executor/internal/relay"
 )
 
 func TestDashboardRelayUsesMachineAuthAndExplicitDeviceRoute(t *testing.T) {
@@ -23,15 +23,11 @@ func TestDashboardRelayUsesMachineAuthAndExplicitDeviceRoute(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{"devices": []Device{{ID: "mac", Online: true, Authorized: true}, {ID: "win", Online: true, Authorized: true}}})
 		case "/api/hub/devices/win/call":
 			calls++
-			var body struct {
-				Method    string         `json:"method"`
-				Arguments map[string]any `json:"arguments"`
-				SessionID string         `json:"session_id"`
-			}
+			var body wire.SignedHubRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if body.Method != "filesystem_write" || body.SessionID != "caller-1" || body.Arguments["deviceId"] != nil {
+			if body.Request.Method != "filesystem_write" || body.Request.CallerID != "caller-1" || body.Request.DeviceID != "win" || body.Signature != "transport-fixture" {
 				t.Error("wrong relay envelope")
 			}
 			json.NewEncoder(w).Encode(map[string]any{"ok": true, "writtenBytes": 3})
@@ -45,7 +41,10 @@ func TestDashboardRelayUsesMachineAuthAndExplicitDeviceRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := New(relay).Dispatch(context.Background(), mcp.ToolCall{Name: "filesystem_write", SessionID: "caller-1", Arguments: map[string]any{"deviceId": "win", "content": "abc"}})
+	if _, err := relay.Devices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := relay.Submit(context.Background(), "win", wire.SignedHubRequest{Request: wire.HubRequest{DeviceID: "win", Method: "filesystem_write", CallerID: "caller-1"}, Signature: "transport-fixture"})
 	if err != nil || calls != 1 || result.(map[string]any)["writtenBytes"].(float64) != 3 {
 		t.Fatalf("relay round trip failed: %v", err)
 	}
@@ -65,7 +64,7 @@ func TestDashboardRelayNeverFollowsRedirectOrLeaksDiagnosticBody(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = relay.Call(context.Background(), "mac", mcp.ToolCall{Name: "filesystem_write"})
+		_, err = relay.Submit(context.Background(), "mac", wire.SignedHubRequest{Request: wire.HubRequest{DeviceID: "mac"}, Signature: "transport-fixture"})
 		if err == nil || strings.Contains(err.Error(), "secret") || reached {
 			t.Fatal("redirect/error boundary failed")
 		}

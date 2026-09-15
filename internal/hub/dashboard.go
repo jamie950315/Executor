@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jamie950315/executor/internal/mcp"
+	"github.com/jamie950315/executor/internal/relay"
 )
 
 const maximumRelayBody = 80 << 20
@@ -62,15 +62,13 @@ func (d *DashboardRelay) Devices(ctx context.Context) ([]Device, error) {
 	return response.Devices, nil
 }
 
-func (d *DashboardRelay) Call(ctx context.Context, id string, call mcp.ToolCall) (any, error) {
+func (d *DashboardRelay) Submit(ctx context.Context, id string, payload relay.SignedHubRequest) (any, error) {
 	if id == "" || strings.ContainsAny(id, "/\\?#\r\n") {
 		return nil, errors.New("invalid device identifier")
 	}
-	payload := struct {
-		Method    string         `json:"method"`
-		Arguments map[string]any `json:"arguments"`
-		SessionID string         `json:"session_id"`
-	}{call.Name, call.Arguments, call.SessionID}
+	if payload.Signature == "" || payload.Request.DeviceID != id {
+		return nil, errors.New("signed device-bound Hub request required")
+	}
 	var result any
 	err := d.request(ctx, http.MethodPost, "/api/hub/devices/"+url.PathEscape(id)+"/call", payload, &result)
 	return result, err
