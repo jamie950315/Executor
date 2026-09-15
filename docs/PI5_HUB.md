@@ -36,7 +36,8 @@ relay service; moving its hosting to Pi5 is not part of this scope.
 `internal/hub` provides the offline relay-only router and tool schemas, with
 tests for explicit selection, missing/unknown/offline/unauthorized devices,
 fresh directory lookup, no retry and truthful write annotations.
-It is not wired into a daemon or exposed to ChatGPT yet.
+It is wired into the Agent as an opt-in Hub mode, but not deployed or exposed
+to ChatGPT yet.
 
 `SignedRelay` now verifies each device-signed grant against the approved device
 key, Hub identity and grant generation/version before signing every call with
@@ -104,8 +105,9 @@ it for explicit recovery. Bindings are in memory with a 2,048-entry cap; Hub
 restart recovery/persistence and device-side enforcement remain pending.
 
 The Worker machine API now has independent `hubs` and `hub_devices` registry
-tables (migration 0003). It stores machine-token hashes and delegation metadata,
-not recovery keys or bearer tokens. Each directory/call authenticates the Hub
+tables (migration 0003). It stores machine-token hashes and device-signed,
+Hub-key-bound delegation certificates, not recovery keys or machine bearer
+tokens. Each directory/call authenticates the Hub
 anew. Calls require an active, current-generation device link and a valid
 device-signed Hub grant matching its delegation revision. Only signature-bearing
 proof envelopes bound to the authenticated Hub and requested device are relayed;
@@ -119,6 +121,35 @@ precise routing and stale delegation rejection using test D1 and a relay stub.
 Full Dashboard tests/checks and dry-run build pass. No migration was applied to
 a deployed database. Public deployment still requires an explicitly scoped
 machine-API Access route and an owner-approved registration/provisioning flow.
+
+## Agent runtime configuration
+
+`hub_enabled: true` in a dedicated Agent configuration selects Hub-only dispatch.
+`executor agent --config <path>` retains the normal OAuth-protected HTTP MCP
+entrypoint but exposes `devices_list` plus device-addressed tools. Missing or
+invalid Hub configuration fails startup; it never falls back to native dispatch.
+The local stdio entrypoint also uses Hub schemas when explicitly selected, but
+remote multi-client deployment should use the OAuth HTTP entrypoint so caller
+scopes include authenticated OAuth client identity and MCP session.
+
+The dedicated state directory must contain owner-protected `hub.json`:
+
+```json
+{
+  "version": 1,
+  "hub_id": "pi5-hub",
+  "dashboard_url": "https://dashboard.example",
+  "machine_token_file": "hub-machine.token"
+}
+```
+
+The machine credential is read from the protected referenced file within that
+state directory; the Hub signing key comes from its own secret store. Do not
+reuse an unrelated device's state. Grants and enrollment-registry device keys come
+from the authenticated `/api/hub/devices/{id}/delegation` endpoint and are
+cryptographically checked before signing. A new owner-approved device therefore
+requires no hand-edited routing table. This runtime does not create credentials
+or approve devices by itself; owner provisioning remains a separate step.
 
 Remaining implementation: machine-API deployment/provisioning; device/caller-bound sessions and capture
 handling; Pi5 daemon/CLI integration; enrollment UX; isolated multi-device and

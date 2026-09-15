@@ -62,6 +62,15 @@ func (d *DashboardRelay) Devices(ctx context.Context) ([]Device, error) {
 	return response.Devices, nil
 }
 
+func (d *DashboardRelay) Delegation(ctx context.Context, id string) (Delegation, error) {
+	if id == "" || strings.ContainsAny(id, "/\\?#\r\n") {
+		return Delegation{}, errors.New("invalid device identifier")
+	}
+	var result Delegation
+	err := d.request(ctx, http.MethodGet, "/api/hub/devices/"+url.PathEscape(id)+"/delegation", nil, &result)
+	return result, err
+}
+
 func (d *DashboardRelay) Submit(ctx context.Context, id string, payload relay.SignedHubRequest) (any, error) {
 	if id == "" || strings.ContainsAny(id, "/\\?#\r\n") {
 		return nil, errors.New("invalid device identifier")

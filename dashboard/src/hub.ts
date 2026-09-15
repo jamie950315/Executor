@@ -6,7 +6,7 @@ import { relayHTTPResponse } from "./relay-response";
 import { sha256Hex } from "./shared/crypto";
 import { makeEnvelope } from "./shared/wire";
 
-interface HubLink { device_id: string; device_generation: number; delegation_version: number; expires_at: number }
+interface HubLink { device_id: string; device_generation: number; delegation_version: number; expires_at: number; grant: string }
 const methods = new Set(["filesystem_read", "filesystem_write", "terminal", "terminal_output", "terminal_sessions", "device_status", "device_permissions", "desktop_observe", "desktop_control"]);
 
 // This authenticates the machine transport, not authority to operate a device.
@@ -26,21 +26,25 @@ export async function handleHubRoute(request: Request, env: Env): Promise<Respon
   const path = new URL(request.url).pathname;
   const now = Date.now();
   if (request.method === "GET" && path === "/api/hub/devices") {
-    const links = await env.DB.prepare("SELECT device_id, device_generation, delegation_version, expires_at FROM hub_devices WHERE hub_id=?").bind(hubID).all<HubLink>();
+    const links = await env.DB.prepare("SELECT device_id, device_generation, delegation_version, expires_at, grant FROM hub_devices WHERE hub_id=?").bind(hubID).all<HubLink>();
     const byID = new Map(links.results.map(link => [link.device_id, link]));
     const devices = (await listDevices(env.DB)).map(device => {
       const link = byID.get(device.device_id);
       return { deviceId: device.device_id, name: device.name, platform: device.platform, generation: device.generation,
-        online: device.state === "online", authorized: link !== undefined && link.device_generation === device.generation && link.expires_at > now };
+        online: device.state === "online", authorized: link !== undefined && link.grant.length > 0 && link.device_generation === device.generation && link.expires_at > now };
     });
     return jsonResponse({ devices });
   }
-  const match = /^\/api\/hub\/devices\/([A-Za-z0-9_-]{1,256})\/call$/.exec(path);
-  if (request.method !== "POST" || match === null) return errorResponse("not found", 404);
+  const match = /^\/api\/hub\/devices\/([A-Za-z0-9_-]{1,256})\/(call|delegation)$/.exec(path);
+  if (match === null || (match[2] === "call" ? request.method !== "POST" : request.method !== "GET")) return errorResponse("not found", 404);
   const deviceID = match[1]!;
   const device = await getDevice(env.DB, deviceID);
-  const link = await env.DB.prepare("SELECT device_id, device_generation, delegation_version, expires_at FROM hub_devices WHERE hub_id=? AND device_id=?").bind(hubID, deviceID).first<HubLink>();
-  if (device === null || link === null || link.device_generation !== device.generation || link.expires_at <= now) return errorResponse("device not delegated to Hub", 403);
+  const link = await env.DB.prepare("SELECT device_id, device_generation, delegation_version, expires_at, grant FROM hub_devices WHERE hub_id=? AND device_id=?").bind(hubID, deviceID).first<HubLink>();
+  if (device === null || link === null || link.grant.length === 0 || link.device_generation !== device.generation || link.expires_at <= now) return errorResponse("device not delegated to Hub", 403);
+  if (match[2] === "delegation") {
+    if (!(await validDelegation(device, hubID, link, link.grant, now))) return errorResponse("invalid Hub delegation", 403);
+    return jsonResponse({ device_key: device.public_jwk, grant: link.grant, generation: device.generation, version: link.delegation_version });
+  }
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return errorResponse("json required", 415);
   let proof: Record<string, unknown>;
   let body: Record<string, unknown>;
@@ -57,7 +61,7 @@ export async function handleHubRoute(request: Request, env: Env): Promise<Respon
   } catch {
     return errorResponse("invalid signed Hub request", 400);
   }
-  if (!(await validDelegation(device, hubID, link, body.grant as string, now))) return errorResponse("invalid Hub delegation", 403);
+  if (body.grant !== link.grant || !(await validDelegation(device, hubID, link, body.grant as string, now))) return errorResponse("invalid Hub delegation", 403);
   if (device.state !== "online") return errorResponse("device offline", 503);
   const requestID = body.request_id as string;
   const envelope = makeEnvelope("request", crypto.randomUUID(), { request_id: requestID, method: "hub.call", arguments: proof });

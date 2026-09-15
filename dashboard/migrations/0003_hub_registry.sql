@@ -10,5 +10,6 @@ CREATE TABLE hub_devices (
   device_generation INTEGER NOT NULL CHECK (device_generation > 0),
   delegation_version INTEGER NOT NULL CHECK (delegation_version > 0),
   expires_at INTEGER NOT NULL,
+  grant TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (hub_id, device_id)
 );

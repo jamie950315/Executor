@@ -14,10 +14,10 @@ import (
 )
 
 type Delegation struct {
-	DeviceKey  relay.PublicKeyJWK
-	Grant      string
-	Generation uint64
-	Version    uint64
+	DeviceKey  relay.PublicKeyJWK `json:"device_key"`
+	Grant      string             `json:"grant"`
+	Generation uint64             `json:"generation"`
+	Version    uint64             `json:"version"`
 }
 
 // DelegationSource must use owner-approved device identities and current local

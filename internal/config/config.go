@@ -22,6 +22,7 @@ type Config struct {
 	StateDir             string                   `json:"state_dir"`
 	Domain               string                   `json:"domain,omitempty"`
 	OAuthResourceAliases []string                 `json:"oauth_resource_aliases,omitempty"`
+	HubEnabled           bool                     `json:"hub_enabled,omitempty"`
 	AgentAddress         string                   `json:"agent_address"`
 	DashboardAddress     string                   `json:"dashboard_address"`
 	BrokerEndpoint       string                   `json:"broker_endpoint"`

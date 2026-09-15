@@ -43,9 +43,13 @@ it("routes only a delegated signed envelope to the exact device, without cookies
   const publicKey = await exportJWK(keys.publicKey);
   const now = Date.now(), seconds = Math.floor(now / 1000);
   await env.DB.prepare("INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind("mac", "Mac", "darwin", "arm64", "test", "https://unused.example/mcp", JSON.stringify(publicKey), 1, "online", now, now, now).run();
-  await env.DB.prepare("INSERT INTO hub_devices VALUES (?, ?, ?, ?, ?)").bind("pi5", "mac", 1, 2, now + 3600000).run();
+  await env.DB.prepare("INSERT INTO hub_devices (hub_id,device_id,device_generation,delegation_version,expires_at) VALUES (?, ?, ?, ?, ?)").bind("pi5", "mac", 1, 2, now + 3600000).run();
   const grant = await new SignJWT({ version: 1, device_id: "mac", hub_id: "pi5", hub_key_id: "a".repeat(64), generation: 1, delegation_version: 2, issued_at: seconds, expires_at: seconds + 3600, jti: "fixture" })
     .setProtectedHeader({ alg: "ES256", typ: "executor-hub-grant+jwt", version: 1 }).sign(keys.privateKey);
+  await env.DB.prepare("UPDATE hub_devices SET grant=? WHERE hub_id=? AND device_id=?").bind(grant, "pi5", "mac").run();
+  const delegationResponse = await SELF.fetch(origin + "/api/hub/devices/mac/delegation", { headers: { authorization: "Bearer " + token } });
+  expect(delegationResponse.status).toBe(200);
+  expect(await delegationResponse.json()).toEqual({ device_key: publicKey, grant, generation: 1, version: 2 });
   const proof = { request: { version: 1, device_id: "mac", hub_id: "pi5", caller_id: "caller", request_id: "request", method: "filesystem_write", input: "e30=", grant, issued_at: seconds, expires_at: seconds + 60, nonce: "fixture-nonce" }, signature: "a".repeat(86) };
   let calls = 0;
   const fixtureEnv = { ...env, DEVICE_RELAY: { getByName(id: string) {
