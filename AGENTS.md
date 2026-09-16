@@ -32,6 +32,13 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Hub source is merged into local main at `923013c`. Production migration is
+  in progress: new persistent Pi5/WSL services, CTPS system services and Mac
+  Hub LaunchDaemons/LaunchAgent are installed. Old production services remain
+  until Tunnel boot credentials and final cutover are ready. Do not claim the
+  migration, ChatGPT connection updates or reboot verification are complete.
+  See `docs/HUB_MAIN_MIGRATION.md` for exact names, backups and remaining gates.
+
 - Production Mac, Pi5, Windows CTPS and Debian WSL now run verified clean main merge `86e01dfff559b40de986c282da13ba71f7864b91`; central Dashboard Worker is `9aa485e0-b1de-404c-afc2-76fbb3240fb3`. Full tests/builds, six target core suites per remote OS, all-host owner/admin runtime and existing public MCP calls pass. Production Dashboard retains all four unlocked devices and exact paginated/empty-file reads. MCP metadata is unchanged on every host, so existing ChatGPT connections and approval settings require no Refresh or reauthorization. Production credentials/config/TURN, Access/D1/DO/enrollment and shared tunnels remain preserved. Separate Beta/Fetch Proxy are not replaced; Beta's normal OAuth refresh is documented. Rollback binaries are under each state's `deployment-backups/main-86e01df-20260915`. The later v0.3.2 publication did not reinstall these devices. See `docs/2026-09-main-relay-rollout.md`.
 
 - `codex/pi5-hub` is the separate Pi5-only Hub implementation branch: one OpenAI
