@@ -53,7 +53,7 @@ Desktop control also needs an active graphical login:
 ## Intended workflow
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/jamie950315/Executor
 cd Executor
 ```
 
