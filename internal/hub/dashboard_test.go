@@ -50,6 +50,24 @@ func TestDashboardRelayUsesMachineAuthAndExplicitDeviceRoute(t *testing.T) {
 	}
 }
 
+func TestDashboardRelayClassifiesOnlyCorrelatedDeviceFailure(t *testing.T) {
+	for _, id := range []string{"request-1", "wrong-request"} {
+		t.Run(id, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(422)
+				json.NewEncoder(w).Encode(map[string]string{"code": "device_reported_failure", "request_id": id})
+			}))
+			defer server.Close()
+			d, _ := NewDashboardRelay(server.URL, "fixture-token", server.Client())
+			_, err := d.Submit(context.Background(), "mac", wire.SignedHubRequest{Request: wire.HubRequest{DeviceID: "mac", RequestID: "request-1"}, Signature: "fixture"})
+			if err == nil || strings.Contains(err.Error(), "device reported action failure") != (id == "request-1") {
+				t.Fatalf("incorrect failure classification: %v", err)
+			}
+		})
+	}
+}
+
 func TestDashboardRelayNeverFollowsRedirectOrLeaksDiagnosticBody(t *testing.T) {
 	reached := false
 	destination := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))

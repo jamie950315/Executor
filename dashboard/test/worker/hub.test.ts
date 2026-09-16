@@ -39,7 +39,7 @@ it("does not accept browser control envelopes or unknown targets", async () => {
   expect(response.status).toBe(403);
 });
 
-it.each(["response","chunks","wrong-id","truncated"])("handles real relay wire format: %s", async (mode) => {
+it.each(["response","chunks","wrong-id","truncated","failure","wrong-failure-id"])("handles real relay wire format: %s", async (mode) => {
   const keys = await generateKeyPair("ES256", { extractable: true });
   const publicKey = await exportJWK(keys.publicKey);
   const now = Date.now(), seconds = Math.floor(now / 1000);
@@ -61,14 +61,20 @@ it.each(["response","chunks","wrong-id","truncated"])("handles real relay wire f
       const frames = mode === "chunks" || mode === "truncated"
         ? [makeEnvelope("stream_chunk",crypto.randomUUID(),{request_id:"request",sequence:0,data:btoa('{"ok":'),final:false}),
           ...(mode === "chunks" ? [makeEnvelope("stream_chunk",crypto.randomUUID(),{request_id:"request",sequence:1,data:btoa('true}'),final:true})] : [])]
-        : [makeEnvelope("response",crypto.randomUUID(),{request_id:mode === "wrong-id" ? "another-request" : "request",result:{ok:true}})];
+        : [makeEnvelope("response",crypto.randomUUID(),{request_id:mode === "wrong-id" || mode === "wrong-failure-id" ? "another-request" : "request",...(mode === "failure" || mode === "wrong-failure-id" ? {failure:{code:"host_action_failed"}} : {result:{ok:true}})})];
       const wire = frames.map(frame => canonicalEnvelope(frame)+"\n").join("");
       return { ok: true, stream: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode(wire)); c.close(); } }) };
     } };
   } } } as unknown as Env;
   const request = () => new Request(origin + "/api/hub/devices/mac/call", { method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" }, body: JSON.stringify(proof) });
   const response = await handleHubRoute(request(), fixtureEnv);
-  if (mode === "wrong-id" || mode === "truncated") {
+  if (mode === "failure") {
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({code:"device_reported_failure",request_id:"request"});
+    expect(calls).toBe(1);
+    return;
+  }
+  if (mode === "wrong-id" || mode === "truncated" || mode === "wrong-failure-id") {
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({outcome:"unconfirmed"});
     expect(calls).toBe(1);

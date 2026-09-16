@@ -7,6 +7,16 @@ const headers = { "content-type": "application/x-ndjson", "x-executor-request-id
 const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
 
 describe("browser response diagnostics", () => {
+  it("distinguishes a complete device failure from transport failure", async () => {
+    const line = JSON.stringify(makeEnvelope("response", "failure", { request_id: requestID, failure: { code: "host_action_failed" } }));
+    await expect(parseCallResponse(new Response(line + "\n", { headers }))).rejects.toMatchObject({ name: "DeviceExecutionError", requestID, code: "host_action_failed" });
+  });
+
+  it("does not classify a failure envelope followed by invalid data as a complete device failure", async () => {
+    const line = JSON.stringify(makeEnvelope("response", "failure", { request_id: requestID, failure: { code: "host_action_failed" } }));
+    try { await parseCallResponse(new Response(line + "\ninvalid\n", { headers })); throw new Error("expected failure"); }
+    catch (error) { expect((error as Error).name).not.toBe("DeviceExecutionError"); }
+  });
   it.each(["relay_empty_body", "relay_stream_failed", "relay_response_too_large", "relay_cancelled"])("retains %s and request correlation without retrying", async (code) => {
     const fetcher = vi.fn().mockResolvedValue(new Response("SENSITIVE_REMOTE_ERROR", { status: 502, headers: { ...headers, "x-executor-relay-error": code } }));
     await expect(callDevice("fixture", "filesystem_write", {}, undefined, fetcher)).rejects.toMatchObject({ name: "DeviceResponseError", code, requestID, receivedBytes: 0 });

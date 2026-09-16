@@ -12,6 +12,14 @@ import (
 )
 
 var ErrUnconfirmed = errors.New("relay response unavailable; operation outcome unconfirmed; do not automatically retry")
+var ErrDeviceAction = errors.New("device reported action failure; partial effects may have occurred; do not automatically retry")
+
+func relayCallError(err error) error {
+	if errors.Is(err, ErrDeviceAction) {
+		return ErrDeviceAction
+	}
+	return ErrUnconfirmed
+}
 
 type Device struct {
 	ID         string `json:"deviceId"`
@@ -120,7 +128,7 @@ func (r *Router) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	}
 	result, err := r.relay.Call(ctx, id, call)
 	if err != nil {
-		return nil, ErrUnconfirmed
+		return nil, relayCallError(err)
 	}
 	return result, nil
 }

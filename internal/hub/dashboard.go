@@ -106,6 +106,14 @@ func (d *DashboardRelay) request(ctx context.Context, method, path string, paylo
 		return errors.New("Hub transport unavailable")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnprocessableEntity && strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+		proof, signed := payload.(relay.SignedHubRequest)
+		data, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
+		var failure map[string]string
+		if signed && proof.Request.RequestID != "" && readErr == nil && len(data) <= 4096 && json.Unmarshal(data, &failure) == nil && len(failure) == 2 && failure["code"] == "device_reported_failure" && failure["request_id"] == proof.Request.RequestID {
+			return ErrDeviceAction
+		}
+	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("Hub response status %d", response.StatusCode)
 	}

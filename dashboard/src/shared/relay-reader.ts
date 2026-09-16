@@ -41,6 +41,15 @@ export class DeviceResponseError extends DeviceActionError {
   }
 }
 
+// Only emitted after a complete, correlated failure envelope reaches EOF.
+// This reports a device failure, not a guarantee that no side effects occurred.
+export class DeviceExecutionError extends DeviceActionError {
+  constructor(readonly requestID: string, readonly code: string) {
+    super();
+    this.name = "DeviceExecutionError";
+  }
+}
+
 export function responseRequestID(response: Response): string | null {
   const value = response.headers.get("x-executor-request-id");
   return value !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value) ? value : null;
@@ -79,6 +88,7 @@ export async function parseCallResponse(
   let nextSequence = 0;
   let complete = false;
   let responseResult: unknown;
+  let deviceFailure: string | undefined;
 
   const consumeLine = (line: string): void => {
     if (line.length === 0 || encoder.encode(line).byteLength > bounds.maximumLineBytes || complete) {
@@ -89,13 +99,14 @@ export async function parseCallResponse(
       throw new DeviceResponseError("request_mismatch", expectedRequestID, totalBytes);
     }
     if (envelope.type === "response") {
-      if (requestID !== null || envelope.payload.failure !== undefined) {
-        if (envelope.payload.failure !== undefined) {
-          throw new DeviceActionError();
-        }
+      if (requestID !== null) {
         throw new DeviceActionError("Invalid device response");
       }
       requestID = envelope.payload.request_id;
+      if (envelope.payload.failure !== undefined) {
+        const code = envelope.payload.failure.code;
+        deviceFailure = /^[a-z_]{1,64}$/.test(code) ? code : "device_action_failed";
+      }
       responseResult = envelope.payload.result;
       complete = true;
       return;
@@ -149,6 +160,7 @@ export async function parseCallResponse(
     if (!complete || requestID === null) {
       throw new DeviceResponseError(totalBytes === 0 ? "empty_body" : "incomplete_response", expectedRequestID, totalBytes);
     }
+    if (deviceFailure !== undefined) throw new DeviceExecutionError(requestID, deviceFailure);
     if (streamParts.length === 0) {
       return { requestID, result: responseResult };
     }

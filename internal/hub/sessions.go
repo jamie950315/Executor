@@ -68,7 +68,7 @@ func (r *Router) dispatchTerminal(ctx context.Context, device string, call mcp.T
 			delete(r.sessions, hubID)
 			r.mu.Unlock()
 		}
-		return nil, ErrUnconfirmed
+		return nil, relayCallError(err)
 	}
 	if creating {
 		record, ok := result.(map[string]any)
