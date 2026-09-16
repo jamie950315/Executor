@@ -97,8 +97,11 @@ Git under the Mac Beta installation's `pilot-enrollment-operator` directory.
 ### CTPS and WSL parallel enrollment
 
 Both additional relay-only devices are enrolled and shown live in the Beta
-Dashboard, without changing their original Executor installations. Hub delegation
-is not yet approved, so they are not yet callable through the Hub.
+Dashboard, without changing their original Executor installations. Both were
+unlocked and delegated to `pi5-hub-pilot`. The native Pi5 Hub signed-machine
+client verified their authorized/online directory entries and made one read-only
+`device_status summary` call per device: both returned HTTP 200, broker/desktop
+state ok and partial=false. No write tests or full suites were run for enrollment.
 CTPS state/binary root is `C:\Users\jamie\ExecutorHubPilot`, with independent
 `ExecutorHubPilot-{broker,desktop,dashboard}` logon tasks, rescue port 29789,
 and `executor-hub-pilot-{broker,desktop}` named pipes. Device ID is

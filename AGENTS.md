@@ -53,6 +53,12 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   remain unverified; pilot units are transient. See the runbook for evidence limits.
   See `docs/PI5_HUB.md` and `docs/BETA_DASHBOARD.md`.
 
+- CTPS and Debian WSL now have separate relay-only Hub pilot installations,
+  preserving production Executor services and credentials. Both are enrolled,
+  delegated to `pi5-hub-pilot` and pass one Hub-routed read-only status call.
+  No OpenAI Tunnel Client was installed on either. Exact device IDs, independent
+  task/unit names and deployment paths are in `docs/PI5_HUB.md`.
+
 - Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
   `executor-openai-tunnel` runtime now forwards to authenticated Mac Beta HTTPS.
   Beta Agent `61aeb58` in `bundle-tunnel-csp` adds exact OAuth resource aliases
