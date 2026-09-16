@@ -38,13 +38,19 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   signed machine API, device-side proof/replay checks and owner delegation actions.
   Two isolated native-helper read/write tests and local Hub management UI checks
   pass, including native Pi5 tests. Beta Dashboard now runs Hub pilot Worker
-  `9e4d801f-7600-45ba-b26d-18e3de79f2f8` with migration 0003; the Pi5 binary is
+  `ef918f21-3148-4dc6-b508-1cecdc64aa0c` with migration 0003; the Pi5 binary is
   staged and dedicated Hub/relay-only transient services are active on Pi5.
   The new public Hub hostname passes OAuth metadata/401 checks; the official
-  Linux tunnel client is installed but not connected. Mac Beta Dashboard/relay
+  Linux tunnel client now owns the Executor Tunnel; the Mac runtime is stopped.
+  Mac Beta Dashboard/relay
   uses `bundle-hub-52a6b91`; the scoped machine Access route is installed.
-  Enrollment, registration, Tunnel handoff and ChatGPT Hub acceptance remain
-  pending. Original service PIDs and routing are preserved.
+  Pi5 relay-only enrollment and owner-approved Hub registration are complete;
+  the public UI shows both devices live and `pi5-hub-pilot` enabled. Mac Beta
+  and Pi5 delegation are confirmed. ChatGPT OAuth, two-device file create/read/
+  overwrite/append, Pi5 terminal session lifecycle, and device-error-then-normal-read
+  acceptance pass. Hub runs as `executor-hub-pilot-f4b21af`; production services
+  are preserved. Long-run relay stability and reboot-persistent installation
+  remain unverified; pilot units are transient. See the runbook for evidence limits.
   See `docs/PI5_HUB.md` and `docs/BETA_DASHBOARD.md`.
 
 - Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local

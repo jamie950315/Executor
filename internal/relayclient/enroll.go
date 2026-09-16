@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -234,7 +235,7 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		return errors.New("dashboard enrollment rejected")
+		return fmt.Errorf("dashboard enrollment rejected (HTTP %d)", response.StatusCode)
 	}
 	fingerprint, err := enrollmentCleanupFingerprint(identity, token)
 	if err != nil {

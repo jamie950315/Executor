@@ -11,14 +11,14 @@ Dedicated `hub-state` and `device-state` directories have now been initialized
 under `/home/jamie/.local/share/executor-hub-pilot`. Hub ID is `pi5-hub-pilot`;
 the relay-only device ID is `device-UxpNgpolb3JbvZGWjAHJsbSqlqyZ5xQV`. New recovery
 keys are delivered only in the owner's private chat, not this repository.
-Pi5 transient services `executor-hub-pilot`, `executor-relay-pilot-broker`,
+Pi5 transient services `executor-hub-pilot-f4b21af`, `executor-relay-pilot-broker`,
 `executor-relay-pilot-desktop` and `executor-relay-pilot-dashboard` are active.
 They use only the dedicated pilot states; the existing Executor service PIDs
 remain unchanged. These transient units are not yet a reboot-persistent install.
 
 The isolated Beta Dashboard has migration 0003 and Worker version
-`9e4d801f-7600-45ba-b26d-18e3de79f2f8`. Its authenticated public UI displays
-the existing Mac Beta and empty Hub registry. Access/enrollment rejection
+`ef918f21-3148-4dc6-b508-1cecdc64aa0c`. Its authenticated public UI displays
+the existing Mac Beta. Access/enrollment rejection
 checks pass. Mac Beta relay source `52a6b91` and the scoped machine-API Access
 route are installed; native state/credential preservation checks pass.
 The Hub is reachable at `https://beta-executor-hub-pi5.0ruka.dev/mcp`; public
@@ -30,12 +30,67 @@ is `5efa95a6360a1db3d561ba1a8725883c`.
 Official Linux arm64 tunnel-client 0.0.14 is installed under the pilot directory
 and its archive SHA-256 matches the official formula:
 `2de3fb879a18edb847e0313592c912f1983685488290a7fdba7ac403e6a4fb0a`.
-It reports revision `0f870e50a973fa820d4c409000059e181e8d242b` but has not been
-connected yet. The existing Mac Executor Tunnel client remains active until a
-controlled handoff; do not run both against the same Tunnel ID.
-Owner registration/delegation, relay-only device enrollment, Tunnel handoff and
-physical ChatGPT multi-device acceptance remain pending.
-This is not completion of the Pi5 Hub goal. See `BETA_DASHBOARD.md` for rollback.
+It reports revision `0f870e50a973fa820d4c409000059e181e8d242b` and now owns the
+Executor Tunnel. Mac runtime `executor-openai-tunnel` is stopped; do not run
+both against the same Tunnel ID. Pi5's target is the same Hub's HTTPS endpoint
+`https://beta-executor-hub-pi5.0ruka.dev/mcp`, not a downstream device endpoint.
+The loopback target reached MCP but caused the official client to skip OAuth
+host registration, producing unsupported harpoon-channel errors during ChatGPT
+discovery. Matching the Hub HTTPS target restored automatic OAuth/DCR discovery.
+Relay-only Pi5 enrollment is complete. On 2026-09-16, the authenticated public
+Dashboard showed both Pi5 and Mac Beta with live relays. Owner-approved public
+registration of `pi5-hub-pilot` then completed successfully: the UI showed one
+enabled Hub. Registration alone grants no device control. The separately
+owner-approved Mac Beta delegation subsequently completed and the public UI
+shows Authorized. An earlier attempt failed alongside ordinary device status
+calls; the relay recovered without a service restart. Before retrying, read-only
+D1 inspection found no delegation row and the device had no approval file.
+The transient transport failure's cause remains unconfirmed, not claimed fixed.
+Pi5 device unlock and delegation also completed; both devices show Authorized.
+ChatGPT's new `Executor Pi5 Hub Beta` form now discovers the correct Hub
+authorization URL, tunneled token/registration URLs and executor.full scope.
+Connector creation and OAuth consent are complete. App ID is
+`asdk_app_6aa9adf02fe08191955568b533d8e7bf`.
+ChatGPT acceptance at https://chatgpt.com/c/6aa9aee8-094c-83e8-83ef-669181b56612
+passed create/read/overwrite/append/final read on both Mac Beta and Pi5. Host-side
+verification independently found identical 68-byte files with SHA-256
+`bc76874b3fd95f91fce26bce15f20ab7f395716375b7f2cbba5edd6841c66ddc`.
+Pi5 terminal create/stdout/inspect/close passed after the OAuth caller-scope fix,
+with exit code zero and matching device audit identity across all four calls.
+After f4b21af deployment, ChatGPT confirmed that missing-path stat reports a
+device action failure and a subsequent normal file read still succeeds.
+An additional native Pi5 signed-machine-client check alternated missing-path
+stat with exact-content reads on both devices for three rounds: all six failure/
+read pairs returned the expected 422/200 and identical file contents without
+retries or service restarts. This is bounded recovery evidence, not a long-run
+availability guarantee.
+These observations do not establish long-run relay stability: earlier calls
+stalled until the two isolated Dashboard relay processes were restarted.
+The initial Pi5 file write was blocked by a platform safety check; a later
+identical call succeeded without changing tools, inputs or annotations.
+
+OAuth metadata compatibility fixes add the exact MCP-scoped discovery path and
+route it before the generic MCP suffix handler. Both handler and daemon tests
+reproduced 404 before their fixes and pass afterward. The Pi5 native endpoint
+now returns metadata JSON. Active Hub unit is
+`executor-hub-pilot-f4b21af`, using `bin/executor-f4b21af` under the pilot
+root, SHA-256 `16e85000c734db23e53808159304779c30784935eea711e21a6ff2185f2246a7`.
+This build includes source f4b21af and the uncommitted enrollment HTTP-status
+diagnostic. Earlier Hub transient units are stopped. These units remain
+non-persistent across reboot.
+The isolated pilot acceptance covers the requested single-Hub routing,
+multi-device read/write, caller/device/privilege session binding and error handling.
+It is not a production migration or reboot-persistent installation. See
+`BETA_DASHBOARD.md` for Dashboard rollback. To stop this pilot Hub, stop only
+`executor-hub-pilot-f4b21af`; never use generic lifecycle commands to manage
+production labels. No automatic direct-device fallback is configured.
+
+Final source validation: full Go tests, native Hub/relayclient race tests,
+six CGO-disabled macOS/Linux/Windows amd64/arm64 CLI cross-builds, 165 Dashboard
+unit tests (one pre-existing skip), 79 UI tests, 80 Worker tests, typecheck, lint
+and client/Worker builds pass. Cross-builds do not prove native GUI behavior.
+The one-off pilot enrollment operator and its fixture tests are preserved outside
+Git under the Mac Beta installation's `pilot-enrollment-operator` directory.
 
 ## Approved direction
 
@@ -153,7 +208,7 @@ registry failure after a device action returns an unconfirmed outcome without
 automatic replay. The Dashboard management UI is implemented as described below.
 
 Terminal routing now replaces remote IDs with opaque Hub session IDs and binds
-them to the originating MCP caller session, target device and owner/admin
+them to the authenticated OAuth subject/client (or non-OAuth transport session), target device and owner/admin
 privilege. Cross-scope use is rejected before relay dispatch. Session listings
 only show that caller's bindings; inspect responses must match the requested
 remote ID. Confirmed close removes a binding, while an unconfirmed close retains
@@ -257,7 +312,8 @@ entrypoint but exposes `devices_list` plus device-addressed tools. Missing or
 invalid Hub configuration fails startup; it never falls back to native dispatch.
 The local stdio entrypoint also uses Hub schemas when explicitly selected, but
 remote multi-client deployment should use the OAuth HTTP entrypoint so caller
-scopes include authenticated OAuth client identity and MCP session.
+scopes include authenticated OAuth subject and client identity. MCP transport
+session changes do not change OAuth ownership; non-OAuth sessions remain isolated.
 
 The dedicated state directory must contain owner-protected `hub.json`:
 
