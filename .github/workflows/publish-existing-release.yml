@@ -97,14 +97,20 @@ jobs:
             awk -v name="$asset_name" 'NF == 2 && $2 == name && length($1) == 64 && $1 !~ /[^0-9a-f]/ { n++ } END { exit n != 1 }' upload/SHA256SUMS.txt
           done
           (cd upload && sha256sum -c SHA256SUMS.txt)
-      - name: Upload draft, verify GitHub digests, then publish
+      - name: Upload or reuse draft, verify GitHub digests, then publish
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$RELEASE_TAG" upload/* --verify-tag --target "$SOURCE_SHA" \
-            --title "Executor $RELEASE_TAG" --notes-file ".github/release-notes/$RELEASE_TAG.md" --draft
-          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > release.json
-          jq -e '.draft == true and (.assets | length) == 7' release.json
+          gh api "repos/$GH_REPO/releases?per_page=100" > releases.json
+          existing_count="$(jq --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)] | length' releases.json)"
+          if [[ "$existing_count" == 0 ]]; then
+            gh release create "$RELEASE_TAG" upload/* --verify-tag --target "$SOURCE_SHA" \
+              --title "Executor $RELEASE_TAG" --notes-file ".github/release-notes/$RELEASE_TAG.md" --draft
+            gh api "repos/$GH_REPO/releases?per_page=100" > releases.json
+          fi
+          release_id="$(jq -er --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)] | if length == 1 then .[0].id else error("ambiguous release") end' releases.json)"
+          gh api "repos/$GH_REPO/releases/$release_id" > release.json
+          jq -e --arg sha "$SOURCE_SHA" '.target_commitish == $sha and (.assets | length) == 7' release.json
           for asset in upload/*; do
             asset_name="${asset##*/}"
             digest="sha256:$(sha256sum "$asset" | cut -d ' ' -f1)"
@@ -112,5 +118,9 @@ jobs:
             jq -e --arg name "$asset_name" --arg digest "$digest" --argjson size "$asset_size" \
               '[.assets[] | select(.name == $name and .digest == $digest and .size == $size and .state == "uploaded")] | length == 1' release.json
           done
-          gh release edit "$RELEASE_TAG" --draft=false --latest
-          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq '{tag_name,draft,prerelease,html_url,assets:[.assets[]|{name,size,digest}]}'
+          if [[ "$(jq -r '.draft' release.json)" == true ]]; then
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" -F draft=false -f make_latest=true > /dev/null
+          fi
+          gh api "repos/$GH_REPO/releases/$release_id" > release.json
+          jq -e '.draft == false and .prerelease == false' release.json
+          jq '{tag_name,draft,prerelease,html_url,assets:[.assets[]|{name,size,digest}]}' release.json
