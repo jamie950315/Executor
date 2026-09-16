@@ -94,6 +94,22 @@ Git under the Mac Beta installation's `pilot-enrollment-operator` directory.
 
 ## Approved direction
 
+### CTPS and WSL parallel enrollment
+
+Both additional relay-only devices are enrolled and shown live in the Beta
+Dashboard, without changing their original Executor installations. Hub delegation
+is not yet approved, so they are not yet callable through the Hub.
+CTPS state/binary root is `C:\Users\jamie\ExecutorHubPilot`, with independent
+`ExecutorHubPilot-{broker,desktop,dashboard}` logon tasks, rescue port 29789,
+and `executor-hub-pilot-{broker,desktop}` named pipes. Device ID is
+`device-fq20qyyx7zrCOSBdoDE677yi2u6GFldF`.
+WSL root is `/home/jamie/.local/share/executor-hub-pilot`, with three transient
+`executor-hub-pilot-{broker,desktop,dashboard}` units and rescue port 29788.
+Device ID is `device-JJgd3JzbI-6Ik5AeJBb003QnUlGyCZZ9`. Both currently display
+the host name CyberTitanV3; distinguish them by platform and exact device ID.
+No OpenAI Tunnel Client was installed on either host. Enrollment was disabled
+again and temporary enrollment tokens were removed.
+
 Branch `codex/pi5-hub` explores a single Pi5 MCP gateway. Only Pi5 runs the
 OpenAI tunnel client. ChatGPT connects to one Hub; enrolled devices retain
 Executor helpers and their Dashboard relay connection. The Hub must never
