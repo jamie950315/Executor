@@ -1,0 +1,116 @@
+name: Publish validated release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+      source_sha:
+        description: Exact validated source commit
+        required: true
+      build_run:
+        description: Successful Release workflow run ID
+        required: true
+      validation_run:
+        description: Successful Go workflow run ID for the same commit
+        required: true
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      BUILD_RUN: ${{ inputs.build_run }}
+      VALIDATION_RUN: ${{ inputs.validation_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify source and existing CI gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ && "$VALIDATION_RUN" =~ ^[0-9]+$ ]]
+          for pair in "$BUILD_RUN:release.yml" "$VALIDATION_RUN:go.yml"; do
+            run_id="${pair%%:*}"
+            workflow_file="${pair#*:}"
+            gh api "repos/$GH_REPO/actions/runs/$run_id" > run.json
+            jq -e --arg sha "$SOURCE_SHA" --arg path ".github/workflows/$workflow_file" --arg repo "$GH_REPO" \
+              '.head_sha == $sha and .path == $path and .status == "completed" and .conclusion == "success" and .head_repository.full_name == $repo' run.json
+          done
+          gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" > tag.json
+          tag_type="$(jq -r '.object.type' tag.json)"
+          tag_sha="$(jq -r '.object.sha' tag.json)"
+          if [[ "$tag_type" == tag ]]; then
+            gh api "repos/$GH_REPO/git/tags/$tag_sha" > tag.json
+            tag_type="$(jq -r '.object.type' tag.json)"
+            tag_sha="$(jq -r '.object.sha' tag.json)"
+          fi
+          [[ "$tag_type" == commit && "$tag_sha" == "$SOURCE_SHA" ]]
+          test -f ".github/release-notes/$RELEASE_TAG.md"
+      - name: Download and verify six platform artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "$BUILD_RUN" --dir artifacts
+          mkdir upload
+          for target in darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 windows-arm64; do
+            target_os="${target%-*}"
+            target_arch="${target#*-}"
+            extension=tar.gz
+            [[ "$target_os" != windows ]] || extension=zip
+            archive="executor_${target_os}_${target_arch}.${extension}"
+            cp "artifacts/executor-$target/$archive" "upload/$archive"
+            if [[ "$extension" == zip ]]; then
+              unzip -p "upload/$archive" executor.exe > "$RUNNER_TEMP/executor-probe"
+            else
+              tar -xOf "upload/$archive" ./executor > "$RUNNER_TEMP/executor-probe"
+            fi
+            go version -m "$RUNNER_TEMP/executor-probe" > binary-metadata.txt
+            grep -F "vcs.revision=$SOURCE_SHA" binary-metadata.txt
+            grep -F 'vcs.modified=false' binary-metadata.txt
+            grep -F "GOOS=$target_os" binary-metadata.txt
+            grep -F "GOARCH=$target_arch" binary-metadata.txt
+          done
+          cp artifacts/executor-checksums/SHA256SUMS.txt upload/SHA256SUMS.txt
+          test "$(wc -l < upload/SHA256SUMS.txt)" -eq 6
+          for asset in upload/executor_*; do
+            asset_name="${asset##*/}"
+            awk -v name="$asset_name" 'NF == 2 && $2 == name && length($1) == 64 && $1 !~ /[^0-9a-f]/ { n++ } END { exit n != 1 }' upload/SHA256SUMS.txt
+          done
+          (cd upload && sha256sum -c SHA256SUMS.txt)
+      - name: Upload draft, verify GitHub digests, then publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" upload/* --verify-tag --target "$SOURCE_SHA" \
+            --title "Executor $RELEASE_TAG" --notes-file ".github/release-notes/$RELEASE_TAG.md" --draft
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > release.json
+          jq -e '.draft == true and (.assets | length) == 7' release.json
+          for asset in upload/*; do
+            asset_name="${asset##*/}"
+            digest="sha256:$(sha256sum "$asset" | cut -d ' ' -f1)"
+            asset_size="$(stat -c %s "$asset")"
+            jq -e --arg name "$asset_name" --arg digest "$digest" --argjson size "$asset_size" \
+              '[.assets[] | select(.name == $name and .digest == $digest and .size == $size and .state == "uploaded")] | length == 1' release.json
+          done
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq '{tag_name,draft,prerelease,html_url,assets:[.assets[]|{name,size,digest}]}'
