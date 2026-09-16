@@ -15,6 +15,7 @@ import {
 import { verifyDeviceGrant } from "./shared/crypto";
 import { decodeEnvelope, makeEnvelope } from "./shared/wire";
 import { relayHTTPResponse } from "./relay-response";
+import { prepareHubOwner, finalizeHubOwner, type HubOwnerAction } from "./hub-owner";
 
 const maximumControlBodyBytes = 16 * 1024 * 1024;
 
@@ -35,6 +36,8 @@ const allowedControlMethods = new Set([
   "control.rotate",
   "control.kill",
   "control.resume",
+  "hub.delegate",
+  "hub.revoke",
 ]);
 
 export function isAllowedControlMethod(method: string): boolean { return allowedControlMethods.has(method); }
@@ -188,6 +191,11 @@ async function handleCall(
     const tooLarge = error instanceof Error && error.message === "request too large";
     return errorResponse(tooLarge ? "request too large" : "invalid request", tooLarge ? 413 : 400);
   }
+  let hubAction: HubOwnerAction | undefined;
+  if (method === "hub.delegate" || method === "hub.revoke") {
+    try { hubAction = await prepareHubOwner(env.DB,method,argumentsValue); argumentsValue = hubAction.input; }
+    catch { return errorResponse("registered Hub required",400); }
+  }
   const requestID = crypto.randomUUID();
   const relayEnvelope = makeEnvelope("request", crypto.randomUUID(), {
     request_id: requestID,
@@ -206,7 +214,8 @@ async function handleCall(
     await writeAudit(env.DB, deviceID, access.subject, method, relayed.error, Date.now());
     return relayErrorResponse(relayed.error);
   }
-  const response = await relayHTTPResponse(relayed.stream, requestID, request.signal);
+  let response = await relayHTTPResponse(relayed.stream, requestID, request.signal);
+  if (hubAction !== undefined) response = await finalizeHubOwner(request,response,env,unlocked.device,hubAction,requestID);
   try {
     await writeAudit(env.DB, deviceID, access.subject, method, response.ok ? "forwarded" : "response_failed", Date.now());
   } catch {

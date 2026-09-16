@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -204,9 +205,13 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 	if err != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "Executor Device"
 	}
+	mcpURL := configuredMCPURL(cfg.Domain)
+	if cfg.RelayOnly {
+		mcpURL = ""
+	}
 	body, err := json.Marshal(enrollmentRequest{
 		DeviceID: cfg.UnifiedDashboard.DeviceID, Name: hostname, Platform: runtime.GOOS, Arch: runtime.GOARCH,
-		Version: options.ExecutorVersion, MCPURL: configuredMCPURL(cfg.Domain), PublicJWK: identity.PublicJWK(),
+		Version: options.ExecutorVersion, MCPURL: mcpURL, PublicJWK: identity.PublicJWK(),
 		Generation: values.Generation,
 	})
 	if err != nil {
@@ -230,7 +235,7 @@ func enrollLocked(ctx context.Context, options EnrollOptions, operations enrollm
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		return errors.New("dashboard enrollment rejected")
+		return fmt.Errorf("dashboard enrollment rejected (HTTP %d)", response.StatusCode)
 	}
 	fingerprint, err := enrollmentCleanupFingerprint(identity, token)
 	if err != nil {

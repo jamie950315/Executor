@@ -1,4 +1,6 @@
 import { verifyAccess } from "./access";
+import { handleHubRoute } from "./hub";
+import { handleHubAdmin } from "./hub-admin";
 import { handleControlRoute, matchControlRoute } from "./control";
 import { enrollDevice, getDevice, listDevices, writeAudit, type EnrollmentInput } from "./db";
 import { browserIdentity, errorResponse, jsonResponse, readBoundedJSON, rejectCrossOrigin, requireStateChangingRequest } from "./http";
@@ -26,6 +28,8 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   }
   const url = new URL(request.url);
 
+  if (url.pathname.startsWith("/api/hub/")) return handleHubRoute(request, env);
+
   if (request.method === "POST" && url.pathname === "/api/device/enroll") {
     return handleEnrollment(request, env);
   }
@@ -39,6 +43,7 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     if (access === null) {
       return errorResponse("unauthorized", 401);
     }
+    if (url.pathname === "/api/hubs" || url.pathname.startsWith("/api/hubs/")) return handleHubAdmin(request,env,access);
     const browser = browserIdentity(request);
     const controlRoute = matchControlRoute(request, url);
     if (controlRoute !== null) {
@@ -242,6 +247,8 @@ function validText(value: unknown, maximum: number): value is string {
 }
 
 function validMCPURL(value: string): boolean {
+  // Explicitly empty means an authenticated relay-only device, not a fallback URL.
+  if (value === "") return true;
   if (value.length > 2048) {
     return false;
   }

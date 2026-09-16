@@ -21,3 +21,4 @@ live-turn.json
 turnserver.conf
 **/playwright-report/
 **/test-results/
+**/__pycache__/

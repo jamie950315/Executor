@@ -16,6 +16,12 @@ import (
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if handled, code := runRelayDeviceCommand(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
+	if handled, code := runHubCommand(ctx, os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "render-service-bundle" {
 		os.Exit(runRenderServiceBundle(os.Args[2:]))
 	}

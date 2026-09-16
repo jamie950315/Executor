@@ -148,6 +148,23 @@ func TestConcurrentEnrollmentProcessesUsingSameTokenPostOnce(t *testing.T) {
 	}
 }
 
+func TestEnrollmentRejectionReportsStatusWithoutResponseBody(t *testing.T) {
+	path, cfg, _ := relayFixture(t)
+	tokenPath := filepath.Join(cfg.StateDir, "test-enroll.token")
+	if err := os.WriteFile(tokenPath, []byte("fixture-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte("PRIVATE_RESPONSE_MARKER"))
+	}))
+	defer server.Close()
+	err := Enroll(context.Background(), EnrollOptions{ConfigPath: path, DashboardURL: server.URL, TokenFile: tokenPath, HTTPClient: server.Client(), ExecutorVersion: "test"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), "PRIVATE_RESPONSE_MARKER") {
+		t.Fatal("enrollment rejection lacks safe status classification")
+	}
+}
+
 func TestEnrollmentCancellationWhileWaitingPreservesToken(t *testing.T) {
 	configPath, cfg, _ := relayFixture(t)
 	tokenPath := filepath.Join(t.TempDir(), "enrollment.token")

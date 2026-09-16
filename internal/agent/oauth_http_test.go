@@ -44,11 +44,45 @@ func TestRegistrationRejectsTrailingDataBeforePersisting(t *testing.T) {
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
+	testOAuthHTTPFlow(t, "")
+}
+
+func TestOAuthHTTPAliasRegistrationAuthorizationAndToken(t *testing.T) {
+	testOAuthHTTPFlow(t, "https://tunnel.example.test/v1/mcp/tunnel_test")
+}
+
+func testOAuthHTTPFlow(t *testing.T, transportResource string) {
+	t.Helper()
 	core := testOAuthCore(t)
 	statePath := filepath.Join(t.TempDir(), "oauth-state.json")
-	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" }, WithOAuthStatePath(statePath))
+	h := NewOAuthHandler(core, "https://executor.example.com", func(key string) bool { return key == "recovery-key" }, WithOAuthStatePath(statePath), WithOAuthResourceAliases([]string{transportResource}))
+	if transportResource != "" {
+		server := httptest.NewServer(h)
+		defer server.Close()
+		client := server.Client()
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			request, err := http.NewRequest(r.Method, server.URL+r.URL.RequestURI(), r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header = r.Header.Clone()
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			for key, values := range response.Header {
+				w.Header()[key] = values
+			}
+			w.WriteHeader(response.StatusCode)
+			if _, err := io.Copy(w, response.Body); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 
-	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"} {
+	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server"} {
 		res := httptest.NewRecorder()
 		h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
 		if res.Code != http.StatusOK || res.Header().Get("Content-Type") != "application/json" {
@@ -94,9 +128,13 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		"code_challenge_method": {"S256"},
 	}
 	authorizePage := httptest.NewRecorder()
+	values.Set("resource", transportResource)
 	h.ServeHTTP(authorizePage, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
 	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), "ChatGPT") || !strings.Contains(authorizePage.Body.String(), client.RedirectURIs[0]) {
 		t.Fatalf("authorize page status=%d body=%q", authorizePage.Code, authorizePage.Body.String())
+	}
+	if !strings.Contains(authorizePage.Header().Get("Content-Security-Policy"), "form-action 'self' https://chatgpt.com;") {
+		t.Fatal("authorization CSP must allow the validated callback origin after POST redirect")
 	}
 
 	values.Set("recovery_key", "wrong")
@@ -127,6 +165,19 @@ func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
 		"code":          {redirect.Query().Get("code")},
 		"redirect_uri":  {client.RedirectURIs[0]},
 		"code_verifier": {verifier},
+	}
+	tokenForm.Set("resource", transportResource)
+	if transportResource != "" {
+		// Reject a different tunnel before consuming the one-time code.
+		tokenForm.Set("resource", transportResource+"-other")
+		badRequest := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
+		badRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		badResponse := httptest.NewRecorder()
+		h.ServeHTTP(badResponse, badRequest)
+		if badResponse.Code != http.StatusBadRequest || !strings.Contains(badResponse.Body.String(), "invalid_target") {
+			t.Fatalf("wrong alias token exchange status=%d", badResponse.Code)
+		}
+		tokenForm.Set("resource", transportResource)
 	}
 	tokenReq := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

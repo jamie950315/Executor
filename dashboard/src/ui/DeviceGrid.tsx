@@ -50,7 +50,7 @@ export function DeviceGrid({
               <div><dt>Executor</dt><dd>{device.version}</dd></div>
               <div><dt>Generation</dt><dd>{device.generation}</dd></div>
               <div><dt>Last seen</dt><dd>{formatLastSeen(device.last_seen_at)}</dd></div>
-              <div className="wide"><dt>MCP URL</dt><dd>{device.mcp_url}</dd></div>
+              <div className="wide"><dt>MCP endpoint</dt><dd>{device.mcp_url || "Relay only — no public MCP endpoint"}</dd></div>
             </dl>
             <footer>
               {canUnlock ? (

@@ -100,6 +100,7 @@ var hostToolMethods = map[string]struct{}{
 }
 
 var lifecycleMethods = map[string]struct{}{
+	"hub.delegate": {}, "hub.revoke": {},
 	"control.status": {}, "control.audit": {}, "control.permissions": {}, "control.rotate": {},
 	"control.kill": {}, "control.resume": {},
 }
@@ -131,6 +132,9 @@ func NewAdapter(options AdapterOptions) (*Adapter, error) {
 func (a *Adapter) HandleRequest(ctx context.Context, requestID, method string, arguments json.RawMessage) (HandleResult, error) {
 	if ctx == nil || requestID == "" || method == "" {
 		return HandleResult{}, ErrRequestInvalid
+	}
+	if method == "hub.call" {
+		return a.handleHubRequest(ctx, requestID, arguments)
 	}
 	call, err := a.verifyCall(arguments)
 	if err != nil {
@@ -253,6 +257,14 @@ func (a *Adapter) handleLifecycle(ctx context.Context, requestID, method string,
 	if disabled(filepath.Join(call.config.StateDir, "disabled")) {
 		a.appendAudit(call.config, actor, method, "disabled")
 		return HandleResult{}, ErrExecutorDisabled
+	}
+	if method == "hub.delegate" || method == "hub.revoke" {
+		return a.handleHubOwner(ctx, method, call, actor)
+	}
+	// A relay-only instance has no generic installed-service ownership manifest.
+	// Never let its lifecycle controls operate another installation's labels.
+	if call.config.RelayOnly && (method == "control.kill" || method == "control.rotate" || method == "control.resume") {
+		return HandleResult{}, ErrUnsupportedMethod
 	}
 	lifecycle, err := a.lifecycleFactory(a.configPath)
 	if err != nil {

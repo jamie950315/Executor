@@ -34,6 +34,44 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 - Production Mac, Pi5, Windows CTPS and Debian WSL now run verified clean main merge `86e01dfff559b40de986c282da13ba71f7864b91`; central Dashboard Worker is `9aa485e0-b1de-404c-afc2-76fbb3240fb3`. Full tests/builds, six target core suites per remote OS, all-host owner/admin runtime and existing public MCP calls pass. Production Dashboard retains all four unlocked devices and exact paginated/empty-file reads. MCP metadata is unchanged on every host, so existing ChatGPT connections and approval settings require no Refresh or reauthorization. Production credentials/config/TURN, Access/D1/DO/enrollment and shared tunnels remain preserved. Separate Beta/Fetch Proxy are not replaced; Beta's normal OAuth refresh is documented. Rollback binaries are under each state's `deployment-backups/main-86e01df-20260915`. The later v0.3.2 publication did not reinstall these devices. See `docs/2026-09-main-relay-rollout.md`.
 
+- `codex/pi5-hub` is the separate Pi5-only Hub implementation branch: one OpenAI
+  Tunnel client on Pi5, explicit per-call device routing through Dashboard relay,
+  and no direct-device fallback. Source now includes an OAuth-protected Hub Agent,
+  signed machine API, device-side proof/replay checks and owner delegation actions.
+  Two isolated native-helper read/write tests and local Hub management UI checks
+  pass, including native Pi5 tests. Beta Dashboard now runs Hub pilot Worker
+  `ef918f21-3148-4dc6-b508-1cecdc64aa0c` with migration 0003; the Pi5 binary is
+  staged and dedicated Hub/relay-only transient services are active on Pi5.
+  The new public Hub hostname passes OAuth metadata/401 checks; the official
+  Linux tunnel client now owns the Executor Tunnel; the Mac runtime is stopped.
+  Mac Beta Dashboard/relay
+  uses `bundle-hub-52a6b91`; the scoped machine Access route is installed.
+  Pi5 relay-only enrollment and owner-approved Hub registration are complete;
+  the public UI shows both devices live and `pi5-hub-pilot` enabled. Mac Beta
+  and Pi5 delegation are confirmed. ChatGPT OAuth, two-device file create/read/
+  overwrite/append, Pi5 terminal session lifecycle, and device-error-then-normal-read
+  acceptance pass. Hub runs as `executor-hub-pilot-f4b21af`; production services
+  are preserved. Long-run relay stability and reboot-persistent installation
+  remain unverified; pilot units are transient. See the runbook for evidence limits.
+  See `docs/PI5_HUB.md` and `docs/BETA_DASHBOARD.md`.
+
+- CTPS and Debian WSL now have separate relay-only Hub pilot installations,
+  preserving production Executor services and credentials. Both are enrolled,
+  delegated to `pi5-hub-pilot` and pass one Hub-routed read-only status call.
+  No OpenAI Tunnel Client was installed on either. Exact device IDs, independent
+  task/unit names and deployment paths are in `docs/PI5_HUB.md`.
+
+- Branch `tunnel` adds an optional official OpenAI Tunnel helper. The local
+  `executor-openai-tunnel` runtime now forwards to authenticated Mac Beta HTTPS.
+  Beta Agent `61aeb58` in `bundle-tunnel-csp` adds exact OAuth resource aliases
+  and validated callback-origin CSP support. Credentials and production services
+  are preserved. `Executor Tunnel Beta` completes OAuth and real ChatGPT AI
+  create/read/overwrite/append and cross-page/binary acceptance.
+  Other Beta roles keep `bundle-ec5f53d`; the dedicated stop helper validates
+  these mixed paths. See `docs/OPENAI_TUNNEL.md` for evidence and rollback.
+
+- Main now integrates the Beta-verified relay result validation, first-byte HTTP guard, persistent UI diagnostics and four-target Mac Beta maintenance helper. Installed production versions must be verified separately; merging does not deploy or rotate credentials. Beta-specific maintenance scripts remain scoped to the separate Mac Beta installation and must not manage production service labels.
+
 - Isolated Beta Dashboard now runs UI `b5d6b29` on `codex/beta-relay-error-ui` with unchanged `b39d818` Worker code; current Worker version is `530fafe6-3806-4b9c-8ccf-36ef586238a2`. Real browser verification passes normal/empty/212 KB four-page reads, pre-first-byte HTTP 502 with persistent request-correlated error, offline Files retention and disabled controls, reconnect without retry, failed-preview Save protection, and manual dismissal. Other workspaces retain offline cleanup. D1/DO/Access remain Beta-only; enrollment stays disabled and existing Beta `bundle-ec5f53d` credentials are unchanged. Only `com.executor.beta.dashboard` was restarted for fault tests; the installed `stop.py` now validates and manages all four Beta services (canonical source `scripts/beta_stop.py`). Production was not modified. See `docs/BETA_DASHBOARD.md` for versions, acceptance and rollback.
 
 - Beta finalization on `codex/beta-finalization` verifies the complete public HTTP 502 JSON body: 155 bytes, normal EOF, valid UTF-8/JSON, matching header/body request ID and `relay_stream_failed` / `unconfirmed`, with exactly one FIFO request. Independent bounded Dashboard-only recovery and fixture cleanup passed; normal/empty reads and unchanged credentials/production inventory passed. The real four-target stop helper was exercised only via `--check`; full stop/start is fixture-tested. Main, deployment version and Worker/UI code are unchanged. See `docs/BETA_DASHBOARD.md` for the stop helper backup, atomic rollback and acceptance procedure.

@@ -3,7 +3,10 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,11 +27,13 @@ import (
 	"github.com/jamie950315/executor/internal/desktop"
 	"github.com/jamie950315/executor/internal/dispatch"
 	"github.com/jamie950315/executor/internal/filesystem"
+	"github.com/jamie950315/executor/internal/hub"
 	"github.com/jamie950315/executor/internal/ipc"
 	"github.com/jamie950315/executor/internal/livedesktop"
 	"github.com/jamie950315/executor/internal/mcp"
 	"github.com/jamie950315/executor/internal/oauth"
 	permissionmodel "github.com/jamie950315/executor/internal/permissions"
+	"github.com/jamie950315/executor/internal/relay"
 	"github.com/jamie950315/executor/internal/relayclient"
 	"github.com/jamie950315/executor/internal/secrets"
 	"github.com/jamie950315/executor/internal/terminal"
@@ -107,6 +112,9 @@ func RunAgent(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.RelayOnly {
+		return errors.New("relay-only devices do not expose an HTTP MCP Agent")
+	}
 	if cfg.AgentAddress == "" {
 		return errors.New("agent address is required")
 	}
@@ -131,11 +139,7 @@ func RunAgent(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	mcpServer := mcp.NewServer(mcp.ServerConfig{
-		ServerName:    "Executor",
-		ServerVersion: serverVersion,
-		Dispatcher:    dispatcher,
-	})
+	mcpServer := mcp.NewServer(runtimeMCPConfig(cfg, dispatcher))
 
 	var verifyURLSecret agent.URLSecretVerifier
 	if cfg.URLSecretEnabled {
@@ -152,6 +156,7 @@ func RunAgent(ctx context.Context, configPath string) error {
 		resource,
 		values.VerifyRecoveryKey,
 		agent.WithOAuthStatePath(statePath),
+		agent.WithOAuthResourceAliases(cfg.OAuthResourceAliases),
 		agent.WithOAuthEventRecorder(newOAuthAuditRecorder(cfg)),
 	)
 
@@ -172,6 +177,10 @@ func RunAgent(ctx context.Context, configPath string) error {
 		}
 		if disabled(filepath.Join(cfg.StateDir, "disabled")) {
 			http.Error(writer, "Executor is disabled", http.StatusServiceUnavailable)
+			return
+		}
+		if request.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+			oauthHandler.ServeHTTP(writer, request)
 			return
 		}
 		if request.URL.Path == "/mcp" || strings.HasSuffix(request.URL.Path, "/mcp") {
@@ -367,11 +376,7 @@ func RunStdio(ctx context.Context, configPath string, in io.Reader, out io.Write
 	if err != nil {
 		return err
 	}
-	handler := mcp.NewStdioHandler(mcp.NewServer(mcp.ServerConfig{
-		ServerName:    "Executor",
-		ServerVersion: serverVersion,
-		Dispatcher:    dispatcher,
-	}))
+	handler := mcp.NewStdioHandler(mcp.NewServer(runtimeMCPConfig(cfg, dispatcher)))
 
 	done := make(chan error, 1)
 	go func() { done <- handler.Serve(ctx, in, out) }()
@@ -418,11 +423,26 @@ func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatc
 	if err := store.Prune(time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("prune audit store: %w", err)
 	}
-	dispatcher := newDispatcher(cfg, values)
+	var dispatchCall mcp.Dispatcher
+	if cfg.HubEnabled {
+		identity, err := relay.ParseDeviceIdentity(values.RelayPrivateJWK)
+		if err != nil {
+			return nil, errors.New("Hub signing identity unavailable")
+		}
+		router, err := hub.LoadRouter(cfg.StateDir, identity)
+		if err != nil {
+			return nil, err
+		}
+		dispatchCall = router.Dispatch
+	} else {
+		dispatchCall = newDispatcher(cfg, values).Dispatch
+	}
 	return func(ctx context.Context, call mcp.ToolCall) (any, error) {
 		actorName := "local-stdio"
+		callerActor := agent.Actor{Subject: "local-owner", Method: "stdio"}
 		if actor, ok := agent.ActorFromContext(ctx); ok {
 			actorName = actor.Subject
+			callerActor = actor
 		}
 		event := audit.Event{
 			Actor:     actorName,
@@ -435,7 +455,10 @@ func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatc
 		if err := store.Append(event); err != nil {
 			return nil, fmt.Errorf("append audit event: %w", err)
 		}
-		result, dispatchErr := dispatcher.Dispatch(ctx, call)
+		if cfg.HubEnabled {
+			call.SessionID = hubCallerScope(call.SessionID, callerActor)
+		}
+		result, dispatchErr := dispatchCall(ctx, call)
 		if dispatchErr != nil {
 			event.Outcome = "failed"
 		} else {
@@ -448,6 +471,27 @@ func newAuditedDispatcher(cfg config.Config, values secrets.Values) (mcp.Dispatc
 		}
 		return result, dispatchErr
 	}, nil
+}
+
+func runtimeMCPConfig(cfg config.Config, dispatcher mcp.Dispatcher) mcp.ServerConfig {
+	result := mcp.ServerConfig{ServerName: "Executor", ServerVersion: serverVersion, Dispatcher: dispatcher}
+	if cfg.HubEnabled {
+		result.ServerName = "Executor Hub"
+		result.Tools = hub.Tools()
+	}
+	return result
+}
+
+func hubCallerScope(session string, actor agent.Actor) string {
+	// OAuth transport sessions can change between tool calls. Ownership belongs
+	// to the authenticated subject and OAuth client, not that transport handle.
+	// Keep session isolation when no complete OAuth identity is available.
+	if actor.Method == "oauth" && actor.Subject != "" && actor.ClientID != "" {
+		session = ""
+	}
+	data, _ := json.Marshal([]string{"executor-hub-caller-v1", actor.Method, actor.Subject, actor.ClientID, session})
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 func newOAuthAuditRecorder(cfg config.Config) agent.OAuthEventRecorder {
