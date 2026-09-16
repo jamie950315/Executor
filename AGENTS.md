@@ -32,6 +32,16 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Latest public release is `v0.4.0`, source `83ad3ec`, at
+  https://github.com/jamie950315/Executor/releases/tag/v0.4.0. Native Go CI
+  `35052857912`, six-platform Release build `35058424015`, and publication
+  `35060043400` pass. All six archives and SHA256SUMS.txt have verified source
+  identity, sizes and matching GitHub SHA-256 digests. The manual publication
+  workflow reuses successful same-commit Go/Release runs and verifies draft
+  assets by release ID before publishing. Later main commits add publication
+  automation/notes only; this release did not reinstall or restart devices.
+  macOS artifacts are ad-hoc signed/not notarized; Windows lacks Authenticode.
+
 - Hub source is merged into main at `923013c`. Four-host cutover is complete:
   new persistent Pi5/WSL units, CTPS system services and Mac Hub launchd services
   are active; old Executor services are stopped and disabled/masked. Pi5 Tunnel
@@ -92,7 +102,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 - Local branch `fix/relay-result-validation` fixes outgoing relay result validation before both response/chunk paths and returns correlated `invalid_result` failures. TDD reproduced 24 failing subcases before the correction; full Go tests, relay race checks, 100 repeated result-regression runs, vet/native build, six CGO-disabled cross-builds, 268 Dashboard tests (one existing skip), Dashboard checks/build, and isolated local TLS/stdio runtime checks pass. The original intermittent empty HTTP body remains unconfirmed. This is local-only; existing production devices, Worker, credentials, releases, and `main` are unchanged. See `docs/2026-09-relay-result-validation.md`.
 
-- Latest public release: `v0.3.2`, built from clean `c36e9cc` and published at https://github.com/jamie950315/Executor/releases/tag/v0.3.2. Go workflow `34873696039` (including native Windows tests) and Release workflow `34873774569` both passed. All six archives and `SHA256SUMS.txt` have matching local/GitHub SHA-256 and sizes; archive paths/payloads, Mac arm64 CLI smoke and app signature were verified. GitHub-built macOS apps are ad-hoc signed/not notarized; Windows binaries are not Authenticode-signed. Publishing pushed main and the new tag only, without modifying `tunnel`, reinstalling devices or rotating credentials.
+- Previous public release: `v0.3.2`, built from clean `c36e9cc` and published at https://github.com/jamie950315/Executor/releases/tag/v0.3.2. Go workflow `34873696039` (including native Windows tests) and Release workflow `34873774569` both passed. All six archives and `SHA256SUMS.txt` have matching local/GitHub SHA-256 and sizes; archive paths/payloads, Mac arm64 CLI smoke and app signature were verified. GitHub-built macOS apps are ad-hoc signed/not notarized; Windows binaries are not Authenticode-signed. Publishing pushed main and the new tag only, without modifying `tunnel`, reinstalling devices or rotating credentials.
 
 - Release validation requires the native Windows Go tests as well as the Release artifact workflow. The URL-secret integration fixture waits for authenticated Desktop IPC readiness before dispatch; successful HTTP initialization alone does not prove that the independently started helper is ready. This is a test synchronization fix, not a change to production authentication or request retry behavior.
 
