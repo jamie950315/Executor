@@ -95,7 +95,18 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   Rollback uses the original Hub binary and removal of the dedicated service
   override. Publishing the source does not reinstall or restart these devices.
 
-- Latest public release is `v0.4.1`, source
+- Latest public release is `v0.4.2`, source
+  `709cbc222b26b12bae498e137f8cd4b1760398d1`, at
+  https://github.com/jamie950315/Executor/releases/tag/v0.4.2. Native Go CI
+  `36706180451`, six-platform Release build `36706180481`, and publication
+  `36707309465` pass. All six archives and SHA256SUMS.txt have verified source
+  identity, sizes and matching GitHub SHA-256 digests; the public release is
+  non-draft, non-prerelease and latest. It includes the source performance and
+  correctness fixes above. Publication did not reinstall or restart devices;
+  the mixed deployment and credentials recorded above are retained. GitHub-built
+  macOS apps are ad-hoc signed/not notarized; Windows lacks Authenticode.
+
+- Previous public release is `v0.4.1`, source
   `2d30a602406e904c1fa96b50266d6ef8b103a329`, at
   https://github.com/jamie950315/Executor/releases/tag/v0.4.1. Native Go CI
   `36701580400`, six-platform Release build `36701579908`, and publication
@@ -108,7 +119,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   or restart devices. GitHub-built macOS apps are ad-hoc signed/not notarized;
   Windows binaries lack Authenticode.
 
-- Previous public release is `v0.4.0`, source `83ad3ec`, at
+- Earlier public release is `v0.4.0`, source `83ad3ec`, at
   https://github.com/jamie950315/Executor/releases/tag/v0.4.0. Native Go CI
   `35052857912`, six-platform Release build `35058424015`, and publication
   `35060043400` pass. All six archives and SHA256SUMS.txt have verified source
