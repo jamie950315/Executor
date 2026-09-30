@@ -36,12 +36,32 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   Live Sonnet 5.5 Medium acceptance passes status summaries for all four devices,
   Pi5 owner mkdir/write/read of an exact 35-byte file, and a pipe-mode argv
   terminal with matching SHA-256, exit code 0 and confirmed session close.
-  The file hash was independently checked on Pi5. Claude uses the public HTTPS
-  MCP ingress; ChatGPT's OpenAI Tunnel remains a separate entry to the same Hub.
-  Claude desktop actions and writes on the other three devices remain untested.
-  Only the Hub binary was updated to `061c3e9` for the exact Claude DCR callback;
-  downstream devices, configuration, credentials and existing OAuth grants are
-  retained. Existing authenticated four-device discovery still passes. Mac and
+  Follow-up owner mkdir/write/read acceptance also passes on Mac, Windows and
+  WSL, including exact UTF-8 Chinese content; all four file hashes were checked
+  independently on their hosts. Claude uses the public HTTPS MCP ingress;
+  ChatGPT's OpenAI Tunnel remains a separate entry to the same Hub.
+  Live desktop screenshots, click, arrow key and scroll pass on Mac and Windows;
+  Mac drag also passes. Windows exact English/Chinese input and process-name
+  focus pass. Pi5 and WSL report no graphical session in their permission probes;
+  screenshot attempts fail with a generic device action error.
+  Follow-up exposed desktop bugs: relayed screenshots became JSON text, and
+  macOS AppleScript text input turned Chinese into `aaaa`. Hub `e1ee2b2` restores
+  native MCP content blocks and is deployed on Pi5. Mac Desktop helper `66b3954`
+  uses native Unicode events, retains the signing identity and is installed;
+  its final live Unicode acceptance is paused at a macOS screen-access prompt.
+  Windows drag received down/up at the correct endpoints but no held move
+  messages in an isolated native WndProc probe. Fix `98d9b7f` is staged on CTPS
+  with native Desktop/Dispatcher tests, C# compilation and binary hash verified;
+  it is not deployed because one pre-existing owner terminal remains running.
+  Reloading the Windows helper requires owner approval to terminate that session.
+  Hub/MCP and Desktop/Dispatcher regression and race tests, vet, native Mac builds
+  and six-platform CLI cross-builds pass. Preserve the current mixed deployment:
+  Pi5 Hub `e1ee2b2`, Mac Desktop `66b3954`, other device roles unchanged. Config,
+  credentials and OAuth grants are retained. The Mac plist backup is in its new
+  bundle's `rollback` directory; the Pi5 override backup is under
+  `deployment-backups/claude-content-e1ee2b2-20260930`; Windows staged files and
+  task backup are under `deployment-backups/claude-drag-98d9b7f`.
+  Existing authenticated four-device discovery still passes. Mac and
   Pi5 OAuth/Agent/Hub tests, race checks, native builds and six-platform CLI/Kill
   cross-builds pass. Two first-install fixture failures also reproduced on the
   unchanged baseline under umask 077 and passed with their expected umask 022.
