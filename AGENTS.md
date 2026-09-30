@@ -81,7 +81,20 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   Rollback uses the original Hub binary and removal of the dedicated service
   override. Publishing the source does not reinstall or restart these devices.
 
-- Latest public release is `v0.4.0`, source `83ad3ec`, at
+- Latest public release is `v0.4.1`, source
+  `2d30a602406e904c1fa96b50266d6ef8b103a329`, at
+  https://github.com/jamie950315/Executor/releases/tag/v0.4.1. Native Go CI
+  `36701580400`, six-platform Release build `36701579908`, and publication
+  `36702517919` pass. All six archives and SHA256SUMS.txt have verified source
+  identity, sizes and matching GitHub SHA-256 digests; the public release is
+  non-draft, non-prerelease and latest. It includes exact hosted Claude OAuth
+  callback support, native Hub screenshot content, macOS Unicode input and
+  Windows physical-coordinate drag fixes. The live acceptance and mixed
+  deployment above remain the runtime evidence; publication did not reinstall
+  or restart devices. GitHub-built macOS apps are ad-hoc signed/not notarized;
+  Windows binaries lack Authenticode.
+
+- Previous public release is `v0.4.0`, source `83ad3ec`, at
   https://github.com/jamie950315/Executor/releases/tag/v0.4.0. Native Go CI
   `35052857912`, six-platform Release build `35058424015`, and publication
   `35060043400` pass. All six archives and SHA256SUMS.txt have verified source
