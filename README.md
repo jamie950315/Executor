@@ -28,6 +28,8 @@ After installing the services, bootstrap waits briefly for the active-user Deskt
 
 Remote authentication uses OAuth 2.1 with PKCE. Executor uses Dynamic Client Registration (DCR) for ChatGPT and hosted Claude compatibility and retains implemented support for Client ID Metadata Documents (CIMD), public-client `none`, and ChatGPT-signed `private_key_jwt` token exchange. Hosted Claude must use its [documented callback](https://claude.com/docs/connectors/building/authentication), `https://claude.ai/api/mcp/auth_callback`; other Claude paths, subdomains, ports, and query strings are not accepted. When adding a custom connector in Claude, select **Sign in now** and **Register automatically**, then authorize with the server's recovery key.
 
+Claude connects to the Hub's public HTTPS MCP URL with OAuth, independently of the optional OpenAI Tunnel used by ChatGPT. Both entry points reach the same Hub and its delegated devices; Claude does not connect to the OpenAI Tunnel URL.
+
 Before linking ChatGPT, run `executor doctor --full`. The full check sends an invalid, non-registering request through the public hostname to confirm that Cloudflare allows ChatGPT's DCR request to reach Executor. Cloudflare Bot Fight Mode can challenge API traffic and cannot be bypassed with a WAF custom rule; disable Bot Fight Mode for the zone or use Super Bot Fight Mode with an OAuth-path skip rule. See [Troubleshooting](docs/TROUBLESHOOTING.md) for the verified failure signatures and recovery steps.
 
 ## Deployment prerequisites

@@ -33,6 +33,12 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 ## Current status
 
 - Hosted Claude is connected to Executor Hub with all 10 tools discovered.
+  Live Sonnet 5.5 Medium acceptance passes status summaries for all four devices,
+  Pi5 owner mkdir/write/read of an exact 35-byte file, and a pipe-mode argv
+  terminal with matching SHA-256, exit code 0 and confirmed session close.
+  The file hash was independently checked on Pi5. Claude uses the public HTTPS
+  MCP ingress; ChatGPT's OpenAI Tunnel remains a separate entry to the same Hub.
+  Claude desktop actions and writes on the other three devices remain untested.
   Only the Hub binary was updated to `061c3e9` for the exact Claude DCR callback;
   downstream devices, configuration, credentials and existing OAuth grants are
   retained. Existing authenticated four-device discovery still passes. Mac and
