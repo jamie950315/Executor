@@ -434,7 +434,7 @@ func buildWindowsMouseScript(action MouseAction) string {
 		case mouseStepMove:
 			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + "); ")
 		case mouseStepDrag:
-			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + "); [ExecutorMouse]::InjectDragMove(); ")
+			events.WriteString("[ExecutorMouse]::InjectDragMove(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + "); ")
 		case mouseStepDown:
 			events.WriteString("[ExecutorMouse]::mouse_event(" + buttonMask + ",0,0,0," + extraInfo + "); ")
 			events.WriteString("$buttonHeld=$true; ")
@@ -471,18 +471,34 @@ public static class ExecutorMouse {
   [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public MOUSEINPUT mouse; }
   public const uint MOUSEEVENTF_MOVE = 0x0001;
   public const uint MOUSEEVENTF_MOVE_NOCOALESCE = 0x2000;
+  public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
   [DllImport("user32.dll", SetLastError=true)] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
-  public static void InjectDragMove() {
-    // SetCursorPos alone can coalesce held moves until after button release.
-    // Inject one non-coalesced move at the already checked physical position.
-    INPUT input = new INPUT { type = 0, mouse = new MOUSEINPUT { dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE } };
+  [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
+  public static int NormalizeAbsolute(int coordinate, int extent) {
+    if (extent <= 0 || coordinate < 0 || coordinate >= extent)
+      throw new ArgumentOutOfRangeException("coordinate", "Desktop drag position is outside the primary display");
+    // Target the center of the physical pixel in the 16-bit absolute space.
+    return (int)(((long)coordinate * 65536 + 32768) / extent);
+  }
+  public static void InjectDragMove(int X, int Y) {
+    // The input must carry the movement itself; a cursor warp followed by a
+    // zero-delta injection does not preserve held movement messages.
+    INPUT input = new INPUT { type = 0, mouse = new MOUSEINPUT {
+      dx = NormalizeAbsolute(X, GetSystemMetrics(0)),
+      dy = NormalizeAbsolute(Y, GetSystemMetrics(1)),
+      dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE | MOUSEEVENTF_ABSOLUTE
+    } };
     if (SendInput(1, new INPUT[] { input }, Marshal.SizeOf(typeof(INPUT))) != 1)
       throw new Win32Exception(Marshal.GetLastWin32Error(), "Desktop drag movement injection failed");
+    VerifyCursorPos(X, Y);
   }
   [DllImport("user32.dll", EntryPoint="SetCursorPos", SetLastError=true)] private static extern bool NativeSetCursorPos(int X, int Y);
   [DllImport("user32.dll", SetLastError=true)] private static extern bool GetCursorPos(out POINT point);
   public static void SetCursorPos(int X, int Y) {
     if (!NativeSetCursorPos(X, Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Desktop cursor movement failed");
+    VerifyCursorPos(X, Y);
+  }
+  private static void VerifyCursorPos(int X, int Y) {
     POINT point;
     if (!GetCursorPos(out point)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Desktop cursor position unavailable");
     if (point.X != X || point.Y != Y) throw new InvalidOperationException("Desktop cursor did not reach the requested position");

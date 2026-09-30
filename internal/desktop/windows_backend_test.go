@@ -17,6 +17,17 @@ import (
 func TestWindowsMouseNativeBindingsCompileWithoutSendingInput(t *testing.T) {
 	script := buildWindowsMouseScript(MouseAction{Type: MouseActionClick, X: 1, Y: 2})
 	script = strings.Split(script, "$buttonHeld=$false;")[0]
+	script += `; foreach($extent in @(1280,1920,2560,3840)) {
+  foreach($pixel in @(0,1,400,450,500,($extent/2),($extent-2),($extent-1))) {
+    $normalized=[ExecutorMouse]::NormalizeAbsolute($pixel,$extent)
+    $mapped=[Math]::Floor([double]$normalized*$extent/65536)
+    if($mapped -ne $pixel){throw 'Absolute drag coordinate lost its physical pixel'}
+  }
+}; foreach($pair in @(@(-1,2560),@(2560,2560),@(0,0))) {
+  $rejected=$false
+  try { [void][ExecutorMouse]::NormalizeAbsolute($pair[0],$pair[1]) } catch { $rejected=$true }
+  if(-not $rejected){throw 'Invalid absolute drag coordinate was accepted'}
+}`
 	if output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput(); err != nil {
 		t.Fatalf("native DPI/cursor bindings failed: %v\n%s", err, output)
 	}

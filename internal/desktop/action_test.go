@@ -340,7 +340,7 @@ func TestWindowsMouseScriptIncludesModifiersDoubleClickDragAndScroll(t *testing.
 	})
 	down := strings.Index(drag, "SetCursorPos(1,2)")
 	down = strings.Index(drag[down:], "mouse_event(2,0,0,0,[UIntPtr]::Zero)") + down
-	move := strings.Index(drag, "SetCursorPos(3,4)")
+	move := strings.Index(drag, "InjectDragMove(3,4)")
 	up := strings.LastIndex(drag, "mouse_event(4,0,0,0,[UIntPtr]::Zero)")
 	if !(down >= 0 && down < move && move < up) {
 		t.Fatalf("drag ordering is not down -> move -> up: %s", drag)
@@ -393,12 +393,15 @@ func TestWindowsDragInjectsNonCoalescedMovesWhileButtonIsHeld(t *testing.T) {
 	start := strings.Index(script, "$buttonHeld=$true;")
 	end := strings.Index(script[start:], "$buttonHeld=$false;") + start
 	held := script[start:end]
-	for _, point := range []string{"SetCursorPos(3,4); [ExecutorMouse]::InjectDragMove();", "SetCursorPos(5,6); [ExecutorMouse]::InjectDragMove();"} {
+	for _, point := range []string{"[ExecutorMouse]::InjectDragMove(3,4);", "[ExecutorMouse]::InjectDragMove(5,6);"} {
 		if !strings.Contains(held, point) {
 			t.Fatalf("drag path must inject each held move, missing %q", point)
 		}
 	}
-	for _, required := range []string{"MOUSEEVENTF_MOVE_NOCOALESCE = 0x2000", "MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE", "SendInput(1,", "!= 1"} {
+	if strings.Contains(held, "SetCursorPos(") {
+		t.Fatal("held movement must be carried by SendInput, not a cursor warp followed by a zero-delta event")
+	}
+	for _, required := range []string{"MOUSEEVENTF_MOVE_NOCOALESCE = 0x2000", "MOUSEEVENTF_ABSOLUTE = 0x8000", "dx = NormalizeAbsolute(X, GetSystemMetrics(0))", "dy = NormalizeAbsolute(Y, GetSystemMetrics(1))", "MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE | MOUSEEVENTF_ABSOLUTE", "SendInput(1,", "!= 1", "VerifyCursorPos(X, Y)"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("drag injection missing %q", required)
 		}
