@@ -138,7 +138,7 @@ func (h *oauthHandler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, redirectURI := range request.RedirectURIs {
 		if !trustedDCRRedirect(redirectURI) {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect must use chatgpt.com or a loopback host")
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect must use chatgpt.com, the Claude MCP callback, or a loopback host")
 			return
 		}
 	}
@@ -195,6 +195,11 @@ func (h *oauthHandler) authorizePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func trustedDCRRedirect(raw string) bool {
+	// Hosted Claude uses this exact callback; do not trust other Claude paths,
+	// subdomains, ports, or query strings.
+	if raw == "https://claude.ai/api/mcp/auth_callback" {
+		return true
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Hostname() == "" {
 		return false

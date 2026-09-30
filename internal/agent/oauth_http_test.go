@@ -44,14 +44,18 @@ func TestRegistrationRejectsTrailingDataBeforePersisting(t *testing.T) {
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestOAuthHTTPMetadataRegistrationAuthorizationAndToken(t *testing.T) {
-	testOAuthHTTPFlow(t, "")
+	testOAuthHTTPFlow(t, "", "ChatGPT", "https://chatgpt.com/connector/oauth/test")
 }
 
 func TestOAuthHTTPAliasRegistrationAuthorizationAndToken(t *testing.T) {
-	testOAuthHTTPFlow(t, "https://tunnel.example.test/v1/mcp/tunnel_test")
+	testOAuthHTTPFlow(t, "https://tunnel.example.test/v1/mcp/tunnel_test", "ChatGPT", "https://chatgpt.com/connector/oauth/test")
 }
 
-func testOAuthHTTPFlow(t *testing.T, transportResource string) {
+func TestOAuthHTTPClaudeRegistrationAuthorizationAndToken(t *testing.T) {
+	testOAuthHTTPFlow(t, "", "Claude", "https://claude.ai/api/mcp/auth_callback")
+}
+
+func testOAuthHTTPFlow(t *testing.T, transportResource, clientName, callback string) {
 	t.Helper()
 	core := testOAuthCore(t)
 	statePath := filepath.Join(t.TempDir(), "oauth-state.json")
@@ -102,9 +106,14 @@ func testOAuthHTTPFlow(t *testing.T, transportResource string) {
 		}
 	}
 
-	registrationBody := `{"client_name":"ChatGPT","redirect_uris":["https://chatgpt.com/connector/oauth/test"],"scopes":["executor.full"]}`
+	registrationBody, err := json.Marshal(oauth.DynamicClientRegistrationRequest{
+		ClientName: clientName, RedirectURIs: []string{callback}, Scopes: []string{"executor.full"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	registrationRes := httptest.NewRecorder()
-	registrationReq := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(registrationBody))
+	registrationReq := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(string(registrationBody)))
 	registrationReq.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(registrationRes, registrationReq)
 	if registrationRes.Code != http.StatusCreated {
@@ -130,10 +139,14 @@ func testOAuthHTTPFlow(t *testing.T, transportResource string) {
 	authorizePage := httptest.NewRecorder()
 	values.Set("resource", transportResource)
 	h.ServeHTTP(authorizePage, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil))
-	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), "ChatGPT") || !strings.Contains(authorizePage.Body.String(), client.RedirectURIs[0]) {
+	if authorizePage.Code != http.StatusOK || !strings.Contains(authorizePage.Body.String(), clientName) || !strings.Contains(authorizePage.Body.String(), client.RedirectURIs[0]) {
 		t.Fatalf("authorize page status=%d body=%q", authorizePage.Code, authorizePage.Body.String())
 	}
-	if !strings.Contains(authorizePage.Header().Get("Content-Security-Policy"), "form-action 'self' https://chatgpt.com;") {
+	callbackURL, err := url.Parse(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(authorizePage.Header().Get("Content-Security-Policy"), "form-action 'self' "+callbackURL.Scheme+"://"+callbackURL.Host+";") {
 		t.Fatal("authorization CSP must allow the validated callback origin after POST redirect")
 	}
 
@@ -381,7 +394,7 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-func TestOAuthHTTPRejectsDCRRedirectOutsideChatGPTOrLoopback(t *testing.T) {
+func TestOAuthHTTPRejectsDCRRedirectOutsideTrustedCallbacks(t *testing.T) {
 	core := testOAuthCore(t)
 	h := NewOAuthHandler(core, "https://executor.example.com", func(string) bool { return true })
 	request := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(`{"client_name":"ChatGPT","redirect_uris":["https://attacker.example/callback"]}`))
@@ -390,6 +403,36 @@ func TestOAuthHTTPRejectsDCRRedirectOutsideChatGPTOrLoopback(t *testing.T) {
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("untrusted redirect status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestOAuthHTTPRejectsNoncanonicalClaudeCallbacks(t *testing.T) {
+	for _, callback := range []string{
+		"http://claude.ai/api/mcp/auth_callback",
+		"https://claude.ai/other",
+		"https://claude.ai/api/mcp/auth_callback?next=https://attacker.example",
+		"https://claude.ai/api/mcp/auth_callback#fragment",
+		"https://claude.ai:444/api/mcp/auth_callback",
+		"https://subdomain.claude.ai/api/mcp/auth_callback",
+		"https://claude.ai.attacker.example/api/mcp/auth_callback",
+		"https://user@claude.ai/api/mcp/auth_callback",
+	} {
+		t.Run(callback, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "oauth-state.json")
+			h := NewOAuthHandler(testOAuthCore(t), "https://executor.example.com", nil, WithOAuthStatePath(statePath))
+			body, err := json.Marshal(oauth.DynamicClientRegistrationRequest{ClientName: "Claude", RedirectURIs: []string{callback}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			h.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(string(body))))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("noncanonical callback status=%d", response.Code)
+			}
+			if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+				t.Fatalf("untrusted callback persisted OAuth state: %v", err)
+			}
+		})
 	}
 }
 
