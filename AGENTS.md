@@ -49,18 +49,25 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   native MCP content blocks and is deployed on Pi5. Mac Desktop helper `66b3954`
   uses native Unicode events, retains the signing identity and is installed;
   its final live Unicode acceptance is paused at a macOS screen-access prompt.
-  Windows drag received down/up at the correct endpoints but no held move
-  messages in an isolated native WndProc probe. Fix `98d9b7f` is staged on CTPS
-  with native Desktop/Dispatcher tests, C# compilation and binary hash verified;
-  it is not deployed because one pre-existing owner terminal remains running.
-  Reloading the Windows helper requires owner approval to terminate that session.
+  Windows Desktop `73f91b8` carries
+  actual absolute physical coordinates in non-coalesced input and is deployed
+  on CTPS. Sonnet 5.5 Medium now passes the same 100-pixel drag: exactly one
+  down/up pair and two held move messages at the midpoint and endpoint;
+  native and WinForms drag counts are both 2. Independent host reads agree,
+  the fixture closes and its new terminal session is closed. The owner approved
+  termination of the one pre-existing owner terminal before the helper reload;
+  Broker and Relay services remain running. The task changes only its executable.
+  Native CTPS Desktop tests also check exact absolute pixel mapping and invalid
+  coordinates without sending input. Configuration and secret-store hashes match.
   Hub/MCP and Desktop/Dispatcher regression and race tests, vet, native Mac builds
   and six-platform CLI cross-builds pass. Preserve the current mixed deployment:
-  Pi5 Hub `e1ee2b2`, Mac Desktop `66b3954`, other device roles unchanged. Config,
-  credentials and OAuth grants are retained. The Mac plist backup is in its new
+  Pi5 Hub `e1ee2b2`, Mac Desktop `66b3954`, Windows Desktop `73f91b8`, other roles
+  unchanged. Config, credentials and OAuth grants are retained. The Mac plist
+  backup is in its new
   bundle's `rollback` directory; the Pi5 override backup is under
   `deployment-backups/claude-content-e1ee2b2-20260930`; Windows staged files and
-  task backup are under `deployment-backups/claude-drag-98d9b7f`.
+  task backups are under `deployment-backups/claude-drag-98d9b7f`; the original
+  desktop task backup supports rollback to the retained original binary.
   Existing authenticated four-device discovery still passes. Mac and
   Pi5 OAuth/Agent/Hub tests, race checks, native builds and six-platform CLI/Kill
   cross-builds pass. Two first-install fixture failures also reproduced on the
