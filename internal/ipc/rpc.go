@@ -89,6 +89,8 @@ func (s *RPCServer) Serve(ctx context.Context) error {
 
 func (s *RPCServer) handleConnection(ctx context.Context, connection net.Conn) {
 	defer connection.Close()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	_ = connection.SetDeadline(time.Now().Add(defaultRPCWindow))
 
 	var request Message

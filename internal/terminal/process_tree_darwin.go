@@ -17,6 +17,30 @@ func killProcessTree(rootPID int) error {
 	if err != nil {
 		return err
 	}
+	return killDarwinProcessTree(root)
+}
+
+func newUnixPipeControl(pid int) (pipeProcessControl, error) {
+	root, err := readDarwinProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+	return unixPipeControl{
+		pid:      pid,
+		killTree: func() error { return killDarwinProcessTree(root) },
+		rootReplaced: func() (bool, error) {
+			current, err := readDarwinProcess(pid)
+			if errors.Is(err, syscall.ESRCH) {
+				return false, nil
+			}
+			return err == nil && current.Proc.P_starttime != root.Proc.P_starttime, err
+		},
+		killGroup: func() error { return syscall.Kill(-pid, syscall.SIGKILL) },
+	}, nil
+}
+
+func killDarwinProcessTree(root unix.KinfoProc) error {
+	rootPID := int(root.Proc.P_pid)
 	if err := signalDarwinProcess(root, syscall.SIGSTOP); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			return nil

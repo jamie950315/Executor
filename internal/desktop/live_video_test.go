@@ -5,6 +5,7 @@ import (
 	"context"
 	"github.com/jamie950315/executor/internal/livedesktop"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,89 @@ func TestLiveAUBound(t *testing.T) {
 	r := newLiveAUReader(bytes.NewReader(bytes.Repeat([]byte{1}, 100)), 32)
 	if _, err := r.next(); err == nil {
 		t.Fatal("unbounded AU accepted")
+	}
+}
+
+func TestLiveAUAtLimitDoesNotCountNextDelimiter(t *testing.T) {
+	for _, delimiter := range [][]byte{{0, 0, 1, 9}, {0, 0, 0, 1, 9}} {
+		frame := append(append([]byte(nil), delimiter...), bytes.Repeat([]byte{0x55}, 32-len(delimiter))...)
+		next := append(append([]byte(nil), delimiter...), 0xf0, 0, 0, 1, 0x41, 3)
+		r := newLiveAUReader(bytes.NewReader(append(append([]byte(nil), frame...), next...)), len(frame))
+		got, err := r.next()
+		if err != nil || !bytes.Equal(got, frame) {
+			t.Fatalf("%d-byte delimiter: exact-limit frame rejected: length=%d, error=%v", len(delimiter), len(got), err)
+		}
+		got, err = r.next()
+		if err != nil || !bytes.Equal(got, next) {
+			t.Fatalf("%d-byte delimiter: following frame = %x, error=%v", len(delimiter), got, err)
+		}
+	}
+}
+
+func TestLiveAUOversizeAtEOF(t *testing.T) {
+	frame := append([]byte{0, 0, 0, 1, 9}, bytes.Repeat([]byte{0x55}, 28)...)
+	if _, err := newLiveAUReader(bytes.NewReader(frame), 32).next(); err == nil {
+		t.Fatal("oversized final frame accepted")
+	}
+}
+
+func TestLiveAUChunkBoundariesAndIndependentFrames(t *testing.T) {
+	delimiters := [][]byte{{0, 0, 1, 9}, {0, 0, 0, 1, 9}}
+	var input []byte
+	var frames [][]byte
+	for i := 0; i < 4; i++ {
+		frame := append(append([]byte(nil), delimiters[i%2]...), bytes.Repeat([]byte{byte(0x51 + i)}, 64*1024+i)...)
+		frames = append(frames, frame)
+		input = append(input, frame...)
+	}
+	for _, chunkSize := range []int{1, 2, 3, 7, 4093, 65536} {
+		t.Run(strconv.Itoa(chunkSize), func(t *testing.T) {
+			r := newLiveAUReader(fragmentedLiveReader{r: bytes.NewReader(input), limit: chunkSize}, 128*1024)
+			var returned [][]byte
+			for i, frame := range frames {
+				got, err := r.next()
+				if err != nil || !bytes.Equal(got, frame) {
+					t.Fatalf("frame %d: length=%d, error=%v", i, len(got), err)
+				}
+				returned = append(returned, got)
+			}
+			if _, err := r.next(); err != io.EOF {
+				t.Fatalf("final EOF = %v", err)
+			}
+			for i := range returned {
+				if !bytes.Equal(returned[i], frames[i]) {
+					t.Fatalf("later read overwrote frame %d", i)
+				}
+			}
+		})
+	}
+}
+
+type fragmentedLiveReader struct {
+	r     io.Reader
+	limit int
+}
+
+func (r fragmentedLiveReader) Read(p []byte) (int, error) {
+	return r.r.Read(p[:min(len(p), r.limit)])
+}
+
+func BenchmarkLiveAccessUnits(b *testing.B) {
+	frame := append([]byte{0, 0, 0, 1, 9}, bytes.Repeat([]byte{0x55}, 32*1024-5)...)
+	input := bytes.Repeat(frame, 32)
+	b.SetBytes(int64(len(input)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		r := newLiveAUReader(bytes.NewReader(input), 4*1024*1024)
+		for {
+			_, err := r.next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
 	}
 }
 func TestLiveVideoArgs(t *testing.T) {

@@ -27,6 +27,30 @@ func killProcessTree(rootPID int) error {
 	if err != nil {
 		return err
 	}
+	return killLinuxProcessTree(root)
+}
+
+func newUnixPipeControl(pid int) (pipeProcessControl, error) {
+	root, err := readLinuxProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+	return unixPipeControl{
+		pid:      pid,
+		killTree: func() error { return killLinuxProcessTree(root) },
+		rootReplaced: func() (bool, error) {
+			current, err := readLinuxProcess(pid)
+			if errors.Is(err, os.ErrNotExist) {
+				return false, nil
+			}
+			return err == nil && current.startTime != root.startTime, err
+		},
+		killGroup: func() error { return syscall.Kill(-pid, syscall.SIGKILL) },
+	}, nil
+}
+
+func killLinuxProcessTree(root linuxProcess) error {
+	rootPID := root.pid
 	if err := signalLinuxProcess(root, syscall.SIGSTOP); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			return nil

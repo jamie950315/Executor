@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 func listenEndpoint(endpoint string) (net.Listener, error) {
@@ -37,10 +38,9 @@ func listenEndpoint(endpoint string) (net.Listener, error) {
 	// and nonce verification.
 	if err := os.Chmod(endpoint, 0o666); err != nil {
 		_ = listener.Close()
-		_ = os.Remove(endpoint)
 		return nil, err
 	}
-	return &unixListener{Listener: listener, endpoint: endpoint}, nil
+	return &unixListener{Listener: listener}, nil
 }
 
 func dialEndpoint(ctx context.Context, endpoint string) (net.Conn, error) {
@@ -49,11 +49,15 @@ func dialEndpoint(ctx context.Context, endpoint string) (net.Conn, error) {
 
 type unixListener struct {
 	net.Listener
-	endpoint string
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (l *unixListener) Close() error {
-	err := l.Listener.Close()
-	_ = os.Remove(l.endpoint)
-	return err
+	l.closeOnce.Do(func() {
+		// net.UnixListener owns unlinking its endpoint. A second removal can
+		// delete a replacement server's socket during a concurrent restart.
+		l.closeErr = l.Listener.Close()
+	})
+	return l.closeErr
 }

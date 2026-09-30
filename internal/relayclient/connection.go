@@ -29,6 +29,7 @@ const (
 	deviceChallengeLifetime      = 30 * time.Second
 	defaultRelayHandshakeTimeout = 30 * time.Second
 	defaultRelayRefreshTimeout   = 30 * time.Second
+	inactiveRelayCheckInterval   = time.Second
 )
 
 type relaySocket interface {
@@ -137,14 +138,14 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		if cfg.UnifiedDashboard.URL == "" || !cfg.UnifiedDashboard.Enrolled {
 			c.setRelayState("disconnected")
-			if err := c.sleep(ctx, 100*time.Millisecond); err != nil {
+			if err := c.sleep(ctx, inactiveRelayCheckInterval); err != nil {
 				return nil
 			}
 			continue
 		}
 		if disabled(filepath.Join(cfg.StateDir, "disabled")) {
 			c.setRelayState("disconnected")
-			if err := c.sleep(ctx, 100*time.Millisecond); err != nil {
+			if err := c.sleep(ctx, inactiveRelayCheckInterval); err != nil {
 				return nil
 			}
 			continue
@@ -431,6 +432,7 @@ func (c *connection) handleMessage(ctx context.Context, message []byte) error {
 func (c *connection) startRequest(ctx context.Context, requestID, method string, arguments json.RawMessage, unlock *relay.RecoveryUnlockPayload) {
 	requestCtx, cancel := context.WithCancel(ctx)
 	if !c.requests.Add(requestID, cancel) {
+		cancel()
 		_ = c.writeFailure(ctx, requestID, "duplicate")
 		return
 	}

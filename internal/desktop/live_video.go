@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,39 +34,57 @@ func (r *liveAUReader) next() ([]byte, error) {
 	}
 	out := r.pending
 	r.pending = nil
-	seen := false
-	for i := 0; i+3 < len(out); i++ {
-		if out[i] == 0 && out[i+1] == 0 && out[i+2] == 1 && out[i+3]&31 == 9 {
-			seen = true
-		}
-	}
+	seen, scan := false, 0
 	for {
-		b, err := r.r.ReadByte()
+		for scan+3 < len(out) {
+			i := bytes.Index(out[scan:], []byte{0, 0, 1})
+			if i < 0 {
+				scan = max(scan, len(out)-3)
+				break
+			}
+			i += scan
+			if i+3 == len(out) {
+				scan = i
+				break
+			}
+			if out[i+3]&31 == 9 {
+				start := i
+				if start > 0 && out[start-1] == 0 {
+					start--
+				}
+				if seen {
+					if start > r.limit {
+						return nil, errors.New("H264 access unit exceeds limit")
+					}
+					r.pending = out[start:]
+					return out[:start:start], nil
+				}
+				seen = true
+			}
+			scan = i + 4
+		}
+		// A complete next AUD needs up to five bytes beyond the current AU.
+		// Keep only that bounded lookahead before deciding whether it is oversized.
+		if len(out) >= r.limit+5 {
+			return nil, errors.New("H264 access unit exceeds limit")
+		}
+		_, err := r.r.Peek(1)
 		if err != nil {
 			if err == io.EOF {
 				r.eof = true
+				if len(out) > r.limit {
+					return nil, errors.New("H264 access unit exceeds limit")
+				}
 				if len(out) > 0 {
 					return out, nil
 				}
 			}
 			return nil, err
 		}
-		if len(out) >= r.limit {
-			return nil, errors.New("H264 access unit exceeds limit")
-		}
-		out = append(out, b)
-		n := len(out)
-		if n >= 4 && out[n-4] == 0 && out[n-3] == 0 && out[n-2] == 1 && b&31 == 9 {
-			start := n - 4
-			if start > 0 && out[start-1] == 0 {
-				start--
-			}
-			if seen {
-				r.pending = append([]byte(nil), out[start:]...)
-				return out[:start], nil
-			}
-			seen = true
-		}
+		n := min(r.r.Buffered(), r.limit+5-len(out))
+		chunk, _ := r.r.Peek(n)
+		out = append(out, chunk...)
+		_, _ = r.r.Discard(n)
 	}
 }
 func liveVideoOptions(o livedesktop.Options) livedesktop.Options {

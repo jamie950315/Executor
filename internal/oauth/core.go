@@ -637,8 +637,12 @@ func (c *Core) LoadState(path string) error {
 	for key, value := range state.Clients {
 		c.clients[key] = value
 	}
-	c.codes = make(map[string]authorizationCodeRecord, len(state.Codes))
+	now := c.now()
+	c.codes = make(map[string]authorizationCodeRecord)
 	for key, value := range state.Codes {
+		if value.Generation != c.generation || !now.Before(value.ExpiresAt) {
+			continue
+		}
 		c.codes[key] = authorizationCodeRecord{
 			ClientID:        value.ClientID,
 			RedirectURI:     value.RedirectURI,
@@ -650,8 +654,11 @@ func (c *Core) LoadState(path string) error {
 			Generation:      value.Generation,
 		}
 	}
-	c.refreshTokens = make(map[string]refreshTokenRecord, len(state.RefreshTokens))
+	c.refreshTokens = make(map[string]refreshTokenRecord)
 	for key, value := range state.RefreshTokens {
+		if value.Generation != c.generation || !now.Before(value.ExpiresAt) {
+			continue
+		}
 		c.refreshTokens[key] = refreshTokenRecord{
 			ClientID:   value.ClientID,
 			Scopes:     append([]string(nil), value.Scopes...),
@@ -909,6 +916,20 @@ func isLoopbackHost(host string) bool {
 func (c *Core) snapshotState() persistenceState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Remove grants that can never be used before copying and serializing state.
+	// Persistence is already triggered by OAuth mutations; no idle timer is needed.
+	now := c.now()
+	for key, value := range c.codes {
+		if value.Generation != c.generation || !now.Before(value.ExpiresAt) {
+			delete(c.codes, key)
+		}
+	}
+	for key, value := range c.refreshTokens {
+		if value.Generation != c.generation || !now.Before(value.ExpiresAt) {
+			delete(c.refreshTokens, key)
+		}
+	}
 
 	state := persistenceState{
 		Generation:    c.generation,

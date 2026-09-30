@@ -176,9 +176,18 @@ func (d *MCP) desktopControl(ctx context.Context, sessionID string, arguments ma
 	}
 	switch action {
 	case "mouse_move", "mouse_click":
-		button, _ := arguments["button"].(string)
-		if button == "middle" {
-			button = string(desktop.MouseButtonCenter)
+		input, err := parseLegacyDesktopInput(arguments)
+		if err != nil {
+			return nil, err
+		}
+		if input.X == nil || input.Y == nil {
+			return nil, errors.New("desktop mouse control requires integer x and y")
+		}
+		if input.Button == "middle" {
+			input.Button = desktop.MouseButtonCenter
+		}
+		if input.Button != "" && input.Button != desktop.MouseButtonLeft && input.Button != desktop.MouseButtonRight && input.Button != desktop.MouseButtonCenter {
+			return nil, errors.New("unsupported desktop mouse button")
 		}
 		actionType := desktop.MouseActionMove
 		if action == "mouse_click" {
@@ -186,7 +195,7 @@ func (d *MCP) desktopControl(ctx context.Context, sessionID string, arguments ma
 		}
 		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopMouseParams{Action: desktop.MouseAction{
-			Type: actionType, X: int(integer(arguments["x"])), Y: int(integer(arguments["y"])), Button: desktop.MouseButton(button),
+			Type: actionType, X: *input.X, Y: *input.Y, Button: input.Button,
 		}})
 	case "type_text":
 		text, err := requiredString(arguments, "text")
@@ -196,10 +205,16 @@ func (d *MCP) desktopControl(ctx context.Context, sessionID string, arguments ma
 		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopKeyboardParams{Action: desktop.KeyboardAction{Text: text}})
 	case "key_press":
-		modifiers := stringSlice(arguments["modifiers"])
+		input, err := parseLegacyDesktopInput(arguments)
+		if err != nil {
+			return nil, err
+		}
+		if input.KeyCode == nil {
+			return nil, errors.New("desktop key_press requires an integer keyCode")
+		}
 		d.invalidateDesktopCaptures()
 		return d.call(ctx, d.desktop, method, desktop.RPCDesktopKeyboardParams{Action: desktop.KeyboardAction{
-			KeyCode: int(integer(arguments["keyCode"])), Modifiers: modifiers,
+			KeyCode: *input.KeyCode, Modifiers: input.Modifiers,
 		}})
 	case "window_focus":
 		name, err := requiredString(arguments, "name")
@@ -211,6 +226,31 @@ func (d *MCP) desktopControl(ctx context.Context, sessionID string, arguments ma
 	default:
 		return nil, fmt.Errorf("unsupported desktop control action %q", action)
 	}
+}
+
+type legacyDesktopInput struct {
+	X         *int                `json:"x"`
+	Y         *int                `json:"y"`
+	Button    desktop.MouseButton `json:"button"`
+	KeyCode   *int                `json:"keyCode"`
+	Modifiers []string            `json:"modifiers"`
+}
+
+func parseLegacyDesktopInput(arguments map[string]any) (legacyDesktopInput, error) {
+	var input legacyDesktopInput
+	for _, key := range []string{"button", "modifiers"} {
+		if value, exists := arguments[key]; exists && value == nil {
+			return input, fmt.Errorf("desktop %s must not be null", key)
+		}
+	}
+	encoded, err := json.Marshal(arguments)
+	if err != nil {
+		return input, errors.New("invalid desktop control arguments")
+	}
+	if err := json.Unmarshal(encoded, &input); err != nil {
+		return input, errors.New("desktop control requires integer coordinates and keyCode, a string button, and an array of string modifiers")
+	}
+	return input, nil
 }
 
 const maxDesktopCaptureBytes = 48 << 20
@@ -494,30 +534,6 @@ func (d *MCP) call(ctx context.Context, caller Caller, method string, arguments 
 		return nil, err
 	}
 	return result, nil
-}
-
-func integer(value any) int64 {
-	switch typed := value.(type) {
-	case int:
-		return int64(typed)
-	case int64:
-		return typed
-	case float64:
-		return int64(typed)
-	default:
-		return 0
-	}
-}
-
-func stringSlice(value any) []string {
-	items, _ := value.([]any)
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		if text, ok := item.(string); ok {
-			result = append(result, text)
-		}
-	}
-	return result
 }
 
 func anySlice(value any) []any {

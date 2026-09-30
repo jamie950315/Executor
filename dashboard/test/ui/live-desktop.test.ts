@@ -19,6 +19,19 @@ describe("live desktop input", () => {
   const fresh=vi.fn();const stalled=vi.fn();const watch=new LiveVideoWatch(v,fresh,stalled);expect(fresh).not.toHaveBeenCalled();
   frame(0,{} as VideoFrameCallbackMetadata);expect(fresh).toHaveBeenCalledWith(true);vi.advanceTimersByTime(2500);expect(stalled).not.toHaveBeenCalled();vi.advanceTimersByTime(1000);expect(stalled).toHaveBeenCalledOnce();expect(fresh).toHaveBeenLastCalledWith(false);expect(cancel).toHaveBeenCalled();watch.close();vi.useRealTimers();
  });
+ it("notifies freshness only when it changes while every decoded frame extends the deadline",()=>{
+  vi.useFakeTimers();let frame:VideoFrameRequestCallback=()=>{};
+  const video={requestVideoFrameCallback:vi.fn((callback:VideoFrameRequestCallback)=>{frame=callback;return 1;}),cancelVideoFrameCallback:vi.fn()} as unknown as HTMLVideoElement;
+  const fresh=vi.fn();const stalled=vi.fn();const watch=new LiveVideoWatch(video,fresh,stalled);
+  try {
+   frame(0,{} as VideoFrameCallbackMetadata);
+   for(let index=0;index<30;index+=1){vi.advanceTimersByTime(100);frame(0,{} as VideoFrameCallbackMetadata);}
+   expect(fresh).toHaveBeenCalledTimes(1);
+   expect(watch.isFresh()).toBe(true);
+   vi.advanceTimersByTime(2500);expect(stalled).not.toHaveBeenCalled();
+   vi.advanceTimersByTime(1000);expect(fresh).toHaveBeenLastCalledWith(false);expect(stalled).toHaveBeenCalledOnce();
+  } finally {watch.close();vi.useRealTimers();}
+ });
  it("maps only the contained video, excluding letterboxing", () => {
   const rect={left:10,top:20,width:400,height:400};
   expect(containedPoint(rect,1920,1080,210,220)).toEqual({x:.5,y:.5});

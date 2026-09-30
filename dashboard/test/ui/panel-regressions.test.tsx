@@ -122,6 +122,26 @@ describe("panel error and request boundaries", () => {
     expect(call.mock.calls.filter(([method]) => method === "terminal_output")).toHaveLength(1);
   });
 
+  it("drains completed terminal pages and stops polling after the final page", async () => {
+    let reads = 0;
+    const call = vi.fn<DeviceCall>(async (method, args) => {
+      if (method === "terminal_sessions") return { requestID: "list", result: [{ Session: { ID: "finished", Dir: "/" }, Running: false }] };
+      reads += 1;
+      const cursor = (args as { cursor: number }).cursor;
+      return { requestID: "read", result: { Data: btoa(reads === 1 ? "FIRST " : "FINAL"), StartCursor: cursor, NextCursor: cursor + (reads === 1 ? 6 : 5), Running: false, hasMore: reads === 1 } };
+    });
+    render(<TerminalPanel call={call} />);
+    const session = await screen.findByRole("button", { name: /finished/u });
+    vi.useFakeTimers();
+    fireEvent.click(session);
+    await act(() => vi.advanceTimersByTimeAsync(1_100));
+    expect(screen.getByRole("log")).toHaveTextContent("FIRST FINAL");
+    expect(reads).toBe(2);
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    fireEvent(document, new Event("visibilitychange"));
+    expect(reads).toBe(2);
+  });
+
   it("rejects a malformed session list instead of reporting zero sessions", async () => {
     const call: DeviceCall = async () => ({ requestID: "list", result: { error: "bad" } });
     render(<TerminalPanel call={call} />);
@@ -138,6 +158,49 @@ describe("panel error and request boundaries", () => {
     await screen.findByRole("button", { name: /admin-session/u });
     await act(async () => resolveOwner({ requestID: "owner", result: [{ Session: { ID: "owner-session", Dir: "/" }, Running: true }] }));
     expect(screen.queryByRole("button", { name: /owner-session/u })).not.toBeInTheDocument();
+  });
+
+  it("does not attach a late owner creation or refresh its list after switching to admin", async () => {
+    let finishCreate!: (value: Awaited<ReturnType<DeviceCall>>) => void;
+    const call = vi.fn<DeviceCall>(async (method, args) => {
+      const input = args as { action: string; privilege: string };
+      if (method === "terminal" && input.action === "create") return new Promise(resolve => { finishCreate = resolve; });
+      return { requestID: "list", result: input.privilege === "admin" ? [{ Session: { ID: "admin-current", Dir: "/" }, Running: true }] : [] };
+    });
+    render(<TerminalPanel call={call} />);
+    await screen.findByText("0 persistent owner sessions");
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    await screen.findByRole("button", { name: /admin-current/u });
+    await act(async () => finishCreate({ requestID: "create", result: { ID: "owner-late" } }));
+    expect(screen.getByRole("button", { name: /admin-current/u })).toBeInTheDocument();
+    expect(screen.getByRole("log")).toHaveTextContent("Select or create a persistent session.");
+    expect(call.mock.calls.filter(([method]) => method === "terminal_output")).toHaveLength(0);
+    expect(call.mock.calls.filter(([method, args]) => method === "terminal_sessions" && (args as { privilege: string }).privilege === "owner")).toHaveLength(1);
+  });
+
+  it("dispatches one upload when the upload button is activated twice during a pending read", async () => {
+    const finishReads: Array<(value: ArrayBuffer) => void> = [];
+    const bytes = new Uint8Array(4 * 1024 * 1024 + 3);
+    const file = new File([bytes], "same.txt", { type: "application/octet-stream" });
+    Object.defineProperty(file, "arrayBuffer", { value: vi.fn(() => new Promise<ArrayBuffer>(resolve => { finishReads.push(resolve); })) });
+    let uploadedBytes = 0;
+    const call = vi.fn<DeviceCall>(async (method, args) => {
+      if (method === "filesystem_read") return { requestID: "list", result: [] };
+      const input = args as { action: string; content: string };
+      if (input.action === "write_file") uploadedBytes = 0;
+      uploadedBytes += atob(input.content).length;
+      return { requestID: "write", result: { size: uploadedBytes } };
+    });
+    render(<FilesPanel call={call} />);
+    await screen.findByText("Directory loaded");
+    fireEvent.change(screen.getByLabelText("Choose file to upload"), { target: { files: [file] } });
+    const upload = screen.getByRole("button", { name: "Upload" });
+    fireEvent.click(upload);fireEvent.click(upload);
+    await act(async () => finishReads.forEach(finish => finish(bytes.buffer)));
+    expect(uploadedBytes).toBe(bytes.length);
+    expect(file.arrayBuffer).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls.filter(([method]) => method === "filesystem_write")).toHaveLength(2);
   });
 
   it("rejects malformed directory entries rather than showing a successful empty listing", async () => {

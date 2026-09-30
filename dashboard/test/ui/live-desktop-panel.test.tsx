@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { LiveRemoteDesktopPanel } from "../../src/ui/panels/LiveRemoteDesktopPanel";
+import { LiveDesktopConnection } from "../../src/ui/live-desktop";
 import type { DeviceCall } from "../../src/ui/panels/types";
 
 afterEach(()=>vi.unstubAllGlobals());
@@ -32,6 +33,22 @@ it("defaults to live mode and retains explicit snapshot tools",async()=>{
  const call=vi.fn(async()=>({result:{supported:false,available:false,active:false,iceServers:[],reason:"Unsupported platform"}})) as unknown as DeviceCall;
  render(<LiveRemoteDesktopPanel call={call}/>);await screen.findByText("Unsupported platform");expect(screen.getByRole("button",{name:"Start live desktop"})).toBeDisabled();
  expect(screen.queryByRole("button",{name:"Refresh screen"})).not.toBeInTheDocument();fireEvent.click(screen.getByRole("button",{name:"Snapshot tools"}));expect(screen.getByRole("button",{name:"Refresh screen"})).toBeInTheDocument();
+});
+it("stops live capture when the tab is hidden and requires an explicit restart",async()=>{
+ const call:DeviceCall=async()=>({requestID:"status",result:{supported:true,available:true,active:false,iceServers:[]}});
+ const start=vi.spyOn(LiveDesktopConnection.prototype,"start").mockResolvedValue();
+ const stop=vi.spyOn(LiveDesktopConnection.prototype,"stop");
+ const visibility=vi.spyOn(document,"hidden","get");
+ try {
+  render(<LiveRemoteDesktopPanel call={call}/>);
+  fireEvent.click(await screen.findByRole("button",{name:"Start live desktop"}));
+  expect(start).toHaveBeenCalledOnce();
+  visibility.mockReturnValue(true);fireEvent(document,new Event("visibilitychange"));
+  expect(stop).toHaveBeenCalledWith("Live desktop stopped because this tab is hidden. Start a new session when ready.");
+  expect(screen.getByRole("button",{name:"Start live desktop"})).toBeEnabled();
+  visibility.mockReturnValue(false);fireEvent(document,new Event("visibilitychange"));
+  expect(start).toHaveBeenCalledOnce();
+ } finally {start.mockRestore();stop.mockRestore();visibility.mockRestore();}
 });
 it("requires video and explicit control, releases on Escape, and closes on unmount",async()=>{
  class Peer extends EventTarget {

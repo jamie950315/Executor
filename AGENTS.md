@@ -32,6 +32,20 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Source performance and correctness fixes stop Live desktop when its browser
+  tab is hidden (manual Start is required on return), stop terminal polling
+  after all final output pages are read, and serialize file uploads. Stale
+  terminal creation results cannot replace another privilege view. H264 parsing
+  uses bounded chunk reads and accepts frames exactly at the size limit;
+  pipe-terminal shutdown cleans up background processes after the command exits
+  while preserving process identity checks. Relay idle polling, IPC cancellation
+  and socket cleanup, strict legacy desktop input validation, and unusable OAuth
+  grant pruning are also hardened. Go/Dashboard suites, relevant race checks,
+  native builds, six-platform CLI/Kill cross-builds, and isolated Mac/Pi5 runtime
+  fixtures pass. These source changes have not been installed; preserve the
+  mixed deployment recorded below. Parser benchmarks do not establish battery
+  life improvements.
+
 - Hosted Claude is connected to Executor Hub with all 10 tools discovered.
   Live Sonnet 5.5 Medium acceptance passes status summaries for all four devices,
   Pi5 owner mkdir/write/read of an exact 35-byte file, and a pipe-mode argv

@@ -27,11 +27,12 @@ export class LiveVideoWatch {
   else this.decoded = video.getVideoPlaybackQuality?.().totalVideoFrames ?? 0;
   this.timer = setInterval(() => {
    if (this.closed) return;
-   if (typeof video.requestVideoFrameCallback !== "function") { const count = video.getVideoPlaybackQuality?.().totalVideoFrames ?? 0; if (count > this.decoded) { this.decoded = count;this.seenFrame=true; this.lastFrame = performance.now(); this.fresh(true); } }
+   if (typeof video.requestVideoFrameCallback !== "function") { const count = video.getVideoPlaybackQuality?.().totalVideoFrames ?? 0; if (count > this.decoded) { this.decoded = count; this.decodedFrame(); } }
    if (performance.now() - this.lastFrame > (this.seenFrame ? 3000 : 15000)) { this.close(); this.fresh(false); this.stalled(); }
   }, 250);
  }
- private requestFrame() { this.frameID = this.video.requestVideoFrameCallback(() => { if (this.closed) return; this.seenFrame=true;this.lastFrame = performance.now(); this.fresh(true); this.requestFrame(); }); }
+ private decodedFrame() { this.lastFrame = performance.now(); if (!this.seenFrame) { this.seenFrame = true; this.fresh(true); } }
+ private requestFrame() { this.frameID = this.video.requestVideoFrameCallback(() => { if (this.closed) return; this.decodedFrame(); this.requestFrame(); }); }
  isFresh(){return !this.closed&&this.seenFrame&&performance.now()-this.lastFrame<=3000;}
  close() { if (this.closed) return; this.closed = true; clearInterval(this.timer); if (this.frameID !== undefined) this.video.cancelVideoFrameCallback?.(this.frameID); }
 }

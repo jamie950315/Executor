@@ -14,6 +14,8 @@ export function FilesPanel({ call }: PanelProps) {
   const [previewFailed, setPreviewFailed] = useState(false);
   const [status, setStatus] = useState("Directory not loaded");
   const [upload, setUpload] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const uploadInFlight = useRef(false);
   const [newDirectory, setNewDirectory] = useState("");
   const [moveDestination, setMoveDestination] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -55,10 +57,13 @@ export function FilesPanel({ call }: PanelProps) {
     catch { setStatus("Save failed"); }
   };
   const uploadFile = async () => {
-    if (!upload) return;
+    if (!upload || uploadInFlight.current) return;
     if (upload.size > maximumFileBytes) { setStatus("Upload exceeds the 64 MiB relay limit"); return; }
-    const bytes = new Uint8Array(await upload.arrayBuffer());
+    uploadInFlight.current = true;
+    setUploading(true);
+    let bytes: Uint8Array | undefined;
     try {
+      bytes = new Uint8Array(await upload.arrayBuffer());
       const destination = joinPath(path, upload.name);
       for (let offset = 0; offset < bytes.length || (bytes.length === 0 && offset === 0); offset += uploadChunkBytes) {
         const part = bytes.slice(offset, Math.min(offset + uploadChunkBytes, bytes.length));
@@ -69,7 +74,7 @@ export function FilesPanel({ call }: PanelProps) {
       }
       setStatus(`${upload.size} bytes uploaded`); setUpload(null); if (inputRef.current) inputRef.current.value = ""; await list(path);
     } catch { setStatus("Upload failed"); }
-    finally { bytes.fill(0); }
+    finally { bytes?.fill(0); uploadInFlight.current = false; setUploading(false); }
   };
   const download = async () => {
     if (!filePath) return;
@@ -92,7 +97,7 @@ export function FilesPanel({ call }: PanelProps) {
       <div className="files-layout"><div className="file-list" role="list" aria-label="Directory entries">{entries.map((entry) => <button role="listitem" key={entry.path} onClick={() => void open(entry)}><span aria-hidden="true">{entry.isDir ? "DIR" : "FILE"}</span><strong>{entry.name}</strong></button>)}</div>
         <div className="file-editor"><label>Operation path<input value={filePath ?? ""} onChange={(event) => { activeRead.current?.abort(); setFilePath(event.target.value || null); setPreviewFailed(false); }} placeholder="Select or enter any host path" /></label><textarea aria-label="File contents" value={content} disabled={!filePath || previewFailed} onChange={(event) => setContent(event.target.value)} spellCheck={false} /><div className="button-row"><button disabled={!filePath} onClick={() => { if (filePath) void open({ name: basename(filePath), path: filePath, isDir: false }); }}>Read UTF-8</button><button disabled={!filePath || previewFailed} onClick={() => void save()}>Save UTF-8</button><button disabled={!filePath} onClick={() => void download()}>Download binary</button><button className="danger-ghost" disabled={!filePath} onClick={() => void remove()}>Delete</button></div>
           <label>Move destination<input value={moveDestination} onChange={(event) => setMoveDestination(event.target.value)} /></label><button disabled={!filePath || !moveDestination} onClick={() => void move()}>Move</button></div></div>
-      <div className="file-operations"><div><label>New directory<input value={newDirectory} onChange={(event) => setNewDirectory(event.target.value)} /></label><button onClick={() => void mkdir()}>Create directory</button></div><div><label>Choose file to upload<input ref={inputRef} type="file" onChange={(event) => setUpload(event.target.files?.[0] ?? null)} /></label><button disabled={!upload} onClick={() => void uploadFile()}>Upload</button></div></div>
+      <div className="file-operations"><div><label>New directory<input value={newDirectory} onChange={(event) => setNewDirectory(event.target.value)} /></label><button onClick={() => void mkdir()}>Create directory</button></div><div><label>Choose file to upload<input ref={inputRef} type="file" disabled={uploading} onChange={(event) => setUpload(event.target.files?.[0] ?? null)} /></label><button disabled={!upload || uploading} onClick={() => void uploadFile()}>Upload</button></div></div>
     </section>
   );
 }

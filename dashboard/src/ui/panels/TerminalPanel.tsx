@@ -16,6 +16,7 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
   const [status, setStatus] = useState("Loading persistent sessions…");
   const terminalOutputs = useRef(new Map<string, TerminalOutput>());
   const sessionRequest = useRef<AbortController | null>(null);
+  const contextVersion = useRef(0);
   useEffect(() => () => {
     for (const output of terminalOutputs.current.values()) output.dispose();
     terminalOutputs.current.clear();
@@ -40,7 +41,7 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
   useEffect(() => {
     setSessions([]);
     if (active) void refreshSessions();
-    return () => sessionRequest.current?.abort();
+    return () => { contextVersion.current += 1; sessionRequest.current?.abort(); };
   }, [active, refreshSessions]);
 
   useEffect(() => {
@@ -72,6 +73,11 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
         firstPoll = false;
         if (truncated) setStatus("Older terminal output was dropped by the host. Display restarted at the available output.");
         else if (!chunk.running) setStatus("Session exited — output retained in this page only");
+        if (!chunk.running && !chunk.hasMore) {
+          stopped = true;
+          window.clearInterval(interval);
+          setSessions((current) => current.map((session) => session.id === selected ? { ...session, running: false } : session));
+        }
       } catch (error) {
         if (!stopped && !(error instanceof DOMException && error.name === "AbortError")) setStatus("Terminal output unavailable");
       } finally {
@@ -91,12 +97,17 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
   }, [active, call, privilege, selected]);
 
   const create = async () => {
+    if (!active) return;
+    const version = contextVersion.current;
     const controller = new AbortController();
     try {
       validateTerminalDimensions(dimensions.columns, dimensions.rows);
       const response = await call("terminal", {
         action: "create", privilege, command, cwd, columns: dimensions.columns, rows: dimensions.rows,
       }, controller.signal);
+      // The host session remains persistent; a late result must not attach it
+      // to a different device or privilege view, or resurrect an unmounted UI.
+      if (version !== contextVersion.current) return;
       const record = asRecord(response.result);
       const id = textField(record, "ID", "id");
       if (!id) throw new Error();
@@ -107,8 +118,8 @@ export function TerminalPanel({ call, active = true }: PanelProps) {
       setOutputs((current) => ({ ...current, [outputKey]: "" }));
       setCommand("");
       await refreshSessions();
-      setStatus(`Attached to ${id}`);
-    } catch { setStatus("Session creation failed"); }
+      if (version === contextVersion.current) setStatus(`Attached to ${id}`);
+    } catch { if (version === contextVersion.current) setStatus("Session creation failed"); }
   };
 
   const sendInput = async () => {
@@ -169,7 +180,7 @@ function parseSessions(value: unknown): TerminalSession[] {
     return { id, dir: textField(session, "Dir", "dir") ?? "", running };
   });
 }
-function parseOutput(value: unknown): { data: Uint8Array; startCursor: number; nextCursor: number; running: boolean; truncated: boolean } {
+function parseOutput(value: unknown): { data: Uint8Array; startCursor: number; nextCursor: number; running: boolean; truncated: boolean; hasMore: boolean } {
   const record = asRecord(value); if (!record) throw new Error();
   const data = textField(record, "Data", "data");
   const next = numberField(record, "NextCursor", "nextCursor", "next_cursor");
@@ -180,8 +191,9 @@ function parseOutput(value: unknown): { data: Uint8Array; startCursor: number; n
   const start = startKey === undefined ? next - decoded.length : record[startKey];
   const truncatedKey = ["Truncated", "truncated"].find(key => Object.hasOwn(record, key));
   const truncated = truncatedKey === undefined ? false : record[truncatedKey];
-  if (typeof start !== "number" || !Number.isSafeInteger(start) || start < 0 || typeof truncated !== "boolean") throw new Error("Invalid terminal output metadata");
-  return { data: decoded, startCursor: start, nextCursor: next, running, truncated };
+  const hasMore = Object.hasOwn(record, "hasMore") ? record.hasMore : decoded.length > 0;
+  if (typeof start !== "number" || !Number.isSafeInteger(start) || start < 0 || typeof truncated !== "boolean" || typeof hasMore !== "boolean") throw new Error("Invalid terminal output metadata");
+  return { data: decoded, startCursor: start, nextCursor: next, running, truncated, hasMore };
 }
 function decodeStandardBase64(value: string): Uint8Array {
   if (value === "") return new Uint8Array();

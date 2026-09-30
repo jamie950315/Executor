@@ -5,6 +5,7 @@ package ipc
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,6 +198,64 @@ func TestRPCServerCancelsHandlerWhenClientDisconnects(t *testing.T) {
 	case <-handlerCanceled:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("server handler continued after client disconnected")
+	}
+}
+
+func TestRepeatedListenerClosePreservesReplacementEndpoint(t *testing.T) {
+	endpoint := shortSocketPath(t)
+	original, err := listenEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = original.Close() })
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := listenEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = replacement.Close() })
+	_ = original.Close()
+	if _, err := os.Stat(endpoint); err != nil {
+		t.Fatalf("repeated close removed the replacement IPC endpoint: %v", err)
+	}
+}
+
+type replaceEndpointAfterClose struct {
+	net.Listener
+	replace func()
+}
+
+func (l *replaceEndpointAfterClose) Close() error {
+	err := l.Listener.Close()
+	l.replace()
+	return err
+}
+
+func TestListenerCloseDoesNotUnlinkEndpointAfterNativeCleanup(t *testing.T) {
+	endpoint := shortSocketPath(t)
+	listener, err := listenEndpoint(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := listener.(*unixListener)
+	t.Cleanup(func() { _ = original.Close() })
+	var replacement net.Listener
+	// Reproduce a new server binding after net.UnixListener.Close has unlinked
+	// the original socket, before the wrapping Close method has returned.
+	original.Listener = &replaceEndpointAfterClose{Listener: original.Listener, replace: func() {
+		replacement, err = listenEndpoint(endpoint)
+	}}
+	if err := original.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatalf("replacement listener: %v", err)
+	}
+	t.Cleanup(func() { _ = replacement.Close() })
+	if _, err := os.Stat(endpoint); err != nil {
+		t.Fatalf("wrapper close removed the replacement IPC endpoint: %v", err)
 	}
 }
 

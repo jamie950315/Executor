@@ -32,8 +32,11 @@ host and network.
 3. After video has actually decoded, enable control and focus the video to send
    pointer and keyboard input. The Text/IME field sends only explicitly submitted
    text; clipboard contents are never read automatically.
-4. Escape or losing window focus releases control. Stop session closes the video
-   and peer. Fullscreen is available when permitted by the browser; browser/OS
+4. Escape or losing window focus releases control. Hiding the browser tab stops
+   the entire live session, including remote video capture and local decoding.
+   Returning to the tab requires an explicit Start; video never resumes
+   automatically. Stop session closes the video and peer. Fullscreen is available
+   when permitted by the browser; browser/OS
    reserved shortcuts may remain local.
 
 Only one live session is allowed per host. No automatic reconnection, input
