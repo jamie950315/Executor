@@ -32,6 +32,18 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- Hosted Claude is connected to Executor Hub with all 10 tools discovered.
+  Only the Hub binary was updated to `061c3e9` for the exact Claude DCR callback;
+  downstream devices, configuration, credentials and existing OAuth grants are
+  retained. Existing authenticated four-device discovery still passes. Mac and
+  Pi5 OAuth/Agent/Hub tests, race checks, native builds and six-platform CLI/Kill
+  cross-builds pass. Two first-install fixture failures also reproduced on the
+  unchanged baseline under umask 077 and passed with their expected umask 022.
+  The owner approved the Hub restart after being informed that existing terminal
+  Hub IDs would become invalid; device terminal processes were not stopped.
+  Rollback uses the original Hub binary and removal of the dedicated service
+  override. This is a local branch deployment, not a new public release.
+
 - Latest public release is `v0.4.0`, source `83ad3ec`, at
   https://github.com/jamie950315/Executor/releases/tag/v0.4.0. Native Go CI
   `35052857912`, six-platform Release build `35058424015`, and publication
