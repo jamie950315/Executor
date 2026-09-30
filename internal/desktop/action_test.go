@@ -388,6 +388,23 @@ func TestWindowsMouseRejectsUnconfirmedMovementAndReleasesHeldInput(t *testing.T
 	}
 }
 
+func TestWindowsDragInjectsNonCoalescedMovesWhileButtonIsHeld(t *testing.T) {
+	script := buildWindowsMouseScript(MouseAction{Type: MouseActionDrag, Path: []Point{{X: 1, Y: 2}, {X: 3, Y: 4}, {X: 5, Y: 6}}})
+	start := strings.Index(script, "$buttonHeld=$true;")
+	end := strings.Index(script[start:], "$buttonHeld=$false;") + start
+	held := script[start:end]
+	for _, point := range []string{"SetCursorPos(3,4); [ExecutorMouse]::InjectDragMove();", "SetCursorPos(5,6); [ExecutorMouse]::InjectDragMove();"} {
+		if !strings.Contains(held, point) {
+			t.Fatalf("drag path must inject each held move, missing %q", point)
+		}
+	}
+	for _, required := range []string{"MOUSEEVENTF_MOVE_NOCOALESCE = 0x2000", "MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE", "SendInput(1,", "!= 1"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("drag injection missing %q", required)
+		}
+	}
+}
+
 func TestWindowsMouseDownPreservesHoldAfterSuccessfulRequest(t *testing.T) {
 	script := buildWindowsMouseScript(MouseAction{Type: MouseActionDown, Button: MouseButtonLeft})
 	if !strings.Contains(script, "$buttonHeld=$true; $buttonHeld=$false; } finally {") {

@@ -431,8 +431,10 @@ func buildWindowsMouseScript(action MouseAction) string {
 	}
 	for _, step := range steps {
 		switch step.Type {
-		case mouseStepMove, mouseStepDrag:
+		case mouseStepMove:
 			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + "); ")
+		case mouseStepDrag:
+			events.WriteString("[ExecutorMouse]::SetCursorPos(" + strconv.Itoa(step.X) + "," + strconv.Itoa(step.Y) + "); [ExecutorMouse]::InjectDragMove(); ")
 		case mouseStepDown:
 			events.WriteString("[ExecutorMouse]::mouse_event(" + buttonMask + ",0,0,0," + extraInfo + "); ")
 			events.WriteString("$buttonHeld=$true; ")
@@ -465,6 +467,18 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 public static class ExecutorMouse {
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public UIntPtr dwExtraInfo; }
+  [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public MOUSEINPUT mouse; }
+  public const uint MOUSEEVENTF_MOVE = 0x0001;
+  public const uint MOUSEEVENTF_MOVE_NOCOALESCE = 0x2000;
+  [DllImport("user32.dll", SetLastError=true)] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
+  public static void InjectDragMove() {
+    // SetCursorPos alone can coalesce held moves until after button release.
+    // Inject one non-coalesced move at the already checked physical position.
+    INPUT input = new INPUT { type = 0, mouse = new MOUSEINPUT { dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE } };
+    if (SendInput(1, new INPUT[] { input }, Marshal.SizeOf(typeof(INPUT))) != 1)
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "Desktop drag movement injection failed");
+  }
   [DllImport("user32.dll", EntryPoint="SetCursorPos", SetLastError=true)] private static extern bool NativeSetCursorPos(int X, int Y);
   [DllImport("user32.dll", SetLastError=true)] private static extern bool GetCursorPos(out POINT point);
   public static void SetCursorPos(int X, int Y) {
