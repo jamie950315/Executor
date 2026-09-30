@@ -79,7 +79,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   The owner approved the Hub restart after being informed that existing terminal
   Hub IDs would become invalid; device terminal processes were not stopped.
   Rollback uses the original Hub binary and removal of the dedicated service
-  override. This is a local branch deployment, not a new public release.
+  override. Publishing the source does not reinstall or restart these devices.
 
 - Latest public release is `v0.4.0`, source `83ad3ec`, at
   https://github.com/jamie950315/Executor/releases/tag/v0.4.0. Native Go CI
