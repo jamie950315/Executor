@@ -40,17 +40,22 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   WSL, including exact UTF-8 Chinese content; all four file hashes were checked
   independently on their hosts. Claude uses the public HTTPS MCP ingress;
   ChatGPT's OpenAI Tunnel remains a separate entry to the same Hub.
-  Live desktop screenshots, click, arrow key and scroll pass on Mac and Windows;
-  Mac drag also passes. Windows exact English/Chinese input and process-name
-  focus pass. Pi5 and WSL report no graphical session in their permission probes;
+  Live desktop focus, screenshots, click, exact English/Chinese input, arrow key,
+  drag and scroll pass on Mac and Windows. Pi5 and WSL report no graphical
+  session in their permission probes;
   screenshot attempts fail with a generic device action error.
   Follow-up exposed desktop bugs: relayed screenshots became JSON text, and
   macOS AppleScript text input turned Chinese into `aaaa`. Hub `e1ee2b2` restores
   native MCP content blocks and is deployed on Pi5. Mac Desktop helper `66b3954`
-  uses native Unicode events, retains the signing identity and is installed;
-  its final live Unicode acceptance is paused at a macOS screen-access prompt.
-  Windows Desktop `73f91b8` carries
-  actual absolute physical coordinates in non-coalesced input and is deployed
+  uses native Unicode events and retains the signing identity. Its final live
+  Sonnet 5.5 Medium acceptance passes exact Chinese text, one click/drag/scroll,
+  and the right arrow; the fixture exits with code 0 and its session is closed.
+  Independent host reads and process/session checks agree. The previous
+  screen-access prompt was absent when testing resumed. A Mac-only relay
+  interruption recovered after reconnecting its relay service, preserving
+  Broker, Desktop, fixture and credential files; the underlying cause remains
+  unconfirmed. Windows Desktop `73f91b8` carries actual absolute physical
+  coordinates in non-coalesced input and is deployed
   on CTPS. Sonnet 5.5 Medium now passes the same 100-pixel drag: exactly one
   down/up pair and two held move messages at the midpoint and endpoint;
   native and WinForms drag counts are both 2. Independent host reads agree,
@@ -63,8 +68,7 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
   and six-platform CLI cross-builds pass. Preserve the current mixed deployment:
   Pi5 Hub `e1ee2b2`, Mac Desktop `66b3954`, Windows Desktop `73f91b8`, other roles
   unchanged. Config, credentials and OAuth grants are retained. The Mac plist
-  backup is in its new
-  bundle's `rollback` directory; the Pi5 override backup is under
+  backup is in its new bundle's `rollback` directory; the Pi5 override backup is under
   `deployment-backups/claude-content-e1ee2b2-20260930`; Windows staged files and
   task backups are under `deployment-backups/claude-drag-98d9b7f`; the original
   desktop task backup supports rollback to the retained original binary.
