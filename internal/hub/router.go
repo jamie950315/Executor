@@ -130,5 +130,30 @@ func (r *Router) Dispatch(ctx context.Context, call mcp.ToolCall) (any, error) {
 	if err != nil {
 		return nil, relayCallError(err)
 	}
+	if call.Name == "desktop_observe" || call.Name == "desktop_control" {
+		return restoreDesktopContent(result)
+	}
 	return result, nil
+}
+
+// Device dispatchers serialize ToolResult through the machine relay. Restore
+// its explicit MCP blocks before the server formats the public tool response.
+// Ordinary desktop results (windows, permissions, input acknowledgments) retain
+// their original shape. This is the existing wire envelope, not a new protocol.
+func restoreDesktopContent(result any) (any, error) {
+	envelope, ok := result.(map[string]any)
+	if !ok {
+		return result, nil
+	}
+	rawContent, present := envelope["Content"]
+	if !present {
+		return result, nil
+	}
+	content, validContent := rawContent.([]any)
+	isError, validError := envelope["IsError"].(bool)
+	structured, validStructured := envelope["StructuredContent"]
+	if len(envelope) != 3 || !validContent || !validError || !validStructured {
+		return nil, ErrUnconfirmed
+	}
+	return mcp.ToolResult{StructuredContent: structured, Content: content, IsError: isError}, nil
 }
