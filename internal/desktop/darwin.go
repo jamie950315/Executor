@@ -169,7 +169,7 @@ func (b darwinBackend) Keyboard(ctx context.Context, action KeyboardAction) erro
 		return err
 	}
 	if action.Text != "" {
-		if _, err := b.runner.Run(ctx, "osascript", "-e", fmt.Sprintf("tell application \"System Events\" to keystroke %q", action.Text)); err != nil {
+		if err := b.events.PostKeyboard(KeyboardAction{Text: action.Text}); err != nil {
 			return wrapDesktopError("keyboard input unavailable", err)
 		}
 		return nil

@@ -55,7 +55,6 @@ func TestDarwinBackend_UsesExpectedCommands(t *testing.T) {
 		"sips|-z|982|1512|/tmp/executor-shot.png",
 		"osascript|-l|JavaScript|-e|ObjC.import('Foundation'); var se = Application('System Events'); var apps = se.applicationProcesses.whose({backgroundOnly: false})(); JSON.stringify(apps.map(function(app) { try { var appName = ''; try { appName = app.name(); } catch (error) {} var wins = []; try { wins = app.windows().map(function(win) { var title = ''; var id = 0; try { title = win.name() || ''; } catch (error) {} try { id = win.id() || 0; } catch (error) {} return {title: title, id: id}; }); } catch (error) { wins = []; } return {app: appName, windows: wins}; } catch (error) { return {app: '', windows: []}; } }));",
 		"osascript|-l|JavaScript|-e|ObjC.import('Foundation'); var se = Application('System Events'); var app = se.applicationProcesses.whose({frontmost: true})[0]; JSON.stringify({application: app ? app.name() : '', windows: app ? app.windows().map(function(win) { return {title: win.name() || '', role: 'window'}; }) : []});",
-		"osascript|-e|tell application \"System Events\" to keystroke \"hello\"",
 		"osascript|-e|tell application \"Finder\" to activate",
 	}
 	if !reflect.DeepEqual(runner.calls, wantCommands) {
@@ -95,6 +94,19 @@ func TestDarwinBackendKeypressUsesPrimaryKeyWithHeldModifiers(t *testing.T) {
 	want := []KeyboardAction{{KeyCode: 37, Modifiers: []string{"CTRL", "SHIFT"}}}
 	if !reflect.DeepEqual(events.keyboardEvents, want) {
 		t.Fatalf("keyboard events = %#v, want %#v", events.keyboardEvents, want)
+	}
+}
+
+func TestDarwinBackendUnicodeTextUsesNativeEvents(t *testing.T) {
+	runner := &fakeRunner{}
+	events := &fakeEventPoster{}
+	backend := newDarwinBackend(runner, events)
+	text := "EXECUTOR_CLAUDE_DESKTOP_OK 中文測試 😀"
+	if err := backend.Keyboard(context.Background(), KeyboardAction{Text: text}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 0 || !reflect.DeepEqual(events.keyboardEvents, []KeyboardAction{{Text: text}}) {
+		t.Fatalf("Unicode text must use native events unchanged; commands=%v events=%v", runner.calls, events.keyboardEvents)
 	}
 }
 

@@ -100,6 +100,22 @@ func (defaultEventPoster) PostKeyboard(action KeyboardAction) error {
 	if action.KeyCode < 0 {
 		return fmt.Errorf("invalid key code %d", action.KeyCode)
 	}
+	if action.Text != "" {
+		// Keep typed text out of command arguments and generated source.
+		const source = `import Foundation
+import CoreGraphics
+let data = FileHandle.standardInput.readDataToEndOfFile()
+guard let text = String(data: data, encoding: .utf8) else { exit(1) }
+let units = Array(text.utf16)
+for down in [true, false] {
+  guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { exit(1) }
+  event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+  event.post(tap: .cghidEventTap)
+}`
+		command := exec.Command("/usr/bin/swift", "-e", source)
+		command.Stdin = strings.NewReader(action.Text)
+		return command.Run()
+	}
 	modifiers := make([]string, 0, len(action.Modifiers))
 	for _, modifier := range action.Modifiers {
 		switch strings.ToLower(modifier) {

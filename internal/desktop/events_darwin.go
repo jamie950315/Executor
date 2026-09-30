@@ -71,6 +71,15 @@ static void executorPostKey(int keyCode, CGEventFlags flags, int down) {
 	CFRelease(event);
 }
 
+static int executorPostUnicode(const UniChar *text, int length, int down) {
+	CGEventRef event = CGEventCreateKeyboardEvent(NULL, 0, down ? true : false);
+	if (!event) return 0;
+	CGEventKeyboardSetUnicodeString(event, length, text);
+	CGEventPost(kCGHIDEventTap, event);
+	CFRelease(event);
+	return 1;
+}
+
 static int executorMainDisplayWidth(void) {
 	return (int)CGDisplayBounds(CGMainDisplayID()).size.width;
 }
@@ -85,6 +94,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf16"
+	"unsafe"
 )
 
 type defaultEventPoster struct{}
@@ -127,6 +138,14 @@ func (defaultEventPoster) PostMouse(action MouseAction) error {
 func (defaultEventPoster) PostKeyboard(action KeyboardAction) error {
 	if action.KeyCode < 0 {
 		return fmt.Errorf("invalid key code %d", action.KeyCode)
+	}
+	if action.Text != "" {
+		units := utf16.Encode([]rune(action.Text))
+		text := (*C.UniChar)(unsafe.Pointer(&units[0]))
+		if C.executorPostUnicode(text, C.int(len(units)), 1) == 0 || C.executorPostUnicode(text, C.int(len(units)), 0) == 0 {
+			return fmt.Errorf("native Unicode input unavailable")
+		}
+		return nil
 	}
 	flags, err := cgEventFlags(action.Modifiers)
 	if err != nil {
