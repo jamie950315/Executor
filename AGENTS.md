@@ -32,6 +32,19 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- The canonical Executor Hub MCP URL is `https://executor.0ruka.dev/mcp`.
+  Pi5 Hub OAuth metadata and the existing OpenAI Tunnel target use this hostname.
+  The previous `beta-executor-hub-pi5.0ruka.dev` ingress is retained, with its
+  original OAuth resource explicitly allowed for existing clients. Cloudflare
+  Tunnel configuration version 4 retains the original routes and adds the new
+  proxied hostname. Public OAuth discovery and unauthenticated 401 checks pass
+  from Mac and Pi5; authenticated Hub discovery still lists all four devices
+  online and authorized after both service restarts. Credentials, Hub identity,
+  device delegation files and Pi5 device/cloudflared process IDs are unchanged.
+  Installed binary revisions remain as recorded below. Hostname rollback data
+  is under the Pi5 pilot root's `deployment-backups/hostname-executor-20261001`.
+  See `docs/HUB_MAIN_MIGRATION.md` for client and rollback details.
+
 - Source performance and correctness fixes stop Live desktop when its browser
   tab is hidden (manual Start is required on return), stop terminal polling
   after all final output pages are read, and serialize file uploads. Stale

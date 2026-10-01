@@ -2,8 +2,44 @@
 
 Local main merge: `923013c`. The merge resolved documentation only; source code
 matches the accepted Hub branch. The four-host service cutover is complete;
-this is not a new tagged release. Credentials and enrolled device IDs are retained,
-including the existing pilot-state locations and HTTPS hostnames.
+this is not a new tagged release. Credentials, enrolled device IDs and the
+existing pilot-state locations are retained.
+
+## Current MCP endpoint
+
+The canonical Hub URL is **`https://executor.0ruka.dev/mcp`**. On October 1,
+2026, the existing Pi5 Cloudflare Tunnel gained this proxied hostname with
+the same `http://127.0.0.1:28787` origin. Tunnel configuration version 4 preserves
+all earlier ingress rules. Hub OAuth issuer, resource and endpoint metadata now
+use `https://executor.0ruka.dev`; the existing OpenAI Tunnel profile targets the
+new MCP URL while retaining its registration and environment-key reference.
+
+The previous `https://beta-executor-hub-pi5.0ruka.dev/mcp` remains an ingress to
+the same Hub. Its original OAuth resource
+`https://beta-executor-hub-pi5.0ruka.dev` is an explicit resource alias alongside
+the existing OpenAI Tunnel alias. Existing access tokens with the old issuer
+require refresh; clients may need reauthorization if they cannot refresh. Use
+the new URL for new or updated client connections. A Hub restart invalidates its
+terminal IDs without stopping the device-side terminal processes; list existing
+sessions again after reconnecting.
+
+Public HTTPS checks from Mac and Pi5 pass OAuth discovery with the new issuer
+and resource, plus an unauthenticated MCP 401. The OpenAI Tunnel is live and
+ready, and authenticated MCP discovery after its target switch lists all four
+devices online and authorized. A Mac admin argv session through the Hub cleared
+the local DNS cache, exited with code 0 and was closed. Pi5 DNS cache was cleared
+with an AdGuard Home restart; its configuration hash is unchanged. No new binary
+was installed. Credential, Hub identity and device-delegation hashes match the
+pre-change snapshots; Pi5 device helpers, relay and cloudflared kept their process IDs.
+
+Rollback data is in
+`/home/jamie/.local/share/executor-hub-pilot/deployment-backups/hostname-executor-20261001`
+on Pi5. Restore `config.before.json` to `hub-state/config.json`, preserving its
+owner and mode, and restore only the `mcp` section of the existing OpenAI Tunnel
+profile from `tunnel-mcp.before.json`. Restart `executor-hub.service` and
+`executor-hub-tunnel.service`. `cloudflare.before.json` records the original DNS
+and Tunnel configuration. The retained old ingress supports this rollback;
+credentials, registration and device services do not need replacement.
 
 ## Installed new startup services
 

@@ -1,6 +1,10 @@
 # Pi5-only Executor Hub
 
-## Pilot deployment status
+The current canonical MCP URL is `https://executor.0ruka.dev/mcp`. See
+[Hub mainline migration](HUB_MAIN_MIGRATION.md) for installed services, hostname
+compatibility and rollback. The following pilot record retains historical URLs.
+
+## Historical pilot deployment status
 
 Pi5 native aarch64 tests passed for isolated two-helper signed HTTP/IPC file
 read/write, grant/request verification, cross-process replay persistence and
