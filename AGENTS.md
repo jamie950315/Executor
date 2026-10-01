@@ -32,6 +32,19 @@ Executor is a self-hosted, cross-platform MCP server that lets an authenticated 
 
 ## Current status
 
+- The canonical browser Dashboard URL is `https://dashboard.executor.0ruka.dev`.
+  Both it and `beta-executor-dashboard.0ruka.dev` route to the same existing
+  Worker, database and DeviceRelay namespace. Existing Access application IDs,
+  audiences, identity provider and policies are retained, with exact machine
+  paths protected on both hostnames. Hub and device relay origins remain on the
+  retained old hostname; no device service restart or credential rotation is
+  required. Browser unlock cookies are host-bound and do not transfer to the
+  new hostname. The installed Wrangler configuration retains both domains.
+  The new certificate is active; real browser sign-in lists all four live relays
+  and existing authenticated MCP status checks pass. New-origin device controls
+  await browser unlock; the Worker version and binding descriptors are unchanged.
+  See `docs/HUB_MAIN_MIGRATION.md` for configuration backup and rollback.
+
 - The canonical Executor Hub MCP URL is `https://executor.0ruka.dev/mcp`.
   Pi5 Hub OAuth metadata and the existing OpenAI Tunnel target use this hostname.
   The previous `beta-executor-hub-pi5.0ruka.dev` ingress is retained, with its

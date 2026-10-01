@@ -41,6 +41,41 @@ profile from `tunnel-mcp.before.json`. Restart `executor-hub.service` and
 and Tunnel configuration. The retained old ingress supports this rollback;
 credentials, registration and device services do not need replacement.
 
+## Current Dashboard endpoint
+
+The canonical browser URL is **`https://dashboard.executor.0ruka.dev`**. It is a
+Custom Domain on the existing `beta-executor-dashboard` Worker, sharing the same
+D1 database, DeviceRelay namespace and installed Worker version. Cloudflare
+Access protects both hostnames through the existing owner application, with its
+audience, identity provider and policy unchanged. The existing device and Hub
+machine applications cover their exact `/api/device/*` and `/api/hub/*` paths on
+both hostnames; Worker machine authentication still applies.
+
+`https://beta-executor-dashboard.0ruka.dev` remains available. Installed Hub and
+device relay configurations continue to use this origin, so changing the
+browser URL does not restart services or invalidate terminal sessions. Browser
+unlock grants are host-bound: the new hostname has a separate browser cookie
+and may require unlocking devices with their existing recovery keys. Credentials
+are not rotated by this hostname addition.
+
+Cloudflare's automatically managed certificate is active. Public HTTPS checks
+on the new hostname redirect browser and device-list requests to Access, reject
+unauthenticated Hub machine requests with JSON 401, and reject an enrollment
+request without the required origin. Real browser sign-in loads all four devices
+with live relays. They are locked in this new browser context; device-control
+actions were not revalidated there. Existing authenticated MCP status probes
+pass for all four devices. Worker version and all binding descriptors match the
+pre-change snapshot.
+
+The installed deployment configuration at
+`/Users/jamie/Library/Application Support/Executor Beta/dashboard-hub-b3a93e2/wrangler.beta.json`
+contains both Custom Domains. Its `hostname-backups/dashboard-hostname-20261001`
+directory holds the original Wrangler configuration and non-secret Cloudflare
+routing/Access snapshot. For rollback, remove only the new Worker Custom Domain,
+restore the three existing Access application bodies from the snapshot, and
+restore `wrangler.before.json` to the installed configuration. No Worker code,
+database, device enrollment or machine credential rollback is needed.
+
 ## Installed new startup services
 
 - Pi5: persistent enabled `executor-hub.service` and
