@@ -21,9 +21,68 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func TestDefaultShellUsesPowerShellOnWindows(t *testing.T) {
-	if got := defaultShell(); got != "powershell.exe" {
-		t.Fatalf("defaultShell() = %q, want powershell.exe", got)
+func TestDefaultShellPrefersPowerShell7AndFallsBackToWindowsPowerShell(t *testing.T) {
+	t.Run("prefers pwsh from LookPath", func(t *testing.T) {
+		got := resolveWindowsDefaultShell(
+			func(file string) (string, error) {
+				if file == "pwsh.exe" {
+					return `C:\Custom\PowerShell\7\pwsh.exe`, nil
+				}
+				return "", exec.ErrNotFound
+			},
+			func(string) (os.FileInfo, error) {
+				t.Fatal("stat should not be called when LookPath succeeds")
+				return nil, nil
+			},
+			`C:\Program Files`,
+		)
+		if got != `C:\Custom\PowerShell\7\pwsh.exe` {
+			t.Fatalf("resolveWindowsDefaultShell() = %q, want %q", got, `C:\Custom\PowerShell\7\pwsh.exe`)
+		}
+	})
+
+	t.Run("falls back to standard ProgramFiles pwsh path when not on PATH", func(t *testing.T) {
+		exeInfo, err := os.Stat(os.Args[0])
+		if err != nil {
+			t.Fatalf("stat test binary: %v", err)
+		}
+		want := `D:\Program Files\PowerShell\7\pwsh.exe`
+		got := resolveWindowsDefaultShell(
+			func(string) (string, error) {
+				return "", exec.ErrNotFound
+			},
+			func(name string) (os.FileInfo, error) {
+				if name == want {
+					return exeInfo, nil
+				}
+				return nil, os.ErrNotExist
+			},
+			`D:\Program Files`,
+		)
+		if got != want {
+			t.Fatalf("resolveWindowsDefaultShell() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls back to powershell.exe when pwsh is absent", func(t *testing.T) {
+		got := resolveWindowsDefaultShell(
+			func(string) (string, error) {
+				return "", exec.ErrNotFound
+			},
+			func(string) (os.FileInfo, error) {
+				return nil, os.ErrNotExist
+			},
+			`C:\Program Files`,
+		)
+		if got != "powershell.exe" {
+			t.Fatalf("resolveWindowsDefaultShell() = %q, want powershell.exe", got)
+		}
+	})
+
+	got := defaultShell()
+	want := resolveWindowsDefaultShell(exec.LookPath, os.Stat, os.Getenv("ProgramFiles"))
+	if got != want {
+		t.Fatalf("defaultShell() = %q, want %q", got, want)
 	}
 }
 
